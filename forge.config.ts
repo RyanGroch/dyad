@@ -161,7 +161,7 @@ const config: ForgeConfig = {
       name: "@electron-forge/publisher-github",
       config: {
         repository: {
-          owner: "dyad-sh",
+          owner: "RyanGroch",
           name: "dyad",
         },
         draft: true,
