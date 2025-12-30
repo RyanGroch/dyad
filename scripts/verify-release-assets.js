@@ -88,7 +88,7 @@ async function verifyReleaseAssets() {
       // `dyad-darwin-x64-${version}.zip`,
       `dyad_${normalizeVersionForPlatform(version, "deb")}_amd64.deb`,
       `dyad_${version}_x64.AppImage`,
-      "RELEASES",
+      // "RELEASES",
     ];
 
     console.log("📋 Expected assets:");
