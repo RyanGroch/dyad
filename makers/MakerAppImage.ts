@@ -135,13 +135,13 @@ export class MakerAppImage extends MakerBase<{}> {
     } finally {
       // Clean up temporary directories
       if (appDir)
-        rm(appDir, {
+        await rm(appDir, {
           recursive: true,
           force: true,
         });
 
       if (workDir)
-        rm(workDir, {
+        await rm(workDir, {
           recursive: true,
           force: true,
         });
