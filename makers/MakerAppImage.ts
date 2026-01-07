@@ -109,7 +109,7 @@ export class MakerAppImage extends MakerBase<{ icon?: string }> {
         const finalIconName = `${appName}${ext}`;
         const finalIconPath = resolve(appDir, finalIconName);
 
-        await copyFile(icon, finalIconPath);
+        await copyFile(resolve(process.cwd(), icon), finalIconPath);
         await symlink(finalIconName, resolve(appDir, ".DirIcon"), "file");
       }
 
