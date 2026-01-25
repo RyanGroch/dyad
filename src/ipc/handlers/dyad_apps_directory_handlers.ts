@@ -1,5 +1,12 @@
 import { dialog } from "electron";
-import { existsSync, mkdirSync, statSync, symlinkSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  statSync,
+  lstatSync,
+  symlinkSync,
+  readlinkSync,
+} from "fs";
 import { join, isAbsolute } from "path";
 import { homedir } from "os";
 import { db } from "../../db";
@@ -61,7 +68,20 @@ export function registerDyadAppsDirectoryHandlers() {
       allApps.forEach((app) => {
         if (!isAbsolute(app.path)) {
           const link = join(newDyadAppsDir, app.path);
-          const target = join(getDyadAppsBaseDirectory(), app.path);
+          let target = join(getDyadAppsBaseDirectory(), app.path);
+          let prevTarget = null;
+
+          // We don't want chains of symlinks,
+          // so we always link to the original directory
+          while (
+            existsSync(target) &&
+            lstatSync(target).isSymbolicLink() &&
+            target !== prevTarget // avoid infinite loop
+          ) {
+            prevTarget = target;
+            target = readlinkSync(target);
+          }
+
           if (existsSync(target) && !existsSync(link)) {
             symlinkSync(target, link);
           }
