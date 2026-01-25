@@ -1,6 +1,8 @@
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs"
 import { IS_TEST_BUILD } from "../ipc/utils/test_utils";
+import { readSettings, writeSettings } from "../main/settings";
 
 /**
  * Gets the base dyad-apps directory path (without a specific app subdirectory)
@@ -10,6 +12,18 @@ export function getDyadAppsBaseDirectory(): string {
     const electron = getElectron();
     return path.join(electron!.app.getPath("userData"), "dyad-apps");
   }
+
+  // If the user has set a custom base directory, use it
+  const customDyadAppsDir = readSettings().customDyadAppsBaseDirectory;
+  if (customDyadAppsDir) {
+    if (fs.lstatSync(customDyadAppsDir).isDirectory()) {
+      return customDyadAppsDir;
+    }
+
+    // If the user's chosen directory doesn't exist, reset to default
+    writeSettings({ customDyadAppsBaseDirectory: null });
+  }
+
   return path.join(os.homedir(), "dyad-apps");
 }
 

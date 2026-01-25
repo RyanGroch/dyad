@@ -4,6 +4,7 @@ import { registerChatStreamHandlers } from "./handlers/chat_stream_handlers";
 import { registerSettingsHandlers } from "./handlers/settings_handlers";
 import { registerShellHandlers } from "./handlers/shell_handler";
 import { registerDependencyHandlers } from "./handlers/dependency_handlers";
+import { registerDyadAppsDirectoryHandlers } from "./handlers/dyad_apps_directory_handlers";
 import { registerGithubHandlers } from "./handlers/github_handlers";
 import { registerGithubBranchHandlers } from "./handlers/git_branch_handlers";
 import { registerVercelHandlers } from "./handlers/vercel_handlers";
@@ -45,6 +46,7 @@ export function registerIpcHandlers() {
   registerSettingsHandlers();
   registerShellHandlers();
   registerDependencyHandlers();
+  registerDyadAppsDirectoryHandlers();
   registerGithubHandlers();
   registerGithubBranchHandlers();
   registerVercelHandlers();
