@@ -28,9 +28,7 @@ export function DyadAppsBaseDirectorySelector() {
         fetchDyadAppsDirectory();
         showSuccess("Dyad apps folder updated successfully");
       } else if (result.path === null && result.canceled === false) {
-        showError(
-          `Could not find folder "${result.path}"`,
-        );
+        showError(`Could not find folder "${result.path}"`);
       }
     } catch (error: any) {
       showError(`Failed to set Dyad apps folder: ${error.message}`);
@@ -53,13 +51,14 @@ export function DyadAppsBaseDirectorySelector() {
 
   const fetchDyadAppsDirectory = async () => {
     try {
-      const { path, isCustomPath } = await ipc.system.getDyadAppsBaseDirectory();
+      const { path, isCustomPath } =
+        await ipc.system.getDyadAppsBaseDirectory();
       setDyadAppsPath(path);
       setIsCustomPath(isCustomPath);
     } catch (error: any) {
       showError(`Failed to fetch Dyad apps folder path: ${error.message}`);
     }
-  }
+  };
 
   if (!settings) {
     return null;
@@ -114,7 +113,8 @@ export function DyadAppsBaseDirectorySelector() {
         {/* Help Text */}
         <div className="text-sm text-gray-500 dark:text-gray-400">
           <p>
-            This is the top-level folder that Dyad will store new applications in.
+            This is the top-level folder that Dyad will store new applications
+            in.
           </p>
         </div>
       </div>
