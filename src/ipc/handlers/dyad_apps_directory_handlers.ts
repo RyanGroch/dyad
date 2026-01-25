@@ -49,7 +49,7 @@ export function registerDyadAppsDirectoryHandlers() {
     systemContracts.setDyadAppsBaseDirectory,
     async (_, input) => {
       const newDyadAppsDir =
-        input && statSync(input).isDirectory()
+        input && existsSync(input) && statSync(input).isDirectory()
           ? input
           : join(homedir(), "dyad-apps");
 
