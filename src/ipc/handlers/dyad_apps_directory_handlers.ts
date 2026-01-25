@@ -1,5 +1,5 @@
 import { dialog } from "electron";
-import { existsSync, statSync, symlinkSync } from "fs";
+import { existsSync, mkdirSync, statSync, symlinkSync } from "fs";
 import { join, isAbsolute } from "path";
 import { homedir } from "os";
 import { db } from "../../db";
@@ -45,6 +45,12 @@ export function registerDyadAppsDirectoryHandlers() {
         input && statSync(input).isDirectory()
           ? input
           : join(homedir(), "dyad-apps");
+
+      // If we're resetting to the default dyad-apps directory,
+      // we need to make sure that it exists
+      if (!existsSync(newDyadAppsDir)) {
+        mkdirSync(newDyadAppsDir);
+      }
 
       const allApps = await db.query.apps.findMany({
         orderBy: [desc(apps.createdAt)],
