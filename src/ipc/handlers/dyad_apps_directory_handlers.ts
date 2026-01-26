@@ -7,6 +7,7 @@ import {
   symlinkSync,
   readlinkSync,
 } from "fs";
+import log from "electron-log";
 import { join, isAbsolute, dirname } from "path";
 import { homedir } from "os";
 import { db } from "../../db";
@@ -16,6 +17,8 @@ import { createTypedHandler } from "./base";
 import { systemContracts } from "../types/system";
 import { getDyadAppsBaseDirectory } from "@/paths/paths";
 import { writeSettings } from "@/main/settings";
+
+const logger = log.scope("dyad_apps_directory_handlers");
 
 export function registerDyadAppsDirectoryHandlers() {
   createTypedHandler(systemContracts.getDyadAppsBaseDirectory, async () => {
@@ -66,7 +69,7 @@ export function registerDyadAppsDirectoryHandlers() {
 
       // We don't want to make current apps inaccessible after changing the directory.
       // So, we add symlinks in the new directory to each of the user's apps.
-      allApps.forEach((app) => {
+      for (const app of allApps) {
         if (!isAbsolute(app.path)) {
           const link = join(newDyadAppsDir, app.path);
           const seenPaths = new Set();
@@ -86,11 +89,36 @@ export function registerDyadAppsDirectoryHandlers() {
               : join(dirname(target), nextTarget);
           }
 
-          if (existsSync(target) && !existsSync(link)) {
+          try {
             symlinkSync(target, link, "junction");
+          } catch (err: any) {
+            // If we already have access to the app (or one with the same name),
+            // or the app no longer exists, then we can safely skip the symlink
+            if (err.code === "EEXIST" || err.code === "ENOENT") {
+              logger.debug(
+                [
+                  "Skipping symlink creation",
+                  `FROM: ${link}`,
+                  `TO: ${target}`,
+                  `REASON: ${err.code}`,
+                ].join("\n"),
+              );
+              continue;
+            }
+
+            // We stop the settings change if we're removing access to apps
+            logger.error(
+              [
+                "Failed to create required symlink",
+                `FROM: ${link}`,
+                `TO: ${target}`,
+                `ERROR: ${err.code ?? err.message}`,
+              ].join("\n"),
+            );
+            throw err;
           }
         }
-      });
+      }
 
       writeSettings({ customDyadAppsBaseDirectory: input });
     },
