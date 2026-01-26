@@ -26,7 +26,7 @@ export function DyadAppsBaseDirectorySelector() {
         fetchDyadAppsDirectory();
         showSuccess("Dyad apps folder updated successfully");
       } else if (result.path === null && result.canceled === false) {
-        showError(`Could not find folder "${result.path}"`);
+        showError(`Could not find folder`);
       }
     } catch (error: any) {
       showError(`Failed to set Dyad apps folder: ${error.message}`);
