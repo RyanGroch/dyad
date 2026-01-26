@@ -77,11 +77,16 @@ export function registerDyadAppsDirectoryHandlers() {
 
           // We don't want chains of symlinks,
           // so we always link to the original directory
-          while (
-            existsSync(target) &&
-            lstatSync(target).isSymbolicLink() &&
-            !seenPaths.has(target) // avoid infinite loop
-          ) {
+          while (!seenPaths.has(target)) {
+            let st;
+            try {
+              st = lstatSync(target);
+            } catch {
+              break;
+            }
+
+            if (!st.isSymbolicLink()) break;
+
             seenPaths.add(target);
             const nextTarget = readlinkSync(target);
             target = isAbsolute(nextTarget)
