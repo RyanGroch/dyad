@@ -48,16 +48,17 @@ export function registerDyadAppsDirectoryHandlers() {
   createTypedHandler(
     systemContracts.setDyadAppsBaseDirectory,
     async (_, input) => {
-      const newDyadAppsDir =
-        input && existsSync(input) && statSync(input).isDirectory()
+      const newDyadAppsDir = !input
+        ? join(homedir(), "dyad-apps")
+        : statSync(input).isDirectory()
           ? input
-          : join(homedir(), "dyad-apps");
+          : (() => {
+              throw new Error("Path is not a directory");
+            })();
 
       // If we're resetting to the default dyad-apps directory,
       // we need to make sure that it exists
-      if (!existsSync(newDyadAppsDir)) {
-        mkdirSync(newDyadAppsDir);
-      }
+      mkdirSync(newDyadAppsDir, { recursive: true });
 
       const allApps = await db.query.apps.findMany({
         orderBy: [desc(apps.createdAt)],
