@@ -49,7 +49,7 @@ export const SelectAppFolderResultSchema = z.object({
   name: z.string().nullable(),
 });
 
-export const SelectAppLocationResultSchema = z.object({
+export const SelectDyadAppsBaseDirectoryResultSchema = z.object({
   path: z.string().nullable(),
   canceled: z.boolean(),
 });
@@ -182,7 +182,7 @@ export const systemContracts = {
   selectDyadAppsBaseDirectory: defineContract({
     channel: "select-dyad-apps-base-directory",
     input: z.void(),
-    output: SelectAppLocationResultSchema,
+    output: SelectDyadAppsBaseDirectoryResultSchema,
   }),
 
   setDyadAppsBaseDirectory: defineContract({
