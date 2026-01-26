@@ -87,7 +87,7 @@ export function registerDyadAppsDirectoryHandlers() {
           }
 
           if (existsSync(target) && !existsSync(link)) {
-            symlinkSync(target, link);
+            symlinkSync(target, link, "junction");
           }
         }
       });
