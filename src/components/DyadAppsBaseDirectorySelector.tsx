@@ -7,15 +7,16 @@ import { FolderOpen, RotateCcw } from "lucide-react";
 
 export function DyadAppsBaseDirectorySelector() {
   const [isSelectingPath, setIsSelectingPath] = useState(false);
-  const [dyadAppsPath, setDyadAppsPath] = useState<string>("Loading...");
+  const [dyadAppsBasePath, setDyadAppsBasePath] =
+    useState<string>("Loading...");
   const [isCustomPath, setIsCustomPath] = useState(true);
 
   useEffect(() => {
     // Fetch path on mount
-    fetchDyadAppsDirectory();
+    fetchDyadAppsBaseDirectory();
   }, []);
 
-  const handleSelectDyadAppsDirectory = async () => {
+  const handleSelectDyadAppsBaseDirectory = async () => {
     setIsSelectingPath(true);
     try {
       // Call the IPC method to select folder
@@ -23,7 +24,7 @@ export function DyadAppsBaseDirectorySelector() {
       if (result.path) {
         // Save the custom path to settings
         await ipc.system.setDyadAppsBaseDirectory(result.path);
-        await fetchDyadAppsDirectory();
+        await fetchDyadAppsBaseDirectory();
         showSuccess("Dyad apps folder updated successfully");
       } else if (result.path === null && result.canceled === false) {
         showError(`Could not find folder`);
@@ -40,18 +41,18 @@ export function DyadAppsBaseDirectorySelector() {
       // Clear the custom path
       await ipc.system.setDyadAppsBaseDirectory(null);
       // Update UI to show default directory
-      await fetchDyadAppsDirectory();
+      await fetchDyadAppsBaseDirectory();
       showSuccess("Dyad apps folder reset successfully");
     } catch (error: any) {
       showError(`Failed to reset Dyad Apps folder path: ${error.message}`);
     }
   };
 
-  const fetchDyadAppsDirectory = async () => {
+  const fetchDyadAppsBaseDirectory = async () => {
     try {
       const { path, isCustomPath } =
         await ipc.system.getDyadAppsBaseDirectory();
-      setDyadAppsPath(path);
+      setDyadAppsBasePath(path);
       setIsCustomPath(isCustomPath);
     } catch (error: any) {
       showError(`Failed to fetch Dyad apps folder path: ${error.message}`);
@@ -67,7 +68,7 @@ export function DyadAppsBaseDirectorySelector() {
           </Label>
 
           <Button
-            onClick={handleSelectDyadAppsDirectory}
+            onClick={handleSelectDyadAppsBaseDirectory}
             disabled={isSelectingPath}
             variant="outline"
             size="sm"
@@ -98,7 +99,7 @@ export function DyadAppsBaseDirectorySelector() {
                 </span>
               </div>
               <p className="text-sm font-mono text-gray-700 dark:text-gray-300 break-all max-h-32 overflow-y-auto">
-                {dyadAppsPath}
+                {dyadAppsBasePath}
               </p>
             </div>
           </div>

@@ -18,15 +18,15 @@ import { systemContracts } from "../types/system";
 import { getDyadAppsBaseDirectory } from "@/paths/paths";
 import { writeSettings } from "@/main/settings";
 
-const logger = log.scope("dyad_apps_directory_handlers");
+const logger = log.scope("dyad_apps_base_directory_handlers");
 
-export function registerDyadAppsDirectoryHandlers() {
+export function registerDyadAppsBaseDirectoryHandlers() {
   createTypedHandler(systemContracts.getDyadAppsBaseDirectory, async () => {
-    const dyadAppsDir = getDyadAppsBaseDirectory();
+    const dyadAppsBaseDir = getDyadAppsBaseDirectory();
 
     return {
-      path: dyadAppsDir,
-      isCustomPath: dyadAppsDir !== join(homedir(), "dyad-apps"),
+      path: dyadAppsBaseDir,
+      isCustomPath: dyadAppsBaseDir !== join(homedir(), "dyad-apps"),
     };
   });
 
@@ -51,7 +51,7 @@ export function registerDyadAppsDirectoryHandlers() {
   createTypedHandler(
     systemContracts.setDyadAppsBaseDirectory,
     async (_, input) => {
-      const newDyadAppsDir = !input
+      const newDyadAppsBaseDir = !input
         ? join(homedir(), "dyad-apps")
         : statSync(input).isDirectory()
           ? input
@@ -61,7 +61,7 @@ export function registerDyadAppsDirectoryHandlers() {
 
       // If we're resetting to the default dyad-apps directory,
       // we need to make sure that it exists
-      mkdirSync(newDyadAppsDir, { recursive: true });
+      mkdirSync(newDyadAppsBaseDir, { recursive: true });
 
       const allApps = await db.query.apps.findMany({
         orderBy: [desc(apps.createdAt)],
@@ -71,7 +71,7 @@ export function registerDyadAppsDirectoryHandlers() {
       // So, we add symlinks in the new directory to each of the user's apps.
       for (const app of allApps) {
         if (!isAbsolute(app.path)) {
-          const link = join(newDyadAppsDir, app.path);
+          const link = join(newDyadAppsBaseDir, app.path);
           const seenPaths = new Set();
           let target = join(getDyadAppsBaseDirectory(), app.path);
 

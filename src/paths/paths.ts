@@ -14,10 +14,10 @@ export function getDyadAppsBaseDirectory(): string {
   }
 
   // If the user has set a custom base directory, use it
-  const customDyadAppsDir = readSettings().customDyadAppsBaseDirectory;
-  if (customDyadAppsDir) {
-    if (fs.lstatSync(customDyadAppsDir).isDirectory()) {
-      return customDyadAppsDir;
+  const customDyadAppsBaseDir = readSettings().customDyadAppsBaseDirectory;
+  if (customDyadAppsBaseDir) {
+    if (fs.lstatSync(customDyadAppsBaseDir).isDirectory()) {
+      return customDyadAppsBaseDir;
     }
 
     // If the user's chosen directory doesn't exist, reset to default
