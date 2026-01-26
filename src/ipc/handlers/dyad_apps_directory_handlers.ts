@@ -7,7 +7,7 @@ import {
   symlinkSync,
   readlinkSync,
 } from "fs";
-import { join, isAbsolute } from "path";
+import { join, isAbsolute, dirname } from "path";
 import { homedir } from "os";
 import { db } from "../../db";
 import { apps } from "../../db/schema";
@@ -69,18 +69,21 @@ export function registerDyadAppsDirectoryHandlers() {
       allApps.forEach((app) => {
         if (!isAbsolute(app.path)) {
           const link = join(newDyadAppsDir, app.path);
+          const seenPaths = new Set();
           let target = join(getDyadAppsBaseDirectory(), app.path);
-          let prevTarget = null;
 
           // We don't want chains of symlinks,
           // so we always link to the original directory
           while (
             existsSync(target) &&
             lstatSync(target).isSymbolicLink() &&
-            target !== prevTarget // avoid infinite loop
+            !seenPaths.has(target) // avoid infinite loop
           ) {
-            prevTarget = target;
-            target = readlinkSync(target);
+            seenPaths.add(target);
+            const nextTarget = readlinkSync(target);
+            target = isAbsolute(nextTarget)
+              ? nextTarget
+              : join(dirname(target), nextTarget);
           }
 
           if (existsSync(target) && !existsSync(link)) {
