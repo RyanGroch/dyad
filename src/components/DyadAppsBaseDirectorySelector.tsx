@@ -1,13 +1,11 @@
 import { useState, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { useSettings } from "@/hooks/useSettings";
 import { showError, showSuccess } from "@/lib/toast";
 import { ipc } from "@/ipc/types";
 import { FolderOpen, RotateCcw } from "lucide-react";
 
 export function DyadAppsBaseDirectorySelector() {
-  const { settings } = useSettings();
   const [isSelectingPath, setIsSelectingPath] = useState(false);
   const [dyadAppsPath, setDyadAppsPath] = useState<string>("Loading...");
   const [isCustomPath, setIsCustomPath] = useState(true);
@@ -59,10 +57,6 @@ export function DyadAppsBaseDirectorySelector() {
       showError(`Failed to fetch Dyad apps folder path: ${error.message}`);
     }
   };
-
-  if (!settings) {
-    return null;
-  }
 
   return (
     <div className="space-y-4">
