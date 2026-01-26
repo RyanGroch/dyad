@@ -28,21 +28,21 @@ export function registerDyadAppsDirectoryHandlers() {
   });
 
   createTypedHandler(systemContracts.selectDyadAppsBaseDirectory, async () => {
-    const result = await dialog.showOpenDialog({
+    const { filePaths, canceled } = await dialog.showOpenDialog({
       title: "Select Dyad Apps Folder",
       properties: ["openDirectory"],
       message: "Select the folder where Dyad apps should be stored",
     });
 
-    if (result.canceled) {
+    if (canceled) {
       return { path: null, canceled: true };
     }
 
-    if (!result.filePaths[0] || !statSync(result.filePaths[0])) {
+    if (!filePaths[0] || !existsSync(filePaths[0])) {
       return { path: null, canceled: false };
     }
 
-    return { path: result.filePaths[0], canceled: false };
+    return { path: filePaths[0], canceled: false };
   });
 
   createTypedHandler(
