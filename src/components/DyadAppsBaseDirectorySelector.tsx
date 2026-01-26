@@ -23,7 +23,7 @@ export function DyadAppsBaseDirectorySelector() {
       if (result.path) {
         // Save the custom path to settings
         await ipc.system.setDyadAppsBaseDirectory(result.path);
-        fetchDyadAppsDirectory();
+        await fetchDyadAppsDirectory();
         showSuccess("Dyad apps folder updated successfully");
       } else if (result.path === null && result.canceled === false) {
         showError(`Could not find folder`);
@@ -40,7 +40,7 @@ export function DyadAppsBaseDirectorySelector() {
       // Clear the custom path
       await ipc.system.setDyadAppsBaseDirectory(null);
       // Update UI to show default directory
-      fetchDyadAppsDirectory();
+      await fetchDyadAppsDirectory();
       showSuccess("Dyad apps folder reset successfully");
     } catch (error: any) {
       showError(`Failed to reset Dyad Apps folder path: ${error.message}`);
