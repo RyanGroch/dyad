@@ -95,6 +95,17 @@ export function registerDyadAppsBaseDirectoryHandlers() {
           }
 
           try {
+            // On Windows, symlinks require more permissions than junctions.
+            // Try symlink first; if that fails, fall back to a junction
+            if (process.platform === "win32") {
+              try {
+                symlinkSync(target, link, "dir");
+                continue;
+              } catch {
+                // Only handle errors on second attempt; fall through
+              }
+            }
+
             symlinkSync(target, link, "junction");
           } catch (err: any) {
             // If we already have access to the app (or one with the same name),
