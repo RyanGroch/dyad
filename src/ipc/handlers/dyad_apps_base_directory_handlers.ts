@@ -1,7 +1,7 @@
 import { dialog } from "electron";
-import { mkdir, stat, lstat, symlink, readlink } from "fs/promises";
+import { mkdir, stat, symlink, realpath } from "fs/promises";
 import log from "electron-log";
-import { join, isAbsolute, dirname } from "path";
+import { join, isAbsolute } from "path";
 import { homedir } from "os";
 import { db } from "../../db";
 import { apps } from "../../db/schema";
@@ -73,26 +73,13 @@ export function registerDyadAppsBaseDirectoryHandlers() {
         if (isAbsolute(app.path)) continue;
 
         const link = join(newDyadAppsBaseDir, app.path);
-        const seenPaths = new Set();
         let target = join(getDyadAppsBaseDirectory(), app.path);
 
-        // We don't want chains of symlinks,
-        // so we always link to the original directory
-        while (!seenPaths.has(target)) {
-          let st;
-          try {
-            st = await lstat(target);
-          } catch {
-            break;
-          }
-
-          if (!st.isSymbolicLink()) break;
-
-          seenPaths.add(target);
-          const nextTarget = await readlink(target);
-          target = isAbsolute(nextTarget)
-            ? nextTarget
-            : join(dirname(target), nextTarget);
+        // Make sure we link to original directory, not a symlink
+        try {
+          target = await realpath(target);
+        } catch {
+          // Fall through. If realpath fails, we keep the original path
         }
 
         try {
