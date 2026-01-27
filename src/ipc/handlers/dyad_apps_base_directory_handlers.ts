@@ -70,69 +70,69 @@ export function registerDyadAppsBaseDirectoryHandlers() {
       // We don't want to make current apps inaccessible after changing the directory.
       // So, we add symlinks in the new directory to each of the user's apps.
       for (const app of allApps) {
-        if (!isAbsolute(app.path)) {
-          const link = join(newDyadAppsBaseDir, app.path);
-          const seenPaths = new Set();
-          let target = join(getDyadAppsBaseDirectory(), app.path);
+        if (isAbsolute(app.path)) continue;
 
-          // We don't want chains of symlinks,
-          // so we always link to the original directory
-          while (!seenPaths.has(target)) {
-            let st;
-            try {
-              st = lstatSync(target);
-            } catch {
-              break;
-            }
+        const link = join(newDyadAppsBaseDir, app.path);
+        const seenPaths = new Set();
+        let target = join(getDyadAppsBaseDirectory(), app.path);
 
-            if (!st.isSymbolicLink()) break;
-
-            seenPaths.add(target);
-            const nextTarget = readlinkSync(target);
-            target = isAbsolute(nextTarget)
-              ? nextTarget
-              : join(dirname(target), nextTarget);
+        // We don't want chains of symlinks,
+        // so we always link to the original directory
+        while (!seenPaths.has(target)) {
+          let st;
+          try {
+            st = lstatSync(target);
+          } catch {
+            break;
           }
 
-          try {
-            // On Windows, symlinks require more permissions than junctions.
-            // Try symlink first; if that fails, fall back to a junction
-            if (process.platform === "win32") {
-              try {
-                symlinkSync(target, link, "dir");
-                continue;
-              } catch {
-                // Only handle errors on second attempt; fall through
-              }
-            }
+          if (!st.isSymbolicLink()) break;
 
-            symlinkSync(target, link, "junction");
-          } catch (err: any) {
-            // If we already have access to the app (or one with the same name),
-            // or the app no longer exists, then we can safely skip the symlink
-            if (err.code === "EEXIST" || err.code === "ENOENT") {
-              logger.debug(
-                [
-                  "Skipping symlink creation",
-                  `FROM: ${link}`,
-                  `TO: ${target}`,
-                  `REASON: ${err.code}`,
-                ].join("\n"),
-              );
+          seenPaths.add(target);
+          const nextTarget = readlinkSync(target);
+          target = isAbsolute(nextTarget)
+            ? nextTarget
+            : join(dirname(target), nextTarget);
+        }
+
+        try {
+          // On Windows, symlinks require more permissions than junctions.
+          // Try symlink first; if that fails, fall back to a junction
+          if (process.platform === "win32") {
+            try {
+              symlinkSync(target, link, "dir");
               continue;
+            } catch {
+              // Only handle errors on second attempt; fall through
             }
+          }
 
-            // We stop the settings change if we're removing access to apps
-            logger.error(
+          symlinkSync(target, link, "junction");
+        } catch (err: any) {
+          // If we already have access to the app (or one with the same name),
+          // or the app no longer exists, then we can safely skip the symlink
+          if (err.code === "EEXIST" || err.code === "ENOENT") {
+            logger.debug(
               [
-                "Failed to create required symlink",
+                "Skipping symlink creation",
                 `FROM: ${link}`,
                 `TO: ${target}`,
-                `ERROR: ${err.code ?? err.message}`,
+                `REASON: ${err.code}`,
               ].join("\n"),
             );
-            throw err;
+            continue;
           }
+
+          // We stop the settings change if we're removing access to apps
+          logger.error(
+            [
+              "Failed to create required symlink",
+              `FROM: ${link}`,
+              `TO: ${target}`,
+              `ERROR: ${err.code ?? err.message}`,
+            ].join("\n"),
+          );
+          throw err;
         }
       }
 
