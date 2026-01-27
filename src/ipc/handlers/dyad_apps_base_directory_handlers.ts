@@ -1,12 +1,5 @@
 import { dialog } from "electron";
-import {
-  existsSync,
-  mkdirSync,
-  statSync,
-  lstatSync,
-  symlinkSync,
-  readlinkSync,
-} from "fs";
+import { mkdir, stat, lstat, symlink, readlink } from "fs/promises";
 import log from "electron-log";
 import { join, isAbsolute, dirname } from "path";
 import { homedir } from "os";
@@ -41,7 +34,14 @@ export function registerDyadAppsBaseDirectoryHandlers() {
       return { path: null, canceled: true };
     }
 
-    if (!filePaths[0] || !existsSync(filePaths[0])) {
+    let st;
+    try {
+      st = await stat(filePaths[0]);
+    } catch {
+      // Just setting up to check directory existence, so fall through
+    }
+
+    if (!st || !st.isDirectory()) {
       return { path: null, canceled: false };
     }
 
@@ -53,7 +53,7 @@ export function registerDyadAppsBaseDirectoryHandlers() {
     async (_, input) => {
       const newDyadAppsBaseDir = !input
         ? join(homedir(), "dyad-apps")
-        : statSync(input).isDirectory()
+        : (await stat(input)).isDirectory()
           ? input
           : (() => {
               throw new Error("Path is not a directory");
@@ -61,7 +61,7 @@ export function registerDyadAppsBaseDirectoryHandlers() {
 
       // If we're resetting to the default dyad-apps directory,
       // we need to make sure that it exists
-      mkdirSync(newDyadAppsBaseDir, { recursive: true });
+      await mkdir(newDyadAppsBaseDir, { recursive: true });
 
       const allApps = await db.query.apps.findMany({
         orderBy: [desc(apps.createdAt)],
@@ -81,7 +81,7 @@ export function registerDyadAppsBaseDirectoryHandlers() {
         while (!seenPaths.has(target)) {
           let st;
           try {
-            st = lstatSync(target);
+            st = await lstat(target);
           } catch {
             break;
           }
@@ -89,7 +89,7 @@ export function registerDyadAppsBaseDirectoryHandlers() {
           if (!st.isSymbolicLink()) break;
 
           seenPaths.add(target);
-          const nextTarget = readlinkSync(target);
+          const nextTarget = await readlink(target);
           target = isAbsolute(nextTarget)
             ? nextTarget
             : join(dirname(target), nextTarget);
@@ -100,14 +100,14 @@ export function registerDyadAppsBaseDirectoryHandlers() {
           // Try symlink first; if that fails, fall back to a junction
           if (process.platform === "win32") {
             try {
-              symlinkSync(target, link, "dir");
+              await symlink(target, link, "dir");
               continue;
             } catch {
               // Only handle errors on second attempt; fall through
             }
           }
 
-          symlinkSync(target, link, "junction");
+          await symlink(target, link, "junction");
         } catch (err: any) {
           // If we already have access to the app (or one with the same name),
           // or the app no longer exists, then we can safely skip the symlink
