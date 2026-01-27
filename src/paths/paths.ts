@@ -13,18 +13,28 @@ export function getDyadAppsBaseDirectory(): string {
     return path.join(electron!.app.getPath("userData"), "dyad-apps");
   }
 
-  // If the user has set a custom base directory, use it
-  const customDyadAppsBaseDir = readSettings().customDyadAppsBaseDirectory;
-  if (customDyadAppsBaseDir) {
-    if (fs.lstatSync(customDyadAppsBaseDir).isDirectory()) {
-      return customDyadAppsBaseDir;
-    }
+  const defaultDir = path.join(os.homedir(), "dyad-apps");
 
-    // If the user's chosen directory doesn't exist, reset to default
-    writeSettings({ customDyadAppsBaseDirectory: null });
+  // If the user has not set a custom base directory, use default
+  const customDir = readSettings().customDyadAppsBaseDirectory;
+  if (!customDir) {
+    return defaultDir;
   }
 
-  return path.join(os.homedir(), "dyad-apps");
+  let st;
+  try {
+    st = fs.statSync(customDir);
+  } catch {
+    // Just setting up to check defaultDir's existence+type, so fall through
+  }
+
+  // If the user's chosen directory doesn't exist or is inaccessible, reset to default
+  if (!st || !st.isDirectory()) {
+    writeSettings({ customDyadAppsBaseDirectory: null });
+    return defaultDir;
+  }
+
+  return customDir;
 }
 
 export function getDyadAppPath(appPath: string): string {
