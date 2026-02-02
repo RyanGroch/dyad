@@ -7,7 +7,7 @@ import { appContracts } from "../types/app";
 import type { AppFileSearchResult } from "../types/app";
 import { miscContracts } from "../types/misc";
 import { systemContracts } from "../types/system";
-import fs from "node:fs";
+import fs, { realpath } from "node:fs";
 import path from "node:path";
 import { getDyadAppPath, getUserDataPath } from "../../paths/paths";
 import { ChildProcess, spawn } from "node:child_process";
@@ -1854,7 +1854,9 @@ export function registerAppHandlers() {
         throw new Error("App not found");
       }
 
-      const currentResolvedPath = getDyadAppPath(app.path);
+      // If the resolved path is a symlink, we assume the user wants to move the true app directory
+      const maybeSymlinkPath = getDyadAppPath(app.path);
+      const currentResolvedPath = await fsPromises.realpath(maybeSymlinkPath);
       // Extract app folder name from current path (works for both absolute and relative paths)
       const appFolderName = path.basename(
         path.isAbsolute(app.path) ? app.path : currentResolvedPath,
@@ -1942,6 +1944,18 @@ export function registerAppHandlers() {
             `Error deleting old app directory ${currentResolvedPath}:`,
             error,
           );
+        }
+
+        // cleanup symlink if it exists
+        if (maybeSymlinkPath !== currentResolvedPath) {
+          try {
+            await fsPromises.unlink(maybeSymlinkPath);
+          } catch (error: any) {
+            logger.warn(
+              `Error deleting old symlink ${maybeSymlinkPath}:`,
+              error,
+            );
+          }
         }
 
         return {
