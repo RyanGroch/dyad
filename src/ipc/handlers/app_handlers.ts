@@ -7,7 +7,7 @@ import { appContracts } from "../types/app";
 import type { AppFileSearchResult } from "../types/app";
 import { miscContracts } from "../types/misc";
 import { systemContracts } from "../types/system";
-import fs, { realpath } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { getDyadAppPath, getUserDataPath } from "../../paths/paths";
 import { ChildProcess, spawn } from "node:child_process";
@@ -1854,9 +1854,33 @@ export function registerAppHandlers() {
         throw new Error("App not found");
       }
 
-      // If the resolved path is a symlink, we assume the user wants to move the true app directory
       const maybeSymlinkPath = getDyadAppPath(app.path);
-      const currentResolvedPath = await fsPromises.realpath(maybeSymlinkPath);
+      let currentResolvedPath = maybeSymlinkPath;
+      // If the resolved path is a symlink, we assume the user wants to move the true app directory
+      try {
+        currentResolvedPath = await fsPromises.realpath(currentResolvedPath);
+      } catch {
+        // Fall through; use original path if we can't resolve symlink
+      }
+
+      // Cleans up the symlink if it exists. We call this whenever we change an app's path
+      const cleanupSymlink = async () => {
+        let st;
+        try {
+          st = await fsPromises.lstat(maybeSymlinkPath);
+        } catch {
+          // Fall through; setting up to check existence+symlink status
+        }
+
+        if (!st || !st.isSymbolicLink()) return;
+
+        try {
+          await fsPromises.unlink(maybeSymlinkPath);
+        } catch (error: any) {
+          logger.warn(`Error deleting old symlink ${maybeSymlinkPath}:`, error);
+        }
+      };
+
       // Extract app folder name from current path (works for both absolute and relative paths)
       const appFolderName = path.basename(
         path.isAbsolute(app.path) ? app.path : currentResolvedPath,
@@ -1865,11 +1889,16 @@ export function registerAppHandlers() {
 
       if (currentResolvedPath === nextResolvedPath) {
         // Path hasn't changed, but we should update to absolute path format if needed
-        if (!path.isAbsolute(app.path)) {
+        // Or, if the original path was a symlink, update to the true path
+        if (
+          !path.isAbsolute(app.path) ||
+          maybeSymlinkPath !== nextResolvedPath
+        ) {
           await db
             .update(apps)
             .set({ path: nextResolvedPath })
             .where(eq(apps.id, appId));
+          await cleanupSymlink();
         }
         return {
           resolvedPath: nextResolvedPath,
@@ -1905,6 +1934,7 @@ export function registerAppHandlers() {
           .update(apps)
           .set({ path: nextResolvedPath })
           .where(eq(apps.id, appId));
+        await cleanupSymlink();
         return {
           resolvedPath: nextResolvedPath,
         };
@@ -1946,17 +1976,7 @@ export function registerAppHandlers() {
           );
         }
 
-        // cleanup symlink if it exists
-        if (maybeSymlinkPath !== currentResolvedPath) {
-          try {
-            await fsPromises.unlink(maybeSymlinkPath);
-          } catch (error: any) {
-            logger.warn(
-              `Error deleting old symlink ${maybeSymlinkPath}:`,
-              error,
-            );
-          }
-        }
+        await cleanupSymlink();
 
         return {
           resolvedPath: nextResolvedPath,
