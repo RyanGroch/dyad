@@ -838,7 +838,14 @@ export function registerAppHandlers() {
       throw new Error("Original app not found.");
     }
 
-    const originalAppPath = getDyadAppPath(originalApp.path);
+    const maybeSymlinkOriginalAppPath = getDyadAppPath(originalApp.path);
+    let originalAppPath = maybeSymlinkOriginalAppPath;
+    try {
+      originalAppPath = await fsPromises.realpath(maybeSymlinkOriginalAppPath);
+    } catch {
+      // Fall through
+    }
+
     const newAppPath = getDyadAppPath(newAppName);
 
     // 3. Copy the app folder
@@ -1327,7 +1334,14 @@ export function registerAppHandlers() {
       }
 
       // Delete app files
-      const appPath = getDyadAppPath(app.path);
+      const maybeSymlinkAppPath = getDyadAppPath(app.path);
+      let appPath = maybeSymlinkAppPath;
+      try {
+        appPath = await fsPromises.realpath(maybeSymlinkAppPath);
+      } catch {
+        // Fall through
+      }
+
       try {
         await fsPromises.rm(appPath, { recursive: true, force: true });
       } catch (error: any) {
@@ -1335,6 +1349,14 @@ export function registerAppHandlers() {
         throw new Error(
           `App deleted from database, but failed to delete app files. Please delete app files from ${appPath} manually.\n\nError: ${error.message}`,
         );
+      }
+
+      if (maybeSymlinkAppPath !== appPath) {
+        try {
+          await fsPromises.unlink(maybeSymlinkAppPath);
+        } catch (error: any) {
+          logger.warn(`Failed to delete symlink for app ${appId}:`, error);
+        }
       }
     });
   });
