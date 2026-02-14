@@ -120,8 +120,8 @@ jobs:
             echo 'e2e_shard=[1,2]' >> $GITHUB_OUTPUT
             echo 'e2e_shard_total=[2]' >> $GITHUB_OUTPUT
           else
-            echo 'build_os=[{"name":"windows","image":"[\"windows-latest\"]"},{"name":"macos","image":"[\"macos-latest\"]"}]' >> $GITHUB_OUTPUT
-            echo 'e2e_os=[{"name":"windows","image":"[\"windows-latest\"]"},{"name":"macos","image":"[\"macos-latest\"]"}]' >> $GITHUB_OUTPUT
+            echo 'build_os=[{"name":"windows","image":"[\"windows-latest\"]"},{"name":"macos","image":"[\"macos-latest\"]"},{"name":"linux","image":"[\"ubuntu-latest\"]"}]' >> $GITHUB_OUTPUT
+            echo 'e2e_os=[{"name":"windows","image":"[\"windows-latest\"]"},{"name":"macos","image":"[\"macos-latest\"]"},{"name":"linux","image":"[\"ubuntu-latest\"]"}]' >> $GITHUB_OUTPUT
             echo 'e2e_shard=[1,2,3,4]' >> $GITHUB_OUTPUT
             echo 'e2e_shard_total=[4]' >> $GITHUB_OUTPUT
           fi
@@ -275,7 +275,12 @@ jobs:
         # You can add debug logging to make it easier to see what's failing
         # by adding "DEBUG=pw:browser" in front.
         # Use blob reporter for sharding and merge capabilities
-        run: DEBUG=pw:browser npx playwright test --shard=${{ matrix.shard }}/${{ matrix.shardTotal }}
+        run: |
+          if [ "${{ matrix.os.name }}" = "linux" ]; then
+            DEBUG=pw:browser xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" -- npx playwright test --shard=${{ matrix.shard }}/${{ matrix.shardTotal }}
+          else
+            DEBUG=pw:browser npx playwright test --shard=${{ matrix.shard }}/${{ matrix.shardTotal }}
+          fi
       - name: Record shard metadata
         if: ${{ !cancelled() }}
         run: |

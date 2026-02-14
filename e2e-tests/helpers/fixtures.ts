@@ -107,6 +107,9 @@ export const test = base.extend<{
           `--user-data-dir=${userDataDir}`,
         ],
         executablePath: appInfo.executable,
+        ...(os.platform() === "linux"
+          ? ["--no-sandbox", "--disable-setuid-sandbox"]
+          : []),
         // Strong suspicion this is causing issues on Windows with tests hanging due to error:
         // ffmpeg failed to write: Error [ERR_STREAM_WRITE_AFTER_END]: write after end
         // recordVideo: {
@@ -145,6 +148,9 @@ export const test = base.extend<{
       });
 
       await use(electronApp);
+
+      const pid = electronApp.process().pid;
+
       // Why are we doing a force kill on Windows?
       //
       // Otherwise, Playwright will just hang on the test cleanup
@@ -164,6 +170,8 @@ export const test = base.extend<{
             error,
           );
         }
+      } else if (os.platform() === "linux" && typeof pid !== "undefined") {
+        process.kill(-pid);
       } else {
         await electronApp.close();
       }
