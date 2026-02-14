@@ -266,6 +266,13 @@ jobs:
         run: tar -xvf out-macos.tar
       - name: Install Chromium browser for Playwright
         run: npx playwright install chromium --with-deps
+      - name: Debug Linux build
+        if: matrix.os.name == 'linux'
+        run: |
+          echo "Contents:"
+          ls -la out/dyad-linux-x64
+          echo "Executable check:"
+          stat out/dyad-linux-x64/dyad || true
       - name: E2E tests (Shard ${{ matrix.shard }}/${{ matrix.shardTotal }})
         env:
           FLAKINESS_ACCESS_TOKEN: ${{ secrets.FLAKINESS_ACCESS_TOKEN }}
