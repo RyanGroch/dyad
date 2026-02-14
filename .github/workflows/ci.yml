@@ -191,8 +191,8 @@ jobs:
             scaffold/
             testing/fake-llm-server/
           retention-days: 1
-      - name: Upload build artifacts (Windows)
-        if: contains(matrix.os.name, 'windows')
+      - name: Upload build artifacts (Windows & Linux)
+        if: contains(matrix.os.name, 'windows') || contains(matrix.os.name, 'linux')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-${{ matrix.os.name }}
