@@ -105,11 +105,11 @@ export const test = base.extend<{
           appInfo.main,
           "--enable-logging",
           `--user-data-dir=${userDataDir}`,
+          ...(os.platform() === "linux"
+            ? ["--no-sandbox", "--disable-setuid-sandbox"]
+            : []),
         ],
         executablePath: appInfo.executable,
-        ...(os.platform() === "linux"
-          ? ["--no-sandbox", "--disable-setuid-sandbox"]
-          : []),
         // Strong suspicion this is causing issues on Windows with tests hanging due to error:
         // ffmpeg failed to write: Error [ERR_STREAM_WRITE_AFTER_END]: write after end
         // recordVideo: {
