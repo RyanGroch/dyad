@@ -268,7 +268,7 @@ jobs:
         run: npx playwright install chromium --with-deps
       - name: Debug Linux build
         if: matrix.os.name == 'linux'
-        run:
+        run: |
           chmod +x out/dyad-linux-x64/chrome_crashpad_handler out/dyad-linux-x64/chrome-sandbox out/dyad-linux-x64/dyad out/dyad-linux-x64/libEGL.so out/dyad-linux-x64/libffmpeg.so out/dyad-linux-x64/libGLESv2.so out/dyad-linux-x64/libvk_swiftshader.so out/dyad-linux-x64/libvulkan.so.1
           echo "Contents:"
           ls -la out/dyad-linux-x64
