@@ -7,6 +7,7 @@ import {
   chatErrorByIdAtom,
 } from "@/atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
+import { applyChatResponseChunk } from "@/shared/applyChatResponseChunk";
 
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
@@ -98,39 +99,21 @@ export function usePlanImplementation() {
             selectedComponents: [],
           },
           {
-            onChunk: ({
-              messages: updatedMessages,
-              streamingMessageId,
-              streamingContent,
-            }) => {
+            onChunk: (chunk) => {
               if (!isMountedRef.current) return;
 
-              if (updatedMessages) {
-                // Full messages update (initial load, post-compaction, etc.)
-                setMessagesById((prev) => {
-                  const next = new Map(prev);
-                  next.set(chatId, updatedMessages);
-                  return next;
-                });
-              } else if (
-                streamingMessageId !== undefined &&
-                streamingContent !== undefined
-              ) {
-                // Incremental update: only update the streaming message's content
-                setMessagesById((prev) => {
-                  const existingMessages = prev.get(chatId);
-                  if (!existingMessages) return prev;
-
-                  const next = new Map(prev);
-                  const updated = existingMessages.map((msg) =>
-                    msg.id === streamingMessageId
-                      ? { ...msg, content: streamingContent }
-                      : msg,
-                  );
+              setMessagesById((prev) => {
+                const existingMessages = prev.get(chatId);
+                const updated = applyChatResponseChunk(existingMessages, chunk);
+                if (updated === existingMessages) return prev;
+                const next = new Map(prev);
+                if (updated) {
                   next.set(chatId, updated);
-                  return next;
-                });
-              }
+                } else {
+                  next.delete(chatId);
+                }
+                return next;
+              });
             },
             onEnd: () => {
               if (!isMountedRef.current) return;

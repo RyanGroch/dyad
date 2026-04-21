@@ -67,6 +67,7 @@ import { handleLocalAgentStream } from "../../pro/main/ipc/handlers/local_agent/
 
 import { safeSend } from "../utils/safe_sender";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
+import { firstDivergingIndex } from "../utils/streamingPatch";
 import { generateProblemReport } from "../processors/tsc";
 import { createProblemFixPrompt } from "@/shared/problem_prompt";
 import { AsyncVirtualFileSystem } from "../../../shared/VirtualFilesystem";
@@ -1121,6 +1122,7 @@ This conversation includes one or more image attachments. When the user uploads 
         };
 
         let lastDbSaveAt = 0;
+        let lastSentContent = "";
 
         const processResponseChunkUpdate = async ({
           fullResponse,
@@ -1140,13 +1142,23 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          // Send incremental update with only the streaming message content
-          // instead of the full messages array to reduce IPC overhead
+          // Send a positional patch describing only the bytes that changed
+          // since the last event. In the common append case, `offset` equals
+          // the renderer's current length and `content` is the new chunk.
+          // When `cleanFullResponse` retroactively edits earlier bytes (e.g.
+          // escaping `<`/`>` inside an attribute value once a tag closes),
+          // `offset` moves back to the first changed byte and `content`
+          // covers the rewritten tail.
+          const offset = firstDivergingIndex(lastSentContent, fullResponse);
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
-            streamingContent: fullResponse,
+            streamingPatch: {
+              offset,
+              content: fullResponse.slice(offset),
+            },
           });
+          lastSentContent = fullResponse;
           return fullResponse;
         };
 

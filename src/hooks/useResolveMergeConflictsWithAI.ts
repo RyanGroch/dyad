@@ -12,6 +12,7 @@ import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { showError } from "@/lib/toast";
 import { useChats } from "@/hooks/useChats";
 import { useLoadApp } from "@/hooks/useLoadApp";
+import { applyChatResponseChunk } from "@/shared/applyChatResponseChunk";
 
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
@@ -97,7 +98,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
           prompt,
         },
         {
-          onChunk: ({ messages, streamingMessageId, streamingContent }) => {
+          onChunk: (chunk) => {
             if (!hasIncrementedStreamCount) {
               setStreamCountById((prev) => {
                 const next = new Map(prev);
@@ -107,32 +108,18 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               hasIncrementedStreamCount = true;
             }
 
-            if (messages) {
-              // Full messages update (initial load, post-compaction, etc.)
-              setMessagesById((prev) => {
-                const next = new Map(prev);
-                next.set(newChatId, messages);
-                return next;
-              });
-            } else if (
-              streamingMessageId !== undefined &&
-              streamingContent !== undefined
-            ) {
-              // Incremental update: only update the streaming message's content
-              setMessagesById((prev) => {
-                const existingMessages = prev.get(newChatId);
-                if (!existingMessages) return prev;
-
-                const next = new Map(prev);
-                const updated = existingMessages.map((msg) =>
-                  msg.id === streamingMessageId
-                    ? { ...msg, content: streamingContent }
-                    : msg,
-                );
+            setMessagesById((prev) => {
+              const existingMessages = prev.get(newChatId);
+              const updated = applyChatResponseChunk(existingMessages, chunk);
+              if (updated === existingMessages) return prev;
+              const next = new Map(prev);
+              if (updated) {
                 next.set(newChatId, updated);
-                return next;
-              });
-            }
+              } else {
+                next.delete(newChatId);
+              }
+              return next;
+            });
           },
           onEnd: () => {
             setIsStreamingById((prev) => {

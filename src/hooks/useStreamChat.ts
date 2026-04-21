@@ -34,6 +34,7 @@ import { useSettings } from "./useSettings";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { applyCancellationNoticeToLastAssistantMessage } from "@/shared/chatCancellation";
+import { applyChatResponseChunk } from "@/shared/applyChatResponseChunk";
 
 export function getRandomNumberId() {
   return Math.floor(Math.random() * 1_000_000_000_000_000);
@@ -173,11 +174,7 @@ export function useStreamChat({
             selectedComponents: selectedComponents ?? [],
           },
           {
-            onChunk: ({
-              messages: updatedMessages,
-              streamingMessageId,
-              streamingContent,
-            }) => {
+            onChunk: (chunk) => {
               if (!hasIncrementedStreamCount) {
                 setStreamCountById((prev) => {
                   const next = new Map(prev);
@@ -187,32 +184,18 @@ export function useStreamChat({
                 hasIncrementedStreamCount = true;
               }
 
-              if (updatedMessages) {
-                // Full messages update (initial load, post-compaction, etc.)
-                setMessagesById((prev) => {
-                  const next = new Map(prev);
-                  next.set(chatId, updatedMessages);
-                  return next;
-                });
-              } else if (
-                streamingMessageId !== undefined &&
-                streamingContent !== undefined
-              ) {
-                // Incremental update: only update the streaming message's content
-                setMessagesById((prev) => {
-                  const existingMessages = prev.get(chatId);
-                  if (!existingMessages) return prev;
-
-                  const next = new Map(prev);
-                  const updated = existingMessages.map((msg) =>
-                    msg.id === streamingMessageId
-                      ? { ...msg, content: streamingContent }
-                      : msg,
-                  );
+              setMessagesById((prev) => {
+                const existingMessages = prev.get(chatId);
+                const updated = applyChatResponseChunk(existingMessages, chunk);
+                if (updated === existingMessages) return prev;
+                const next = new Map(prev);
+                if (updated) {
                   next.set(chatId, updated);
-                  return next;
-                });
-              }
+                } else {
+                  next.delete(chatId);
+                }
+                return next;
+              });
             },
             onEnd: (response: ChatResponseEnd) => {
               // Remove from pending set now that stream is complete

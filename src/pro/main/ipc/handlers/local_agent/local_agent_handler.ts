@@ -23,6 +23,7 @@ import { readSettings } from "@/main/settings";
 import { getDyadAppPath } from "@/paths/paths";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { safeSend } from "@/ipc/utils/safe_sender";
+import { firstDivergingIndex } from "@/ipc/utils/streamingPatch";
 import { getMaxTokens, getTemperature } from "@/ipc/utils/token_utils";
 import {
   getProviderOptions,
@@ -289,6 +290,9 @@ export async function handleLocalAgentStream(
     settings.maxToolCallSteps ?? DEFAULT_MAX_TOOL_CALL_STEPS;
   let fullResponse = "";
   let streamingPreview = ""; // Temporary preview for current tool, not persisted
+  // Tracks the content most recently sent to the renderer for this stream,
+  // used to compute minimal positional patches per chunk.
+  const patchState = { lastSent: "" };
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
@@ -395,6 +399,7 @@ export async function handleLocalAgentStream(
           previewContent,
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
+          patchState,
           true, // Full messages: compaction changes message list
         );
       },
@@ -446,6 +451,7 @@ export async function handleLocalAgentStream(
         fullResponse + streamingPreview,
         placeholderMessageId,
         hiddenMessageIdsForStreaming,
+        patchState,
         true, // Full messages: post-compaction refresh
       );
     }
@@ -518,6 +524,7 @@ export async function handleLocalAgentStream(
           fullResponse + streamingPreview,
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
+          patchState,
         );
       },
       onXmlComplete: (finalXml: string) => {
@@ -533,6 +540,7 @@ export async function handleLocalAgentStream(
           fullResponse,
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
+          patchState,
         );
       },
       requireConsent: async (params: {
@@ -985,6 +993,7 @@ export async function handleLocalAgentStream(
                   fullResponse,
                   placeholderMessageId,
                   hiddenMessageIdsForStreaming,
+                  patchState,
                 );
               }
             }
@@ -1209,6 +1218,7 @@ export async function handleLocalAgentStream(
         fullResponse,
         placeholderMessageId,
         hiddenMessageIdsForStreaming,
+        patchState,
       );
     }
 
@@ -1416,7 +1426,8 @@ function sendResponseChunk(
   chat: any,
   fullResponse: string,
   placeholderMessageId: number,
-  hiddenMessageIds?: Set<number>,
+  hiddenMessageIds: Set<number> | undefined,
+  patchState: { lastSent: string },
   /** When true, sends the full messages array instead of an incremental update */
   sendFullMessages?: boolean,
 ) {
@@ -1435,14 +1446,22 @@ function sendResponseChunk(
       messages: currentMessages,
     });
   } else {
-    // Send incremental update with only the streaming message content
-    // to reduce IPC overhead during high-frequency streaming
+    // Send a positional patch describing only the bytes that changed
+    // relative to the last content sent for this stream. `offset` equals
+    // the renderer's current length in the common append case; the tool
+    // XML preview paths may replace a trailing region, in which case
+    // `offset` moves back to the first changed byte.
+    const offset = firstDivergingIndex(patchState.lastSent, fullResponse);
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,
-      streamingContent: fullResponse,
+      streamingPatch: {
+        offset,
+        content: fullResponse.slice(offset),
+      },
     });
   }
+  patchState.lastSent = fullResponse;
 }
 
 function getPlanningQuestionnaireErrorFromStep(step: {

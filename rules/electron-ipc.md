@@ -115,12 +115,17 @@ When an IPC event can fire at very high frequency (e.g., stdout/stderr from chil
 
 ## Streaming chunk optimizations
 
-The `chat:response:chunk` event supports two modes:
+The `chat:response:chunk` event supports three modes, chosen per event by the sender:
 
-1. **Full update** — `messages` field contains the complete messages array. Used for initial message load, post-compaction refresh, and lazy-edit completions.
-2. **Incremental update** — `streamingMessageId` + `streamingContent` fields update only the actively streaming message's content. Used for high-frequency text-delta streaming to avoid serializing the full messages array on every chunk.
+1. **Full messages update** — `messages` field contains the complete messages array. Used for initial message load, post-compaction refresh, lazy-edit completions, and any point where the sender needs to reshape the full messages list.
+2. **Streaming snapshot** — `streamingMessageId` + `streamingContent` replace the entire content of one in-flight message. Used to establish or resync a renderer's baseline in a single event.
+3. **Streaming patch** — `streamingMessageId` + `streamingPatch: { offset, content }` apply a positional splice to one in-flight message. The renderer produces the new content via `current.slice(0, offset) + content`. This is the preferred shape for per-text-delta streaming, because each event carries only the bytes that changed rather than the full accumulated response — bounding IPC payload size under renderer backpressure.
 
-When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) must handle both modes.
+To emit patches, the sender tracks the most recently sent content per stream and computes `offset` as the first index at which the new content diverges from that record. In the common append case `offset` equals the previous length. When post-processing (e.g. `cleanFullResponse`) retroactively edits earlier bytes once a tag closes, `offset` moves back to the first changed byte and `content` covers the rewritten tail. See `firstDivergingIndex` in `src/ipc/utils/streamingPatch.ts`.
+
+Patches are relative to the renderer's current content for the target message. Any new consumer that subscribes to an in-flight stream must establish a baseline before applying patches — e.g. by reading from `chatMessagesByIdAtom` populated by earlier events, or by fetching from the database / a snapshot endpoint.
+
+When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) route events through `applyChatResponseChunk` in `src/shared/applyChatResponseChunk.ts`, which handles all three modes.
 
 **Zod schema contract changes:** Making a field optional (e.g., `messages` → `messages.optional()`) causes TypeScript errors in all consumers that assume the field is always present. Search for all destructuring/usage sites and add guards before committing.
 
