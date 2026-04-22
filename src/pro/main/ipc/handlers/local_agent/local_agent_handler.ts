@@ -87,6 +87,12 @@ import {
 import { getPostCompactionMessages } from "@/ipc/handlers/compaction/compaction_utils";
 import { DEFAULT_MAX_TOOL_CALL_STEPS } from "@/constants/settings_constants";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+// TEMP: memory profiling for OOM investigation
+import {
+  startMemoryMonitor,
+  approxJsonSize,
+} from "@/ipc/utils/memoryProfiler";
+import { getCodebaseCacheStats } from "@/utils/codebase";
 import {
   type RetryReplayEvent,
   maybeCaptureRetryReplayEvent,
@@ -474,6 +480,44 @@ export async function handleLocalAgentStream(
   const pendingUserMessages: UserMessageContentPart[][] = [];
   // Store injected messages with their insertion index to re-inject at the same spot each step
   const allInjectedMessages: InjectedMessage[] = [];
+
+  // TEMP: memory profiling. Holder updated by the streaming loop so the
+  // profiler's getExtra closure can observe live sizes.
+  const memProbes: {
+    fullResponseLen: number;
+    streamingPreviewLen: number;
+    currentMessageHistoryLen: number;
+    accumulatedAiMessagesLen: number;
+    retryReplayEventsLen: number;
+    totalStepsExecuted: number;
+    passCount: number;
+  } = {
+    fullResponseLen: 0,
+    streamingPreviewLen: 0,
+    currentMessageHistoryLen: 0,
+    accumulatedAiMessagesLen: 0,
+    retryReplayEventsLen: 0,
+    totalStepsExecuted: 0,
+    passCount: 0,
+  };
+  const memMonitor = startMemoryMonitor(`local-agent-chat-${req.chatId}`, {
+    intervalMs: 5000,
+    getExtra: () => {
+      const caches = getCodebaseCacheStats();
+      return {
+        fullResponseLen: memProbes.fullResponseLen,
+        previewLen: memProbes.streamingPreviewLen,
+        historyLen: memProbes.currentMessageHistoryLen,
+        accumulatedLen: memProbes.accumulatedAiMessagesLen,
+        retryReplayLen: memProbes.retryReplayEventsLen,
+        steps: memProbes.totalStepsExecuted,
+        pass: memProbes.passCount,
+        fileCacheEntries: caches.fileContentCacheEntries,
+        fileCacheMB: (caches.fileContentCacheBytes / 1024 / 1024).toFixed(1),
+        gitIgnoreEntries: caches.gitIgnoreCacheEntries,
+      };
+    },
+  });
 
   try {
     // Get model client
@@ -985,6 +1029,10 @@ export async function handleLocalAgentStream(
 
               if (chunk) {
                 fullResponse += chunk;
+                // TEMP: probe
+                memProbes.fullResponseLen = fullResponse.length;
+                memProbes.streamingPreviewLen = streamingPreview.length;
+                memProbes.retryReplayEventsLen = retryReplayEvents.length;
                 await updateResponseInDb(placeholderMessageId, fullResponse);
                 sendResponseChunk(
                   event,
@@ -1131,6 +1179,18 @@ export async function handleLocalAgentStream(
 
       // Track total steps for step limit detection
       totalStepsExecuted += steps.length;
+      // TEMP: probe + tick so we get a datapoint per pass boundary
+      memProbes.totalStepsExecuted = totalStepsExecuted;
+      memProbes.passCount += 1;
+      memProbes.currentMessageHistoryLen = currentMessageHistory.length;
+      memProbes.accumulatedAiMessagesLen = accumulatedAiMessages.length;
+      memMonitor.tick({
+        phase: "pass-boundary",
+        stepsThisPass: steps.length,
+        responseMessagesLen: responseMessages.length,
+        historyJsonBytes: approxJsonSize(currentMessageHistory),
+        accumulatedJsonBytes: approxJsonSize(accumulatedAiMessages),
+      });
 
       if (responseMessages.length > 0) {
         // For mid-turn compaction, slice off pre-compaction messages
@@ -1301,6 +1361,17 @@ export async function handleLocalAgentStream(
       error: `Error: ${getErrorMessage(error)}`,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // TEMP: memory profiling
+    try {
+      memMonitor.tick({
+        phase: "finally",
+        fullResponseBytes: approxJsonSize(fullResponse),
+      });
+    } catch {
+      // ignore
+    }
+    memMonitor.stop();
   }
 }
 

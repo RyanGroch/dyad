@@ -119,6 +119,20 @@ const gitIgnoreCache = new Map<string, boolean>();
 // Map to store .gitignore file paths and their modification times
 const gitIgnoreMtimes = new Map<string, number>();
 
+// TEMP: probes for memory profiler. Remove with the profiler.
+export function getCodebaseCacheStats() {
+  let fileContentBytes = 0;
+  for (const entry of fileContentCache.values()) {
+    fileContentBytes += entry.content.length;
+  }
+  return {
+    fileContentCacheEntries: fileContentCache.size,
+    fileContentCacheBytes: fileContentBytes,
+    gitIgnoreCacheEntries: gitIgnoreCache.size,
+    gitIgnoreMtimesEntries: gitIgnoreMtimes.size,
+  };
+}
+
 /**
  * Check if a path should be ignored based on git ignore rules. Uses isomorphic-git
  */

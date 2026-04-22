@@ -66,8 +66,10 @@ import { requireMcpToolConsent } from "../utils/mcp_consent";
 import { handleLocalAgentStream } from "../../pro/main/ipc/handlers/local_agent/local_agent_handler";
 
 import { safeSend } from "../utils/safe_sender";
-import { cleanFullResponse } from "../utils/cleanFullResponse";
-import { firstDivergingIndex } from "../utils/streamingPatch";
+// TEMP: memory profiling for OOM investigation
+import { startMemoryMonitor } from "../utils/memoryProfiler";
+import { getCodebaseCacheStats } from "../../utils/codebase";
+import { StreamingBuffer } from "../utils/streamingBuffer";
 import { generateProblemReport } from "../processors/tsc";
 import { createProblemFixPrompt } from "@/shared/problem_prompt";
 import { AsyncVirtualFileSystem } from "../../../shared/VirtualFilesystem";
@@ -125,7 +127,7 @@ const logger = log.scope("chat_stream_handlers");
 const activeStreams = new Map<number, AbortController>();
 
 // Track partial responses for cancelled streams
-const partialResponses = new Map<number, string>();
+const partialResponses = new Map<number, StreamingBuffer>();
 
 // Common helper functions
 const TEXT_FILE_EXTENSIONS = [
@@ -166,20 +168,16 @@ function parseMcpToolKey(toolKey: string): {
 // Helper function to process stream chunks
 async function processStreamChunks({
   fullStream,
-  fullResponse,
   abortController,
   chatId,
   processResponseChunkUpdate,
 }: {
   fullStream: AsyncIterableStream<TextStreamPart<ToolSet>>;
-  fullResponse: string;
   abortController: AbortController;
   chatId: number;
-  processResponseChunkUpdate: (params: {
-    fullResponse: string;
-  }) => Promise<string>;
-}): Promise<{ fullResponse: string; incrementalResponse: string }> {
-  let incrementalResponse = "";
+  processResponseChunkUpdate: (chunk: string) => Promise<void>;
+}): Promise<{ incrementalResponse: string }> {
+  const incrementalChunks: string[] = [];
   let inThinkingBlock = false;
 
   for await (const part of fullStream) {
@@ -216,12 +214,8 @@ async function processStreamChunks({
       continue;
     }
 
-    fullResponse += chunk;
-    incrementalResponse += chunk;
-    fullResponse = cleanFullResponse(fullResponse);
-    fullResponse = await processResponseChunkUpdate({
-      fullResponse,
-    });
+    incrementalChunks.push(chunk);
+    await processResponseChunkUpdate(chunk);
 
     // If the stream was aborted, exit early
     if (abortController.signal.aborted) {
@@ -230,12 +224,24 @@ async function processStreamChunks({
     }
   }
 
-  return { fullResponse, incrementalResponse };
+  return { incrementalResponse: incrementalChunks.join("") };
 }
 
 export function registerChatStreamHandlers() {
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    // TEMP: memory profiling for OOM investigation
+    const memMonitor = startMemoryMonitor(`chat-stream-${req.chatId}`, {
+      intervalMs: 5000,
+      getExtra: () => {
+        const caches = getCodebaseCacheStats();
+        return {
+          fileCacheEntries: caches.fileContentCacheEntries,
+          fileCacheMB: (caches.fileContentCacheBytes / 1024 / 1024).toFixed(1),
+          gitIgnoreEntries: caches.gitIgnoreCacheEntries,
+        };
+      },
+    });
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -582,7 +588,7 @@ ${componentSnippet}
         messages: updatedChat.messages,
       });
 
-      let fullResponse = "";
+      const fullResponseBuf = new StreamingBuffer();
       let maxTokensUsed: number | undefined;
 
       // Check if this is a test prompt
@@ -590,13 +596,14 @@ ${componentSnippet}
 
       if (testResponse) {
         // For test prompts, use the dedicated function
-        fullResponse = await streamTestResponse(
+        const testResponseText = await streamTestResponse(
           event,
           req.chatId,
           testResponse,
           abortController,
           updatedChat,
         );
+        fullResponseBuf.seed(testResponseText);
       } else {
         // Normal AI processing for non-test prompts
         const { modelClient, isEngineEnabled, isSmartContextEnabled } =
@@ -1122,44 +1129,35 @@ This conversation includes one or more image attachments. When the user uploads 
         };
 
         let lastDbSaveAt = 0;
-        let lastSentContent = "";
 
-        const processResponseChunkUpdate = async ({
-          fullResponse,
-        }: {
-          fullResponse: string;
-        }) => {
-          // Store the current partial response
-          partialResponses.set(req.chatId, fullResponse);
+        // Appends `chunk` into the streaming buffer, emits a positional patch
+        // to the renderer, and (throttled) persists the current buffer to the
+        // DB. The patch `offset` is the buffer's pre-commit finalized length
+        // and `content` is the cleaned pendingTail. In the common append case
+        // this looks like a normal append from the renderer's point of view;
+        // when `cleanFullResponse` retroactively rewrites the tail (e.g.
+        // escaping `<`/`>` inside an attribute value once the opening tag
+        // closes), the same `offset` still points to the start of the
+        // mutable region and the renderer replaces its tail wholesale.
+        const processResponseChunkUpdate = async (chunk: string) => {
+          const patch = fullResponseBuf.processChunk(chunk);
+          partialResponses.set(req.chatId, fullResponseBuf);
           // Save to DB (in case user is switching chats during the stream)
           const now = Date.now();
           if (now - lastDbSaveAt >= 150) {
             await db
               .update(messages)
-              .set({ content: fullResponse })
+              .set({ content: fullResponseBuf.toString() })
               .where(eq(messages.id, placeholderAssistantMessage.id));
 
             lastDbSaveAt = now;
           }
 
-          // Send a positional patch describing only the bytes that changed
-          // since the last event. In the common append case, `offset` equals
-          // the renderer's current length and `content` is the new chunk.
-          // When `cleanFullResponse` retroactively edits earlier bytes (e.g.
-          // escaping `<`/`>` inside an attribute value once a tag closes),
-          // `offset` moves back to the first changed byte and `content`
-          // covers the rewritten tail.
-          const offset = firstDivergingIndex(lastSentContent, fullResponse);
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: {
-              offset,
-              content: fullResponse.slice(offset),
-            },
+            streamingPatch: patch,
           });
-          lastSentContent = fullResponse;
-          return fullResponse;
         };
 
         // Handle ask mode: use local-agent in read-only mode
@@ -1319,17 +1317,15 @@ This conversation includes one or more image attachments. When the user uploads 
               dyadDisableFiles: true,
             });
 
-            const result = await processStreamChunks({
+            await processStreamChunks({
               fullStream,
-              fullResponse,
               abortController,
               chatId: req.chatId,
               processResponseChunkUpdate,
             });
-            fullResponse = result.fullResponse;
             chatMessages.push({
               role: "assistant",
-              content: fullResponse,
+              content: fullResponseBuf.toString(),
             });
             chatMessages.push({
               role: "user",
@@ -1347,21 +1343,19 @@ This conversation includes one or more image attachments. When the user uploads 
 
         // Process the stream as before
         try {
-          const result = await processStreamChunks({
+          await processStreamChunks({
             fullStream,
-            fullResponse,
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
           });
-          fullResponse = result.fullResponse;
 
           if (
             settings.selectedChatMode !== "ask" &&
             isTurboEditsV2Enabled(settings)
           ) {
             let issues = await dryRunSearchReplace({
-              fullResponse,
+              fullResponse: fullResponseBuf.toString(),
               appPath: getDyadAppPath(updatedChat.app.path),
             });
             sendTelemetryEvent("search_replace:fix", {
@@ -1375,7 +1369,7 @@ This conversation includes one or more image attachments. When the user uploads 
             });
 
             let searchReplaceFixAttempts = 0;
-            const originalFullResponse = fullResponse;
+            const originalFullResponse = fullResponseBuf.toString();
             const previousAttempts: ModelMessage[] = [];
             while (
               issues.length > 0 &&
@@ -1391,10 +1385,9 @@ This conversation includes one or more image attachments. When the user uploads 
                 })
                 .join("\n\n");
 
-              fullResponse += `<dyad-output type="warning" message="Could not apply Turbo Edits properly for some of the files; re-generating code...">${formattedSearchReplaceIssues}</dyad-output>`;
-              await processResponseChunkUpdate({
-                fullResponse,
-              });
+              await processResponseChunkUpdate(
+                `<dyad-output type="warning" message="Could not apply Turbo Edits properly for some of the files; re-generating code...">${formattedSearchReplaceIssues}</dyad-output>`,
+              );
 
               logger.info(
                 `Attempting to fix search-replace issues, attempt #${searchReplaceFixAttempts + 1}`,
@@ -1427,12 +1420,10 @@ ${formattedSearchReplaceIssues}`,
               previousAttempts.push(userPrompt);
               const result = await processStreamChunks({
                 fullStream: fixSearchReplaceStream,
-                fullResponse,
                 abortController,
                 chatId: req.chatId,
                 processResponseChunkUpdate,
               });
-              fullResponse = result.fullResponse;
               previousAttempts.push({
                 role: "assistant",
                 content: removeNonEssentialTags(result.incrementalResponse),
@@ -1459,11 +1450,11 @@ ${formattedSearchReplaceIssues}`,
           if (
             !abortController.signal.aborted &&
             settings.selectedChatMode !== "ask" &&
-            hasUnclosedDyadWrite(fullResponse)
+            hasUnclosedDyadWrite(fullResponseBuf.toString())
           ) {
             let continuationAttempts = 0;
             while (
-              hasUnclosedDyadWrite(fullResponse) &&
+              hasUnclosedDyadWrite(fullResponseBuf.toString()) &&
               continuationAttempts < 2 &&
               !abortController.signal.aborted
             ) {
@@ -1478,7 +1469,7 @@ ${formattedSearchReplaceIssues}`,
                   ...chatMessages,
                   {
                     role: "assistant",
-                    content: fullResponse,
+                    content: fullResponseBuf.toString(),
                   },
                   {
                     role: "user",
@@ -1496,15 +1487,13 @@ ${formattedSearchReplaceIssues}`,
                   break;
                 }
                 if (part.type !== "text-delta") continue; // ignore reasoning for continuation
-                fullResponse += part.text;
-                fullResponse = cleanFullResponse(fullResponse);
-                fullResponse = await processResponseChunkUpdate({
-                  fullResponse,
-                });
+                await processResponseChunkUpdate(part.text);
               }
             }
           }
-          const addDependencies = getDyadAddDependencyTags(fullResponse);
+          const addDependencies = getDyadAddDependencyTags(
+            fullResponseBuf.toString(),
+          );
           if (
             !abortController.signal.aborted &&
             // If there are dependencies, we don't want to auto-fix problems
@@ -1517,26 +1506,28 @@ ${formattedSearchReplaceIssues}`,
             try {
               // IF auto-fix is enabled
               let problemReport = await generateProblemReport({
-                fullResponse,
+                fullResponse: fullResponseBuf.toString(),
                 appPath: getDyadAppPath(updatedChat.app.path),
               });
 
               let autoFixAttempts = 0;
-              const originalFullResponse = fullResponse;
+              const originalFullResponse = fullResponseBuf.toString();
               const previousAttempts: ModelMessage[] = [];
               while (
                 problemReport.problems.length > 0 &&
                 autoFixAttempts < 2 &&
                 !abortController.signal.aborted
               ) {
-                fullResponse += `<dyad-problem-report summary="${problemReport.problems.length} problems">
+                await processResponseChunkUpdate(
+                  `<dyad-problem-report summary="${problemReport.problems.length} problems">
 ${problemReport.problems
   .map(
     (problem) =>
       `<problem file="${escapeXmlAttr(problem.file)}" line="${problem.line}" column="${problem.column}" code="${problem.code}">${escapeXmlContent(problem.message)}</problem>`,
   )
   .join("\n")}
-</dyad-problem-report>`;
+</dyad-problem-report>`,
+                );
 
                 logger.info(
                   `Attempting to auto-fix problems, attempt #${autoFixAttempts + 1}`,
@@ -1551,9 +1542,10 @@ ${problemReport.problems
                     readFile: (fileName: string) => readFileWithCache(fileName),
                   },
                 );
-                const writeTags = getDyadWriteTags(fullResponse);
-                const renameTags = getDyadRenameTags(fullResponse);
-                const deletePaths = getDyadDeleteTags(fullResponse);
+                const joinedFullResponse = fullResponseBuf.toString();
+                const writeTags = getDyadWriteTags(joinedFullResponse);
+                const renameTags = getDyadRenameTags(joinedFullResponse);
+                const deletePaths = getDyadDeleteTags(joinedFullResponse);
                 virtualFileSystem.applyResponseChanges({
                   deletePaths,
                   renameTags,
@@ -1603,19 +1595,17 @@ ${problemReport.problems
                 });
                 const result = await processStreamChunks({
                   fullStream,
-                  fullResponse,
                   abortController,
                   chatId: req.chatId,
                   processResponseChunkUpdate,
                 });
-                fullResponse = result.fullResponse;
                 previousAttempts.push({
                   role: "assistant",
                   content: removeNonEssentialTags(result.incrementalResponse),
                 });
 
                 problemReport = await generateProblemReport({
-                  fullResponse,
+                  fullResponse: fullResponseBuf.toString(),
                   appPath: getDyadAppPath(updatedChat.app.path),
                 });
               }
@@ -1631,7 +1621,8 @@ ${problemReport.problems
           // Check if this was an abort error
           if (abortController.signal.aborted) {
             const chatId = req.chatId;
-            const partialResponse = partialResponses.get(req.chatId) ?? "";
+            const partialResponse =
+              partialResponses.get(req.chatId)?.toString() ?? "";
             try {
               // Update the placeholder assistant message with the partial content and cancellation note
               await db
@@ -1660,7 +1651,8 @@ ${problemReport.problems
       // If the stream was aborted but didn't throw (e.g. stream ended gracefully),
       // save the cancellation notice to the placeholder message.
       if (abortController.signal.aborted) {
-        const partialResponse = partialResponses.get(req.chatId) ?? "";
+        const partialResponse =
+          partialResponses.get(req.chatId)?.toString() ?? "";
         try {
           await db
             .update(messages)
@@ -1678,9 +1670,10 @@ ${problemReport.problems
       }
 
       // Only save the response and process it if we weren't aborted
-      if (!abortController.signal.aborted && fullResponse) {
+      if (!abortController.signal.aborted && !fullResponseBuf.isEmpty()) {
+        const fullResponseStr = fullResponseBuf.toString();
         // Scrape from: <dyad-chat-summary>Renaming profile file</dyad-chat-title>
-        const chatTitle = fullResponse.match(
+        const chatTitle = fullResponseStr.match(
           /<dyad-chat-summary>(.*?)<\/dyad-chat-summary>/,
         );
         if (chatTitle) {
@@ -1694,7 +1687,7 @@ ${problemReport.problems
         // Update the placeholder assistant message with the full response
         await db
           .update(messages)
-          .set({ content: fullResponse })
+          .set({ content: fullResponseStr })
           .where(eq(messages.id, placeholderAssistantMessage.id));
         const settings = readSettings();
         if (
@@ -1702,7 +1695,7 @@ ${problemReport.problems
           settings.selectedChatMode !== "ask"
         ) {
           const status = await processFullResponseActions(
-            fullResponse,
+            fullResponseStr,
             req.chatId,
             {
               chatSummary,
@@ -1764,6 +1757,9 @@ ${problemReport.problems
 
       // Notify renderer that stream has ended
       safeSend(event.sender, "chat:stream:end", { chatId: req.chatId });
+
+      // TEMP: memory profiling
+      memMonitor.stop();
     }
   });
 
