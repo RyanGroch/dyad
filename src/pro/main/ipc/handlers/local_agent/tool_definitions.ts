@@ -20,7 +20,6 @@ import { getSupabaseTableSchemaTool } from "./tools/get_supabase_table_schema";
 import { setChatSummaryTool } from "./tools/set_chat_summary";
 import { addIntegrationTool } from "./tools/add_integration";
 import { readLogsTool } from "./tools/read_logs";
-import { editFileTool } from "./tools/edit_file";
 import { searchReplaceTool } from "./tools/search_replace";
 import { webSearchTool } from "./tools/web_search";
 import { webCrawlTool } from "./tools/web_crawl";
@@ -49,7 +48,6 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 // Combined tool definitions array
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   writeFileTool,
-  editFileTool,
   searchReplaceTool,
   copyFileTool,
   deleteFileTool,
