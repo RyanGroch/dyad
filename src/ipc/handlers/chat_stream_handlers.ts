@@ -69,7 +69,7 @@ import { safeSend } from "../utils/safe_sender";
 // TEMP: memory profiling for OOM investigation
 import { startMemoryMonitor } from "../utils/memoryProfiler";
 import { getCodebaseCacheStats } from "../../utils/codebase";
-import { StreamingBuffer } from "../utils/streamingBuffer";
+import { StreamingBuffer, StreamingPatch } from "../utils/streamingBuffer";
 import { generateProblemReport } from "../processors/tsc";
 import { createProblemFixPrompt } from "@/shared/problem_prompt";
 import { AsyncVirtualFileSystem } from "../../../shared/VirtualFilesystem";
@@ -1202,16 +1202,58 @@ This conversation includes one or more image attachments. When the user uploads 
         };
 
         let lastDbSaveAt = 0;
+        let lastIpcSentAt = 0;
+        let pendingIpcPatch: StreamingPatch | null = null;
+        let trailingIpcTimer: NodeJS.Timeout | null = null;
+        const IPC_THROTTLE_MS = 100;
+
+        // Merges `patch` into `pendingIpcPatch` such that applying the merged
+        // patch to the renderer state has the same effect as applying every
+        // intermediate patch in order. Required because each patch may
+        // retroactively rewrite the rewritable tail (cleanFullResponse) and
+        // successive patches' `offset` values advance past chars that were
+        // only described by the dropped intermediate patches — without this
+        // coalescing, sending only the latest patch would leave a hole in
+        // the renderer's view (truncated prefix, missing `</think>`, etc.).
+        const coalesceIpcPatch = (patch: StreamingPatch) => {
+          if (pendingIpcPatch === null) {
+            pendingIpcPatch = { offset: patch.offset, content: patch.content };
+            return;
+          }
+          const sliceAt = patch.offset - pendingIpcPatch.offset;
+          pendingIpcPatch = {
+            offset: pendingIpcPatch.offset,
+            content:
+              pendingIpcPatch.content.slice(0, sliceAt) + patch.content,
+          };
+        };
+
+        const sendStreamingPatch = () => {
+          if (!pendingIpcPatch) return;
+          safeSend(event.sender, "chat:response:chunk", {
+            chatId: req.chatId,
+            streamingMessageId: placeholderAssistantMessage.id,
+            streamingPatch: pendingIpcPatch,
+          });
+          lastIpcSentAt = Date.now();
+          pendingIpcPatch = null;
+          if (trailingIpcTimer) {
+            clearTimeout(trailingIpcTimer);
+            trailingIpcTimer = null;
+          }
+        };
 
         // Appends `chunk` into the streaming buffer, emits a positional patch
-        // to the renderer, and (throttled) persists the current buffer to the
-        // DB. The patch `offset` is the buffer's pre-commit finalized length
-        // and `content` is the cleaned pendingTail. In the common append case
-        // this looks like a normal append from the renderer's point of view;
-        // when `cleanFullResponse` retroactively rewrites the tail (e.g.
-        // escaping `<`/`>` inside an attribute value once the opening tag
-        // closes), the same `offset` still points to the start of the
-        // mutable region and the renderer replaces its tail wholesale.
+        // to the renderer (throttled to IPC_THROTTLE_MS to keep the renderer
+        // from re-parsing/re-highlighting the full message every few ms), and
+        // (throttled) persists the current buffer to the DB. The patch
+        // `offset` is the buffer's pre-commit finalized length and `content`
+        // is the cleaned pendingTail. In the common append case this looks
+        // like a normal append from the renderer's point of view; when
+        // `cleanFullResponse` retroactively rewrites the tail (e.g. escaping
+        // `<`/`>` inside an attribute value once the opening tag closes),
+        // the same `offset` still points to the start of the mutable region
+        // and the renderer replaces its tail wholesale.
         const processResponseChunkUpdate = async (chunk: string) => {
           const patch = fullResponseBuf.processChunk(chunk);
           partialResponses.set(req.chatId, fullResponseBuf);
@@ -1229,11 +1271,19 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
-          });
+          coalesceIpcPatch(patch);
+          const sinceLast = now - lastIpcSentAt;
+          if (sinceLast >= IPC_THROTTLE_MS) {
+            sendStreamingPatch();
+          } else if (!trailingIpcTimer) {
+            trailingIpcTimer = setTimeout(
+              () => {
+                trailingIpcTimer = null;
+                sendStreamingPatch();
+              },
+              IPC_THROTTLE_MS - sinceLast,
+            );
+          }
         };
 
         // Handle ask mode: use local-agent in read-only mode
