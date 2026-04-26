@@ -110,14 +110,6 @@ type ContentPiece =
       _end: number;
     };
 
-// Style for piece wrappers. `content-visibility: auto` lets the browser skip
-// style/layout/paint for off-screen pieces; `contain-intrinsic-size` reserves
-// estimated space so off-screen pieces don't collapse the scroll height.
-const pieceWrapperStyle: React.CSSProperties = {
-  contentVisibility: "auto",
-  containIntrinsicSize: "auto 200px",
-};
-
 const customLink = ({
   node: _node,
   ...props
@@ -192,7 +184,38 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
       const reusedEnd = reused.length ? reused[reused.length - 1]._end : 0;
       const tail = contentToParse.slice(reusedEnd);
       const tailResult = parseCustomTags(tail, reusedEnd);
-      const merged = reused.concat(tailResult.pieces);
+      // If the boundary lands between two markdown pieces (e.g. a sentence
+      // that spans the cache cut), merge them so ReactMarkdown sees a
+      // single document. Otherwise each fragment renders as its own `<p>`
+      // block and content like a trailing period flows onto the next line.
+      const merged = reused;
+      const tailPieces = tailResult.pieces;
+      let tailStart = 0;
+      if (
+        merged.length > 0 &&
+        tailPieces.length > 0 &&
+        merged[merged.length - 1].type === "markdown" &&
+        tailPieces[0].type === "markdown"
+      ) {
+        const last = merged[merged.length - 1] as Extract<
+          ContentPiece,
+          { type: "markdown" }
+        >;
+        const first = tailPieces[0] as Extract<
+          ContentPiece,
+          { type: "markdown" }
+        >;
+        merged[merged.length - 1] = {
+          type: "markdown",
+          content: last.content + first.content,
+          _start: last._start,
+          _end: first._end,
+        };
+        tailStart = 1;
+      }
+      for (let i = tailStart; i < tailPieces.length; i++) {
+        merged.push(tailPieces[i]);
+      }
       parseCacheRef.current = {
         content: contentToParse,
         pieces: merged,
@@ -241,11 +264,9 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     <>
       {contentPieces.map((piece, index) => (
         <React.Fragment key={index}>
-          <div style={pieceWrapperStyle}>
-            {piece.type === "markdown"
-              ? piece.content && <MemoMarkdown content={piece.content} />
-              : <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />}
-          </div>
+          {piece.type === "markdown"
+            ? piece.content && <MemoMarkdown content={piece.content} />
+            : <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />}
           {index === lastErrorIndex &&
             errorCount > 1 &&
             !isStreaming &&
@@ -461,16 +482,28 @@ function parseCustomTags(
   }
 
   // Compute leftmost in-progress opening position (in source coordinates).
-  let leftmostInProgress = content.length;
+  let safeBoundary = content.length;
   for (const set of inProgressTags.values()) {
     for (const idx of set) {
-      if (idx < leftmostInProgress) leftmostInProgress = idx;
+      if (idx < safeBoundary) safeBoundary = idx;
     }
+  }
+
+  // `preprocessUnclosedTags` only matches openings with a closing `>` —
+  // a half-typed opening like `<dyad-write path="foo` (no `>` yet) is
+  // invisible to it. If we don't lower the safe boundary to that
+  // position, the next chunk's incremental parse will treat the partial
+  // opening as already-finalized markdown and never reclassify it as a
+  // tag once `>` arrives. Conservatively, any unmatched `<` (no `>`
+  // after it in this content) caps the safe boundary at its position.
+  const lastLT = content.lastIndexOf("<");
+  if (lastLT !== -1 && content.indexOf(">", lastLT) === -1) {
+    if (lastLT < safeBoundary) safeBoundary = lastLT;
   }
 
   return {
     pieces: contentPieces,
-    safeBoundary: baseOffset + leftmostInProgress,
+    safeBoundary: baseOffset + safeBoundary,
   };
 }
 

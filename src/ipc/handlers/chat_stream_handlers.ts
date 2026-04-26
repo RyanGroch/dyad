@@ -621,6 +621,11 @@ ${componentSnippet}
       });
 
       const fullResponseBuf = new StreamingBuffer();
+      // Hoisted so the post-stream cleanup (further down in the same
+      // handler scope) can clear any pending throttled IPC patch before
+      // sending the final messages-replacement.
+      let pendingIpcPatch: StreamingPatch | null = null;
+      let trailingIpcTimer: NodeJS.Timeout | null = null;
       let maxTokensUsed: number | undefined;
 
       // Check if this is a test prompt
@@ -1203,8 +1208,6 @@ This conversation includes one or more image attachments. When the user uploads 
 
         let lastDbSaveAt = 0;
         let lastIpcSentAt = 0;
-        let pendingIpcPatch: StreamingPatch | null = null;
-        let trailingIpcTimer: NodeJS.Timeout | null = null;
         const IPC_THROTTLE_MS = 100;
 
         // Merges `patch` into `pendingIpcPatch` such that applying the merged
@@ -1833,6 +1836,18 @@ ${problemReport.problems
 
       // Only save the response and process it if we weren't aborted
       if (!abortController.signal.aborted && !fullResponseBuf.isEmpty()) {
+        // Cancel any pending throttled IPC patch. The trailing timer may
+        // still be scheduled with a stale `pendingIpcPatch` whose offset
+        // points before the final finalizedLength; if it fires after the
+        // messages-replacement below, the renderer would slice its full
+        // content back to that stale offset and re-append the old
+        // pendingTail, lopping off the last words of the response.
+        if (trailingIpcTimer) {
+          clearTimeout(trailingIpcTimer);
+          trailingIpcTimer = null;
+        }
+        pendingIpcPatch = null;
+
         // Promote any remaining pendingTail and flush so the persisted row
         // holds the entire response. We then read the full string back from
         // the DB (only place where the full response is materialized in
