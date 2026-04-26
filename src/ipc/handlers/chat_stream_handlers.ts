@@ -176,31 +176,14 @@ async function processStreamChunks({
   abortController,
   chatId,
   processResponseChunkUpdate,
-  cleanup,
 }: {
   fullStream: AsyncIterableStream<TextStreamPart<ToolSet>>;
   abortController: AbortController;
   chatId: number;
   processResponseChunkUpdate: (chunk: string) => Promise<void>;
-  // Optional teardown invoked after consumption ends (success, throw, or
-  // abort). Used to release the SDK's orphaned `baseStream` tee branch.
-  cleanup?: () => void | Promise<void>;
 }): Promise<void> {
   let inThinkingBlock = false;
 
-  try {
-    await runStream();
-  } finally {
-    if (cleanup) {
-      try {
-        await cleanup();
-      } catch {
-        // cleanup is best-effort; never let it mask the primary error
-      }
-    }
-  }
-
-  async function runStream() {
   for await (const part of fullStream) {
     let chunk = "";
     if (
@@ -242,7 +225,6 @@ async function processStreamChunks({
       logger.log(`Stream for chat ${chatId} was aborted`);
       break;
     }
-  }
   }
 }
 
@@ -1190,30 +1172,32 @@ This conversation includes one or more image attachments. When the user uploads 
             abortSignal: abortController.signal,
           });
           // Read .fullStream now (not lazily) so the SDK's `teeStream()`
-          // runs synchronously and `streamResult.baseStream` is the
-          // orphaned tee branch by the time `cleanup` runs.
+          // runs synchronously: that call splits the SDK's internal
+          // `baseStream` into two branches and reassigns the unread branch
+          // back onto `streamResult.baseStream`. We immediately cancel
+          // that orphaned branch so it never queues chunks.
+          //
+          // Why: WhatWG `tee()` enqueues every upstream chunk into both
+          // branches' controllers regardless of whether they have a
+          // reader. We only consume one branch (`fullStream`), so without
+          // this cancel the other branch's queue grows unbounded as the
+          // model streams — the dominant in-flight leak observed in heap
+          // snapshots (`{part, partialOutput}` objects parked in a
+          // `ReadableStreamDefaultController` queue, rooted via the
+          // undici connection pool). Cancel runs before any chunks are
+          // pumped, so the orphan controller closes immediately and
+          // future enqueues to it are no-ops.
           const fullStream = streamResult.fullStream;
+          const orphan: any = streamResult;
+          orphan?.baseStream?.cancel?.()?.catch?.((err: unknown) => {
+            logger.warn(
+              "Failed to cancel orphaned streamText baseStream branch",
+              err,
+            );
+          });
           return {
             fullStream,
             usage: streamResult.usage,
-            // Cancel the orphaned `baseStream` tee branch the SDK leaves
-            // behind every time `.fullStream` is read. Without this, the
-            // unread branch queues every streamed chunk indefinitely —
-            // the dominant leak path observed in heap snapshots
-            // (TransformStream controllers retaining tens of thousands
-            // of `{part, partialOutput}` objects rooted at the undici
-            // connection pool).
-            cleanup: async () => {
-              try {
-                const sr: any = streamResult;
-                await sr?.baseStream?.cancel?.();
-              } catch (err) {
-                logger.warn(
-                  "Failed to cancel orphaned streamText baseStream branch",
-                  err,
-                );
-              }
-            },
           };
         };
 
@@ -1386,7 +1370,7 @@ This conversation includes one or more image attachments. When the user uploads 
 
           // Only run MCP agent path if build mode has enabled MCP servers
           if (hasEnabledMcpServers) {
-            const { fullStream, cleanup } = await simpleStreamText({
+            const { fullStream } = await simpleStreamText({
               chatMessages: limitedHistoryChatMessages,
               modelClient,
               tools: {
@@ -1414,7 +1398,6 @@ This conversation includes one or more image attachments. When the user uploads 
               abortController,
               chatId: req.chatId,
               processResponseChunkUpdate,
-              cleanup,
             });
             chatMessages.push({
               role: "assistant",
@@ -1431,7 +1414,7 @@ This conversation includes one or more image attachments. When the user uploads 
         }
 
         // When calling streamText, the messages need to be properly formatted for mixed content
-        const { fullStream, cleanup } = await simpleStreamText({
+        const { fullStream } = await simpleStreamText({
           chatMessages,
           modelClient,
           files: files,
@@ -1444,7 +1427,6 @@ This conversation includes one or more image attachments. When the user uploads 
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
-            cleanup,
           });
 
           if (
@@ -1506,10 +1488,8 @@ This conversation includes one or more image attachments. When the user uploads 
 ${formattedSearchReplaceIssues}`,
               } as const;
 
-              const {
-                fullStream: fixSearchReplaceStream,
-                cleanup: fixSearchReplaceCleanup,
-              } = await simpleStreamText({
+              const { fullStream: fixSearchReplaceStream } =
+                await simpleStreamText({
                 // Build messages: reuse chat history and original full response, then ask to fix search-replace issues.
                 chatMessages: [
                   ...chatMessages,
@@ -1527,7 +1507,6 @@ ${formattedSearchReplaceIssues}`,
                 abortController,
                 chatId: req.chatId,
                 processResponseChunkUpdate,
-                cleanup: fixSearchReplaceCleanup,
               });
               const incrementalResponse = (
                 await readFullResponse(
@@ -1578,36 +1557,31 @@ ${formattedSearchReplaceIssues}`,
               );
               continuationAttempts++;
 
-              const { fullStream: contStream, cleanup: contCleanup } =
-                await simpleStreamText({
-                  // Build messages: replay history, then ask the model to continue from the partial response.
-                  chatMessages: [
-                    ...chatMessages,
-                    {
-                      role: "assistant",
-                      content: continuationFullResponse,
-                    },
-                    {
-                      role: "user",
-                      content:
-                        "Your previous response did not finish completely. Continue exactly where you left off without any preamble.",
-                    },
-                  ],
-                  modelClient,
-                  files: files,
-                });
-              try {
-                for await (const part of contStream) {
-                  // If the stream was aborted, exit early
-                  if (abortController.signal.aborted) {
-                    logger.log(`Stream for chat ${req.chatId} was aborted`);
-                    break;
-                  }
-                  if (part.type !== "text-delta") continue; // ignore reasoning for continuation
-                  await processResponseChunkUpdate(part.text);
+              const { fullStream: contStream } = await simpleStreamText({
+                // Build messages: replay history, then ask the model to continue from the partial response.
+                chatMessages: [
+                  ...chatMessages,
+                  {
+                    role: "assistant",
+                    content: continuationFullResponse,
+                  },
+                  {
+                    role: "user",
+                    content:
+                      "Your previous response did not finish completely. Continue exactly where you left off without any preamble.",
+                  },
+                ],
+                modelClient,
+                files: files,
+              });
+              for await (const part of contStream) {
+                // If the stream was aborted, exit early
+                if (abortController.signal.aborted) {
+                  logger.log(`Stream for chat ${req.chatId} was aborted`);
+                  break;
                 }
-              } finally {
-                await contCleanup();
+                if (part.type !== "text-delta") continue; // ignore reasoning for continuation
+                await processResponseChunkUpdate(part.text);
               }
               continuationFullResponse = await readFullResponse(
                 fullResponseBuf,
@@ -1691,8 +1665,7 @@ ${problemReport.problems
                   settings,
                 );
 
-                const { fullStream, cleanup: autoFixCleanup } =
-                  await simpleStreamText({
+                const { fullStream } = await simpleStreamText({
                   modelClient,
                   files: files,
                   chatMessages: [
@@ -1728,7 +1701,6 @@ ${problemReport.problems
                   abortController,
                   chatId: req.chatId,
                   processResponseChunkUpdate,
-                  cleanup: autoFixCleanup,
                 });
                 const fullAfterFix = await readFullResponse(
                   fullResponseBuf,
