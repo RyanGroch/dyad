@@ -16,7 +16,7 @@ import {
 
 import { db } from "../../db";
 import { chats, messages } from "../../db/schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { SmartContextMode } from "../../lib/schemas";
 import {
   constructSystemPrompt,
@@ -165,21 +165,42 @@ function parseMcpToolKey(toolKey: string): {
   return { serverName, toolName };
 }
 
-// Helper function to process stream chunks
+// Helper function to process stream chunks. Does not retain any per-chunk
+// accumulation in memory — chunks flow straight into the StreamingBuffer
+// (whose finalized prefix is drained to the database) via
+// processResponseChunkUpdate. Callers that need the text streamed by a single
+// invocation capture buffer offsets before/after the call and slice the
+// persisted response.
 async function processStreamChunks({
   fullStream,
   abortController,
   chatId,
   processResponseChunkUpdate,
+  cleanup,
 }: {
   fullStream: AsyncIterableStream<TextStreamPart<ToolSet>>;
   abortController: AbortController;
   chatId: number;
   processResponseChunkUpdate: (chunk: string) => Promise<void>;
-}): Promise<{ incrementalResponse: string }> {
-  const incrementalChunks: string[] = [];
+  // Optional teardown invoked after consumption ends (success, throw, or
+  // abort). Used to release the SDK's orphaned `baseStream` tee branch.
+  cleanup?: () => void | Promise<void>;
+}): Promise<void> {
   let inThinkingBlock = false;
 
+  try {
+    await runStream();
+  } finally {
+    if (cleanup) {
+      try {
+        await cleanup();
+      } catch {
+        // cleanup is best-effort; never let it mask the primary error
+      }
+    }
+  }
+
+  async function runStream() {
   for await (const part of fullStream) {
     let chunk = "";
     if (
@@ -214,7 +235,6 @@ async function processStreamChunks({
       continue;
     }
 
-    incrementalChunks.push(chunk);
     await processResponseChunkUpdate(chunk);
 
     // If the stream was aborted, exit early
@@ -223,8 +243,38 @@ async function processStreamChunks({
       break;
     }
   }
+  }
+}
 
-  return { incrementalResponse: incrementalChunks.join("") };
+// Drains the buffer's unsaved finalized chars and appends them to the
+// persisted message row. After this call the DB row holds every char that
+// has left the rewritable tail; the buffer holds only `pendingTail`.
+async function flushBufferDelta(
+  buf: StreamingBuffer,
+  messageId: number,
+): Promise<void> {
+  const drained = buf.drainUnsavedFinalized();
+  if (drained.length === 0) return;
+  await db
+    .update(messages)
+    .set({ content: sql`${messages.content} || ${drained}` })
+    .where(eq(messages.id, messageId));
+}
+
+// Reconstructs the full response by flushing pending finalized chars to the
+// DB, reading the persisted row, and appending the still-rewritable
+// `pendingTail`. The full string is materialized only at the call site; the
+// buffer never holds it.
+async function readFullResponse(
+  buf: StreamingBuffer,
+  messageId: number,
+): Promise<string> {
+  await flushBufferDelta(buf, messageId);
+  const row = await db.query.messages.findFirst({
+    where: eq(messages.id, messageId),
+    columns: { content: true },
+  });
+  return (row?.content ?? "") + buf.getPendingTail();
 }
 
 export function registerChatStreamHandlers() {
@@ -603,7 +653,16 @@ ${componentSnippet}
           abortController,
           updatedChat,
         );
-        fullResponseBuf.seed(testResponseText);
+        if (testResponseText) {
+          // Persist the canned response directly to the placeholder row;
+          // the buffer only tracks length so subsequent code paths see
+          // a non-empty buffer.
+          await db
+            .update(messages)
+            .set({ content: testResponseText })
+            .where(eq(messages.id, placeholderAssistantMessage.id));
+          fullResponseBuf.seed(testResponseText);
+        }
       } else {
         // Normal AI processing for non-test prompts
         const { modelClient, isEngineEnabled, isSmartContextEnabled } =
@@ -1071,6 +1130,14 @@ This conversation includes one or more image attachments. When the user uploads 
             providerOptions,
             system: systemPromptOverride,
             tools,
+            // Suppress per-step request body retention inside the Vercel AI
+            // SDK's `recordedSteps`. Default behavior keeps the
+            // JSON-serialized provider request (full chat history) attached
+            // to every step result, which holds an O(N) duplicate of the
+            // cumulative response text per step under multi-step tool use —
+            // a strong suspect for the OOM observed after the thinking
+            // phase.
+            experimental_include: { requestBody: false },
             messages: chatMessages.filter((m) => m.content),
             onFinish: (response) => {
               const totalTokens = response.usage?.totalTokens;
@@ -1122,9 +1189,31 @@ This conversation includes one or more image attachments. When the user uploads 
             },
             abortSignal: abortController.signal,
           });
+          // Read .fullStream now (not lazily) so the SDK's `teeStream()`
+          // runs synchronously and `streamResult.baseStream` is the
+          // orphaned tee branch by the time `cleanup` runs.
+          const fullStream = streamResult.fullStream;
           return {
-            fullStream: streamResult.fullStream,
+            fullStream,
             usage: streamResult.usage,
+            // Cancel the orphaned `baseStream` tee branch the SDK leaves
+            // behind every time `.fullStream` is read. Without this, the
+            // unread branch queues every streamed chunk indefinitely —
+            // the dominant leak path observed in heap snapshots
+            // (TransformStream controllers retaining tens of thousands
+            // of `{part, partialOutput}` objects rooted at the undici
+            // connection pool).
+            cleanup: async () => {
+              try {
+                const sr: any = streamResult;
+                await sr?.baseStream?.cancel?.();
+              } catch (err) {
+                logger.warn(
+                  "Failed to cancel orphaned streamText baseStream branch",
+                  err,
+                );
+              }
+            },
           };
         };
 
@@ -1142,14 +1231,17 @@ This conversation includes one or more image attachments. When the user uploads 
         const processResponseChunkUpdate = async (chunk: string) => {
           const patch = fullResponseBuf.processChunk(chunk);
           partialResponses.set(req.chatId, fullResponseBuf);
-          // Save to DB (in case user is switching chats during the stream)
+          // Append finalized chars to the DB so the persisted row is the
+          // sole holder of the full response (in case user is switching
+          // chats during the stream). pendingTail (small, bounded) is not
+          // written until end-of-stream — the renderer reconstructs it
+          // from streamingPatch independently.
           const now = Date.now();
           if (now - lastDbSaveAt >= 150) {
-            await db
-              .update(messages)
-              .set({ content: fullResponseBuf.toString() })
-              .where(eq(messages.id, placeholderAssistantMessage.id));
-
+            await flushBufferDelta(
+              fullResponseBuf,
+              placeholderAssistantMessage.id,
+            );
             lastDbSaveAt = now;
           }
 
@@ -1294,7 +1386,7 @@ This conversation includes one or more image attachments. When the user uploads 
 
           // Only run MCP agent path if build mode has enabled MCP servers
           if (hasEnabledMcpServers) {
-            const { fullStream } = await simpleStreamText({
+            const { fullStream, cleanup } = await simpleStreamText({
               chatMessages: limitedHistoryChatMessages,
               modelClient,
               tools: {
@@ -1322,10 +1414,14 @@ This conversation includes one or more image attachments. When the user uploads 
               abortController,
               chatId: req.chatId,
               processResponseChunkUpdate,
+              cleanup,
             });
             chatMessages.push({
               role: "assistant",
-              content: fullResponseBuf.toString(),
+              content: await readFullResponse(
+                fullResponseBuf,
+                placeholderAssistantMessage.id,
+              ),
             });
             chatMessages.push({
               role: "user",
@@ -1335,7 +1431,7 @@ This conversation includes one or more image attachments. When the user uploads 
         }
 
         // When calling streamText, the messages need to be properly formatted for mixed content
-        const { fullStream } = await simpleStreamText({
+        const { fullStream, cleanup } = await simpleStreamText({
           chatMessages,
           modelClient,
           files: files,
@@ -1348,14 +1444,19 @@ This conversation includes one or more image attachments. When the user uploads 
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
+            cleanup,
           });
 
           if (
             settings.selectedChatMode !== "ask" &&
             isTurboEditsV2Enabled(settings)
           ) {
+            const fullSoFar = await readFullResponse(
+              fullResponseBuf,
+              placeholderAssistantMessage.id,
+            );
             let issues = await dryRunSearchReplace({
-              fullResponse: fullResponseBuf.toString(),
+              fullResponse: fullSoFar,
               appPath: getDyadAppPath(updatedChat.app.path),
             });
             sendTelemetryEvent("search_replace:fix", {
@@ -1369,7 +1470,7 @@ This conversation includes one or more image attachments. When the user uploads 
             });
 
             let searchReplaceFixAttempts = 0;
-            const originalFullResponse = fullResponseBuf.toString();
+            const originalFullResponse = fullSoFar;
             const previousAttempts: ModelMessage[] = [];
             while (
               issues.length > 0 &&
@@ -1405,33 +1506,43 @@ This conversation includes one or more image attachments. When the user uploads 
 ${formattedSearchReplaceIssues}`,
               } as const;
 
-              const { fullStream: fixSearchReplaceStream } =
-                await simpleStreamText({
-                  // Build messages: reuse chat history and original full response, then ask to fix search-replace issues.
-                  chatMessages: [
-                    ...chatMessages,
-                    { role: "assistant", content: originalFullResponse },
-                    ...previousAttempts,
-                    userPrompt,
-                  ],
-                  modelClient,
-                  files: files,
-                });
+              const {
+                fullStream: fixSearchReplaceStream,
+                cleanup: fixSearchReplaceCleanup,
+              } = await simpleStreamText({
+                // Build messages: reuse chat history and original full response, then ask to fix search-replace issues.
+                chatMessages: [
+                  ...chatMessages,
+                  { role: "assistant", content: originalFullResponse },
+                  ...previousAttempts,
+                  userPrompt,
+                ],
+                modelClient,
+                files: files,
+              });
               previousAttempts.push(userPrompt);
-              const result = await processStreamChunks({
+              const sliceStart = fullResponseBuf.totalLength();
+              await processStreamChunks({
                 fullStream: fixSearchReplaceStream,
                 abortController,
                 chatId: req.chatId,
                 processResponseChunkUpdate,
+                cleanup: fixSearchReplaceCleanup,
               });
+              const incrementalResponse = (
+                await readFullResponse(
+                  fullResponseBuf,
+                  placeholderAssistantMessage.id,
+                )
+              ).slice(sliceStart);
               previousAttempts.push({
                 role: "assistant",
-                content: removeNonEssentialTags(result.incrementalResponse),
+                content: removeNonEssentialTags(incrementalResponse),
               });
 
               // Re-check for issues after the fix attempt
               issues = await dryRunSearchReplace({
-                fullResponse: result.incrementalResponse,
+                fullResponse: incrementalResponse,
                 appPath: getDyadAppPath(updatedChat.app.path),
               });
 
@@ -1447,14 +1558,18 @@ ${formattedSearchReplaceIssues}`,
             }
           }
 
+          let continuationFullResponse = await readFullResponse(
+            fullResponseBuf,
+            placeholderAssistantMessage.id,
+          );
           if (
             !abortController.signal.aborted &&
             settings.selectedChatMode !== "ask" &&
-            hasUnclosedDyadWrite(fullResponseBuf.toString())
+            hasUnclosedDyadWrite(continuationFullResponse)
           ) {
             let continuationAttempts = 0;
             while (
-              hasUnclosedDyadWrite(fullResponseBuf.toString()) &&
+              hasUnclosedDyadWrite(continuationFullResponse) &&
               continuationAttempts < 2 &&
               !abortController.signal.aborted
             ) {
@@ -1463,36 +1578,46 @@ ${formattedSearchReplaceIssues}`,
               );
               continuationAttempts++;
 
-              const { fullStream: contStream } = await simpleStreamText({
-                // Build messages: replay history, then ask the model to continue from the partial response.
-                chatMessages: [
-                  ...chatMessages,
-                  {
-                    role: "assistant",
-                    content: fullResponseBuf.toString(),
-                  },
-                  {
-                    role: "user",
-                    content:
-                      "Your previous response did not finish completely. Continue exactly where you left off without any preamble.",
-                  },
-                ],
-                modelClient,
-                files: files,
-              });
-              for await (const part of contStream) {
-                // If the stream was aborted, exit early
-                if (abortController.signal.aborted) {
-                  logger.log(`Stream for chat ${req.chatId} was aborted`);
-                  break;
+              const { fullStream: contStream, cleanup: contCleanup } =
+                await simpleStreamText({
+                  // Build messages: replay history, then ask the model to continue from the partial response.
+                  chatMessages: [
+                    ...chatMessages,
+                    {
+                      role: "assistant",
+                      content: continuationFullResponse,
+                    },
+                    {
+                      role: "user",
+                      content:
+                        "Your previous response did not finish completely. Continue exactly where you left off without any preamble.",
+                    },
+                  ],
+                  modelClient,
+                  files: files,
+                });
+              try {
+                for await (const part of contStream) {
+                  // If the stream was aborted, exit early
+                  if (abortController.signal.aborted) {
+                    logger.log(`Stream for chat ${req.chatId} was aborted`);
+                    break;
+                  }
+                  if (part.type !== "text-delta") continue; // ignore reasoning for continuation
+                  await processResponseChunkUpdate(part.text);
                 }
-                if (part.type !== "text-delta") continue; // ignore reasoning for continuation
-                await processResponseChunkUpdate(part.text);
+              } finally {
+                await contCleanup();
               }
+              continuationFullResponse = await readFullResponse(
+                fullResponseBuf,
+                placeholderAssistantMessage.id,
+              );
             }
           }
+          const fullResponseAfterContinuation = continuationFullResponse;
           const addDependencies = getDyadAddDependencyTags(
-            fullResponseBuf.toString(),
+            fullResponseAfterContinuation,
           );
           if (
             !abortController.signal.aborted &&
@@ -1506,12 +1631,12 @@ ${formattedSearchReplaceIssues}`,
             try {
               // IF auto-fix is enabled
               let problemReport = await generateProblemReport({
-                fullResponse: fullResponseBuf.toString(),
+                fullResponse: fullResponseAfterContinuation,
                 appPath: getDyadAppPath(updatedChat.app.path),
               });
 
               let autoFixAttempts = 0;
-              const originalFullResponse = fullResponseBuf.toString();
+              const originalFullResponse = fullResponseAfterContinuation;
               const previousAttempts: ModelMessage[] = [];
               while (
                 problemReport.problems.length > 0 &&
@@ -1542,7 +1667,10 @@ ${problemReport.problems
                     readFile: (fileName: string) => readFileWithCache(fileName),
                   },
                 );
-                const joinedFullResponse = fullResponseBuf.toString();
+                const joinedFullResponse = await readFullResponse(
+                  fullResponseBuf,
+                  placeholderAssistantMessage.id,
+                );
                 const writeTags = getDyadWriteTags(joinedFullResponse);
                 const renameTags = getDyadRenameTags(joinedFullResponse);
                 const deletePaths = getDyadDeleteTags(joinedFullResponse);
@@ -1563,7 +1691,8 @@ ${problemReport.problems
                   settings,
                 );
 
-                const { fullStream } = await simpleStreamText({
+                const { fullStream, cleanup: autoFixCleanup } =
+                  await simpleStreamText({
                   modelClient,
                   files: files,
                   chatMessages: [
@@ -1593,19 +1722,26 @@ ${problemReport.problems
                   role: "user",
                   content: problemFixPrompt,
                 });
-                const result = await processStreamChunks({
+                const sliceStart = fullResponseBuf.totalLength();
+                await processStreamChunks({
                   fullStream,
                   abortController,
                   chatId: req.chatId,
                   processResponseChunkUpdate,
+                  cleanup: autoFixCleanup,
                 });
+                const fullAfterFix = await readFullResponse(
+                  fullResponseBuf,
+                  placeholderAssistantMessage.id,
+                );
+                const incrementalResponse = fullAfterFix.slice(sliceStart);
                 previousAttempts.push({
                   role: "assistant",
-                  content: removeNonEssentialTags(result.incrementalResponse),
+                  content: removeNonEssentialTags(incrementalResponse),
                 });
 
                 problemReport = await generateProblemReport({
-                  fullResponse: fullResponseBuf.toString(),
+                  fullResponse: fullAfterFix,
                   appPath: getDyadAppPath(updatedChat.app.path),
                 });
               }
@@ -1621,8 +1757,10 @@ ${problemReport.problems
           // Check if this was an abort error
           if (abortController.signal.aborted) {
             const chatId = req.chatId;
-            const partialResponse =
-              partialResponses.get(req.chatId)?.toString() ?? "";
+            const partialResponse = await readFullResponse(
+              fullResponseBuf,
+              placeholderAssistantMessage.id,
+            );
             try {
               // Update the placeholder assistant message with the partial content and cancellation note
               await db
@@ -1651,8 +1789,10 @@ ${problemReport.problems
       // If the stream was aborted but didn't throw (e.g. stream ended gracefully),
       // save the cancellation notice to the placeholder message.
       if (abortController.signal.aborted) {
-        const partialResponse =
-          partialResponses.get(req.chatId)?.toString() ?? "";
+        const partialResponse = await readFullResponse(
+          fullResponseBuf,
+          placeholderAssistantMessage.id,
+        );
         try {
           await db
             .update(messages)
@@ -1671,7 +1811,20 @@ ${problemReport.problems
 
       // Only save the response and process it if we weren't aborted
       if (!abortController.signal.aborted && !fullResponseBuf.isEmpty()) {
-        const fullResponseStr = fullResponseBuf.toString();
+        // Promote any remaining pendingTail and flush so the persisted row
+        // holds the entire response. We then read the full string back from
+        // the DB (only place where the full response is materialized in
+        // RAM, post-stream).
+        fullResponseBuf.finalizeRemaining();
+        await flushBufferDelta(
+          fullResponseBuf,
+          placeholderAssistantMessage.id,
+        );
+        const persistedRow = await db.query.messages.findFirst({
+          where: eq(messages.id, placeholderAssistantMessage.id),
+          columns: { content: true },
+        });
+        const fullResponseStr = persistedRow?.content ?? "";
         // Scrape from: <dyad-chat-summary>Renaming profile file</dyad-chat-title>
         const chatTitle = fullResponseStr.match(
           /<dyad-chat-summary>(.*?)<\/dyad-chat-summary>/,
@@ -1683,12 +1836,6 @@ ${problemReport.problems
             .where(and(eq(chats.id, req.chatId), isNull(chats.title)));
         }
         const chatSummary = chatTitle?.[1];
-
-        // Update the placeholder assistant message with the full response
-        await db
-          .update(messages)
-          .set({ content: fullResponseStr })
-          .where(eq(messages.id, placeholderAssistantMessage.id));
         const settings = readSettings();
         if (
           settings.autoApproveChanges &&
