@@ -34,7 +34,7 @@ export const DyadCompaction: React.FC<DyadCompactionProps> = ({
 
   return (
     <div
-      className={`relative rounded-lg border my-2 overflow-hidden transition-colors duration-300 ${
+      className={`relative rounded-lg border my-2 overflow-hidden transition-colors duration-300 [content-visibility:auto] [contain-intrinsic-size:auto_120px] ${
         inProgress
           ? "border-blue-400/60 dark:border-blue-500/50 bg-blue-50/50 dark:bg-blue-950/30"
           : "border-border bg-(--background-lightest) dark:bg-zinc-900"

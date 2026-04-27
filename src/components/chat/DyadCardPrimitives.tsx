@@ -125,6 +125,7 @@ export function DyadCard({
         group/card
         ${variantClasses}
         my-1.5 transition-colors duration-150
+        [content-visibility:auto] [contain-intrinsic-size:auto_120px]
         ${onClick ? "cursor-pointer" : ""}
         ${className}
       `}

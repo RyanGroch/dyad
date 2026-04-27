@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useMemo } from "react";
+import React, { useDeferredValue, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -102,8 +102,13 @@ type CustomTagInfo = {
 };
 
 type ContentPiece =
-  | { type: "markdown"; content: string }
-  | { type: "custom-tag"; tagInfo: CustomTagInfo };
+  | { type: "markdown"; content: string; _start: number; _end: number }
+  | {
+      type: "custom-tag";
+      tagInfo: CustomTagInfo;
+      _start: number;
+      _end: number;
+    };
 
 const customLink = ({
   node: _node,
@@ -149,9 +154,81 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
-  // Extract content pieces (markdown and custom tags)
+  // Incremental parse cache. parseCustomTags returns a `safeBoundary`
+  // (absolute offset) marking the prefix that cannot be invalidated by
+  // future appended content. As long as the new content is a strict
+  // extension of the cached content within that boundary, we reuse the
+  // pieces ending at-or-before the boundary and only re-parse the tail.
+  // This keeps tagInfo references stable across chunks so MemoCustomTag /
+  // MemoMarkdown short-circuit on completed pieces and Shiki doesn't
+  // re-highlight on every chunk.
+  const parseCacheRef = useRef<{
+    content: string;
+    pieces: ContentPiece[];
+    safeBoundary: number;
+  } | null>(null);
+
   const contentPieces = useMemo(() => {
-    return parseCustomTags(contentToParse);
+    const prev = parseCacheRef.current;
+    if (
+      prev &&
+      prev.safeBoundary > 0 &&
+      contentToParse.length >= prev.safeBoundary &&
+      contentToParse.startsWith(prev.content.slice(0, prev.safeBoundary))
+    ) {
+      const reused: ContentPiece[] = [];
+      for (const p of prev.pieces) {
+        if (p._end <= prev.safeBoundary) reused.push(p);
+        else break;
+      }
+      const reusedEnd = reused.length ? reused[reused.length - 1]._end : 0;
+      const tail = contentToParse.slice(reusedEnd);
+      const tailResult = parseCustomTags(tail, reusedEnd);
+      const merged: ContentPiece[] = reused.slice();
+      const tailPieces = tailResult.pieces;
+      let tailStart = 0;
+      // If the seam joins two markdown pieces, merge them — otherwise the
+      // sentence ends up split into two `<p>` blocks (a stray period or
+      // word on its own line at the cache boundary).
+      if (
+        merged.length > 0 &&
+        tailPieces.length > 0 &&
+        merged[merged.length - 1].type === "markdown" &&
+        tailPieces[0].type === "markdown"
+      ) {
+        const last = merged[merged.length - 1] as Extract<
+          ContentPiece,
+          { type: "markdown" }
+        >;
+        const first = tailPieces[0] as Extract<
+          ContentPiece,
+          { type: "markdown" }
+        >;
+        merged[merged.length - 1] = {
+          type: "markdown",
+          content: last.content + first.content,
+          _start: last._start,
+          _end: first._end,
+        };
+        tailStart = 1;
+      }
+      for (let i = tailStart; i < tailPieces.length; i++) {
+        merged.push(tailPieces[i]);
+      }
+      parseCacheRef.current = {
+        content: contentToParse,
+        pieces: merged,
+        safeBoundary: tailResult.safeBoundary,
+      };
+      return merged;
+    }
+    const result = parseCustomTags(contentToParse, 0);
+    parseCacheRef.current = {
+      content: contentToParse,
+      pieces: result.pieces,
+      safeBoundary: result.safeBoundary,
+    };
+    return result.pieces;
   }, [contentToParse]);
 
   // Extract error messages and track positions
@@ -256,9 +333,13 @@ const MemoCustomTag = React.memo(
   }) {
     return <>{renderCustomTag(tagInfo, { isStreaming })}</>;
   },
-  (prev, next) =>
-    prev.isStreaming === next.isStreaming &&
-    tagInfoEqual(prev.tagInfo, next.tagInfo),
+  (prev, next) => {
+    if (prev.isStreaming !== next.isStreaming) return false;
+    // Stable refs from the parse cache let us skip the deep compare
+    // entirely on completed pieces.
+    if (prev.tagInfo === next.tagInfo) return true;
+    return tagInfoEqual(prev.tagInfo, next.tagInfo);
+  },
 );
 
 /**
@@ -317,9 +398,23 @@ function preprocessUnclosedTags(content: string): {
 }
 
 /**
- * Parse the content to extract custom tags and markdown sections into a unified array
+ * Parse the content to extract custom tags and markdown sections into a unified array.
+ *
+ * `baseOffset` is the absolute offset of `content` in the full message — the
+ * incremental cache passes a non-zero value when re-parsing only the tail.
+ * `_start` / `_end` on every piece are absolute offsets in the *original*
+ * (pre-preprocess) coords so the cache can decide which pieces are immutable.
+ *
+ * `safeBoundary` is the absolute offset up to which the returned pieces are
+ * guaranteed to remain valid as more content is appended. It backs off past:
+ *   - any in-progress dyad tag opening (will be reclassified once closed),
+ *   - any unmatched `<` (might become a dyad-tag opening once `>` arrives —
+ *     `preprocessUnclosedTags` only sees openings that already have a `>`).
  */
-function parseCustomTags(content: string): ContentPiece[] {
+function parseCustomTags(
+  content: string,
+  baseOffset: number,
+): { pieces: ContentPiece[]; safeBoundary: number } {
   const { processedContent, inProgressTags } = preprocessUnclosedTags(content);
 
   const tagPattern = new RegExp(
@@ -331,20 +426,19 @@ function parseCustomTags(content: string): ContentPiece[] {
   let lastIndex = 0;
   let match;
 
-  // Find all custom tags
   while ((match = tagPattern.exec(processedContent)) !== null) {
     const [fullMatch, tag, attributesStr, tagContent] = match;
     const startIndex = match.index;
 
-    // Add the markdown content before this tag
     if (startIndex > lastIndex) {
       contentPieces.push({
         type: "markdown",
         content: processedContent.substring(lastIndex, startIndex),
+        _start: baseOffset + lastIndex,
+        _end: baseOffset + startIndex,
       });
     }
 
-    // Parse attributes and unescape values
     const attributes: Record<string, string> = {};
     const attrPattern = /([\w-]+)="([^"]*)"/g;
     let attrMatch;
@@ -352,11 +446,9 @@ function parseCustomTags(content: string): ContentPiece[] {
       attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]);
     }
 
-    // Check if this tag was marked as in progress
     const tagInProgressSet = inProgressTags.get(tag);
     const isInProgress = tagInProgressSet?.has(startIndex);
 
-    // Add the tag info with unescaped content
     contentPieces.push({
       type: "custom-tag",
       tagInfo: {
@@ -366,20 +458,37 @@ function parseCustomTags(content: string): ContentPiece[] {
         fullMatch,
         inProgress: isInProgress || false,
       },
+      _start: baseOffset + startIndex,
+      _end: baseOffset + startIndex + fullMatch.length,
     });
 
     lastIndex = startIndex + fullMatch.length;
   }
 
-  // Add the remaining markdown content
   if (lastIndex < processedContent.length) {
     contentPieces.push({
       type: "markdown",
       content: processedContent.substring(lastIndex),
+      _start: baseOffset + lastIndex,
+      _end: baseOffset + processedContent.length,
     });
   }
 
-  return contentPieces;
+  // Compute safeBoundary in original-content coords.
+  let safeLocal = content.length;
+  for (const set of inProgressTags.values()) {
+    for (const idx of set) {
+      if (idx < safeLocal) safeLocal = idx;
+    }
+  }
+  // Back off past a trailing unmatched `<` — it could become a dyad tag
+  // opening once the rest of the tag arrives.
+  const lastLT = content.lastIndexOf("<");
+  if (lastLT !== -1 && content.indexOf(">", lastLT) === -1) {
+    if (lastLT < safeLocal) safeLocal = lastLT;
+  }
+
+  return { pieces: contentPieces, safeBoundary: baseOffset + safeLocal };
 }
 
 function getState({

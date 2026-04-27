@@ -60,7 +60,7 @@ export const DyadThink: React.FC<DyadThinkProps> = ({ children, node }) => {
       : "";
 
   return (
-    <div className="my-1">
+    <div className="my-1 [content-visibility:auto] [contain-intrinsic-size:auto_80px]">
       {/* Toggle header */}
       <button
         type="button"

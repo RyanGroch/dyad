@@ -33,7 +33,7 @@ export const DyadWritePlan: React.FC<DyadWritePlanProps> = ({ node }) => {
 
   return (
     <div
-      className={`my-4 border rounded-lg overflow-hidden ${
+      className={`my-4 border rounded-lg overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_200px] ${
         isInProgress ? "border-primary/60" : "border-primary/20"
       } bg-primary/5`}
     >

@@ -39,7 +39,7 @@ export const DyadRead: React.FC<DyadReadProps> = ({
   const lineNumberSuffix = getLineNumberSuffix();
 
   return (
-    <div className="my-1">
+    <div className="my-1 [content-visibility:auto] [contain-intrinsic-size:auto_40px]">
       <div className="flex items-center gap-1 py-1">
         <FileText size={14} className="shrink-0 text-muted-foreground/50" />
         <span className="text-[13px] font-medium text-foreground/70">Read</span>
