@@ -69,7 +69,7 @@ import { safeSend } from "../utils/safe_sender";
 // TEMP: memory profiling for OOM investigation
 import { startMemoryMonitor } from "../utils/memoryProfiler";
 import { getCodebaseCacheStats } from "../../utils/codebase";
-import { StreamingBuffer } from "../utils/streamingBuffer";
+import { StreamingBuffer, type StreamingPatch } from "../utils/streamingBuffer";
 import { generateProblemReport } from "../processors/tsc";
 import { createProblemFixPrompt } from "@/shared/problem_prompt";
 import { AsyncVirtualFileSystem } from "../../../shared/VirtualFilesystem";
@@ -621,6 +621,79 @@ ${componentSnippet}
       });
 
       const fullResponseBuf = new StreamingBuffer();
+      // IPC streaming-patch throttle. Hoisted to the handler scope so the
+      // post-stream cleanup (further down) can cancel any trailing flush
+      // before the final messages-replacement is sent — otherwise a stale
+      // patch can fire after, and the renderer's
+      //   current.slice(0, offset) + content
+      // reconstruction truncates the response to the stale tail.
+      let pendingIpcPatch: StreamingPatch | null = null;
+      let trailingIpcTimer: NodeJS.Timeout | null = null;
+      let lastIpcSentAt = 0;
+      const IPC_THROTTLE_MS = 80;
+
+      const sendStreamingPatch = (patch: StreamingPatch) => {
+        safeSend(event.sender, "chat:response:chunk", {
+          chatId: req.chatId,
+          streamingMessageId: placeholderAssistantMessage.id,
+          streamingPatch: patch,
+        });
+        lastIpcSentAt = Date.now();
+        pendingIpcPatch = null;
+      };
+
+      // Merge a newer patch into a still-pending one. Each patch is
+      // "replace content[offset..] with content"; the merged form
+      // preserves the lower offset and concatenates pending's prefix
+      // (up to the new offset) with the new content.
+      const coalesceIpcPatch = (next: StreamingPatch) => {
+        if (!pendingIpcPatch) {
+          pendingIpcPatch = next;
+          return;
+        }
+        if (next.offset < pendingIpcPatch.offset) {
+          pendingIpcPatch = next;
+          return;
+        }
+        const prefixLen = next.offset - pendingIpcPatch.offset;
+        pendingIpcPatch = {
+          offset: pendingIpcPatch.offset,
+          content:
+            pendingIpcPatch.content.slice(0, prefixLen) + next.content,
+        };
+      };
+
+      const flushPendingIpcPatch = () => {
+        if (trailingIpcTimer) {
+          clearTimeout(trailingIpcTimer);
+          trailingIpcTimer = null;
+        }
+        if (pendingIpcPatch) {
+          sendStreamingPatch(pendingIpcPatch);
+        }
+      };
+
+      const queueStreamingPatch = (patch: StreamingPatch) => {
+        const now = Date.now();
+        const elapsed = now - lastIpcSentAt;
+        if (elapsed >= IPC_THROTTLE_MS && !trailingIpcTimer) {
+          if (pendingIpcPatch) coalesceIpcPatch(patch);
+          else pendingIpcPatch = patch;
+          // Send whatever we have (just-arrived or merged with anything queued).
+          const out = pendingIpcPatch!;
+          sendStreamingPatch(out);
+          return;
+        }
+        coalesceIpcPatch(patch);
+        if (!trailingIpcTimer) {
+          const wait = Math.max(0, IPC_THROTTLE_MS - elapsed);
+          trailingIpcTimer = setTimeout(() => {
+            trailingIpcTimer = null;
+            if (pendingIpcPatch) sendStreamingPatch(pendingIpcPatch);
+          }, wait);
+        }
+      };
+
       let maxTokensUsed: number | undefined;
 
       // Check if this is a test prompt
@@ -1229,11 +1302,7 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
-          });
+          queueStreamingPatch(patch);
         };
 
         // Handle ask mode: use local-agent in read-only mode
@@ -1781,6 +1850,17 @@ ${problemReport.problems
         }
       }
 
+      // Cancel any pending throttled IPC patch — we're about to send a
+      // full messages-replacement and the renderer's
+      //   current.slice(0, offset) + content
+      // reconstruction would truncate the response if a stale patch
+      // fires after the messages event lands.
+      if (trailingIpcTimer) {
+        clearTimeout(trailingIpcTimer);
+        trailingIpcTimer = null;
+      }
+      pendingIpcPatch = null;
+
       // Only save the response and process it if we weren't aborted
       if (!abortController.signal.aborted && !fullResponseBuf.isEmpty()) {
         // Promote any remaining pendingTail and flush so the persisted row
@@ -1871,6 +1951,13 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Belt-and-suspenders: ensure no throttled patch fires after stream end.
+      if (trailingIpcTimer) {
+        clearTimeout(trailingIpcTimer);
+        trailingIpcTimer = null;
+      }
+      pendingIpcPatch = null;
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 
