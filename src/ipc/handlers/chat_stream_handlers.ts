@@ -274,6 +274,13 @@ export function registerChatStreamHandlers() {
         };
       },
     });
+    // IPC streaming-patch throttle state. Declared above the try block so
+    // that the catch/finally — which clear any pending throttled flush
+    // before the final messages-replacement — can never hit a TDZ
+    // ReferenceError when an error throws before the inner declaration
+    // would have been reached (e.g. quota errors during retry setup).
+    let pendingIpcPatch: StreamingPatch | null = null;
+    let trailingIpcTimer: NodeJS.Timeout | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -621,14 +628,6 @@ ${componentSnippet}
       });
 
       const fullResponseBuf = new StreamingBuffer();
-      // IPC streaming-patch throttle. Hoisted to the handler scope so the
-      // post-stream cleanup (further down) can cancel any trailing flush
-      // before the final messages-replacement is sent — otherwise a stale
-      // patch can fire after, and the renderer's
-      //   current.slice(0, offset) + content
-      // reconstruction truncates the response to the stale tail.
-      let pendingIpcPatch: StreamingPatch | null = null;
-      let trailingIpcTimer: NodeJS.Timeout | null = null;
       let lastIpcSentAt = 0;
       const IPC_THROTTLE_MS = 80;
 
@@ -1850,16 +1849,22 @@ ${problemReport.problems
         }
       }
 
-      // Cancel any pending throttled IPC patch — we're about to send a
-      // full messages-replacement and the renderer's
+      // Flush any pending throttled IPC patch BEFORE the messages
+      // replacement / end event. We must *send* (not drop) the queued
+      // patch — otherwise the renderer's last state is the second-to-last
+      // patch and the final tail of the response is missing whenever
+      // auto-approve is off (no messages-replacement to backfill it).
+      // Cancel the timer first so it cannot double-send after we manually
+      // flush, which would re-trigger the
       //   current.slice(0, offset) + content
-      // reconstruction would truncate the response if a stale patch
-      // fires after the messages event lands.
+      // truncation we previously hit.
       if (trailingIpcTimer) {
         clearTimeout(trailingIpcTimer);
         trailingIpcTimer = null;
       }
-      pendingIpcPatch = null;
+      if (pendingIpcPatch) {
+        sendStreamingPatch(pendingIpcPatch);
+      }
 
       // Only save the response and process it if we weren't aborted
       if (!abortController.signal.aborted && !fullResponseBuf.isEmpty()) {
@@ -1951,12 +1956,16 @@ ${problemReport.problems
 
       return "error";
     } finally {
-      // Belt-and-suspenders: ensure no throttled patch fires after stream end.
+      // Belt-and-suspenders: flush any patch the success path missed
+      // (e.g. error path that bypassed the post-stream block). Cancel
+      // the timer first so it can't double-send.
       if (trailingIpcTimer) {
         clearTimeout(trailingIpcTimer);
         trailingIpcTimer = null;
       }
-      pendingIpcPatch = null;
+      if (pendingIpcPatch) {
+        sendStreamingPatch(pendingIpcPatch);
+      }
 
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
