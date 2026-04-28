@@ -46,6 +46,8 @@ import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
 import { unescapeXmlAttr, unescapeXmlContent } from "../../../shared/xmlEscape";
+import { LazyPiece } from "./LazyPiece";
+import { useSettings } from "@/hooks/useSettings";
 
 const DYAD_CUSTOM_TAGS = [
   "dyad-write",
@@ -91,6 +93,12 @@ const DYAD_CUSTOM_TAGS = [
 
 interface DyadMarkdownParserProps {
   content: string;
+  /**
+   * Stable scope used to namespace per-piece state (height cache for
+   * LazyPiece). Pass the message id so two messages don't collide on
+   * piece offsets.
+   */
+  cacheScope?: string | number;
 }
 
 type CustomTagInfo = {
@@ -148,9 +156,12 @@ export const VanillaMarkdownParser = ({ content }: { content: string }) => {
  */
 export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   content,
+  cacheScope,
 }) => {
   const chatId = useAtomValue(selectedChatIdAtom);
   const isStreaming = useAtomValue(isStreamingByIdAtom).get(chatId!) ?? false;
+  const { settings } = useSettings();
+  const isTestMode = settings?.isTestMode ?? false;
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
@@ -168,7 +179,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     safeBoundary: number;
   } | null>(null);
 
-  const contentPieces = useMemo(() => {
+  const { contentPieces, safeBoundary } = useMemo(() => {
     const prev = parseCacheRef.current;
     if (
       prev &&
@@ -220,7 +231,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
         pieces: merged,
         safeBoundary: tailResult.safeBoundary,
       };
-      return merged;
+      return { contentPieces: merged, safeBoundary: tailResult.safeBoundary };
     }
     const result = parseCustomTags(contentToParse, 0);
     parseCacheRef.current = {
@@ -228,7 +239,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
       pieces: result.pieces,
       safeBoundary: result.safeBoundary,
     };
-    return result.pieces;
+    return { contentPieces: result.pieces, safeBoundary: result.safeBoundary };
   }, [contentToParse]);
 
   // Extract error messages and track positions
@@ -259,26 +270,50 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     };
   }, [contentPieces]);
 
+  const lastIndex = contentPieces.length - 1;
+  const scope = cacheScope ?? "anon";
+
   return (
     <>
-      {contentPieces.map((piece, index) => (
-        <React.Fragment key={index}>
-          {piece.type === "markdown"
-            ? piece.content && <MemoMarkdown content={piece.content} />
-            : <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />}
-          {index === lastErrorIndex &&
-            errorCount > 1 &&
-            !isStreaming &&
-            chatId && (
-              <div className="mt-3 w-full flex">
-                <FixAllErrorsButton
-                  errorMessages={errorMessages}
-                  chatId={chatId}
-                />
-              </div>
-            )}
-        </React.Fragment>
-      ))}
+      {contentPieces.map((piece, index) => {
+        const isLast = index === lastIndex;
+        // Pin the streaming tail (still growing) and any piece that
+        // straddles or sits inside the parser's still-rewritable region —
+        // unmounting those would cause flicker as the tail re-parses.
+        const inRewritableTail = piece._end > safeBoundary;
+        const pinned = (isStreaming && isLast) || inRewritableTail;
+        const sizeHint =
+          piece.type === "markdown"
+            ? piece.content.length
+            : piece.tagInfo.content.length;
+        const pieceKey = `${scope}:${piece._start}`;
+
+        return (
+          <React.Fragment key={index}>
+            <LazyPiece
+              pinned={pinned}
+              sizeHint={sizeHint}
+              cacheKey={pieceKey}
+              disabled={isTestMode}
+            >
+              {piece.type === "markdown"
+                ? piece.content && <MemoMarkdown content={piece.content} />
+                : <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />}
+            </LazyPiece>
+            {index === lastErrorIndex &&
+              errorCount > 1 &&
+              !isStreaming &&
+              chatId && (
+                <div className="mt-3 w-full flex">
+                  <FixAllErrorsButton
+                    errorMessages={errorMessages}
+                    chatId={chatId}
+                  />
+                </div>
+              )}
+          </React.Fragment>
+        );
+      })}
     </>
   );
 };
