@@ -6,6 +6,41 @@ const UNMOUNT_DELAY_MS = 1500;
 
 const heightCache = new Map<string, number>();
 
+// TEMP DEBUG: registry of every LazyPiece currently in the tree.
+// Drives `window.__dyadLazyDump()` so we can verify mount/unmount behavior.
+type LazyDebugEntry = {
+  label: string;
+  sizeHint: number;
+  pinned: boolean;
+  shouldLazy: boolean;
+  mounted: boolean;
+};
+const lazyDebugRegistry = new Map<string, LazyDebugEntry>();
+
+if (typeof window !== "undefined") {
+  (window as any).__dyadLazyDump = () => {
+    const rows = Array.from(lazyDebugRegistry.entries()).map(([key, e]) => ({
+      key,
+      label: e.label,
+      sizeHint: e.sizeHint,
+      pinned: e.pinned,
+      shouldLazy: e.shouldLazy,
+      mounted: e.mounted,
+    }));
+    const total = rows.length;
+    const mounted = rows.filter((r) => r.mounted).length;
+    const unmounted = rows.filter((r) => !r.mounted).length;
+    const lazyCount = rows.filter((r) => r.shouldLazy).length;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[LazyPiece] total=${total} mounted=${mounted} unmounted=${unmounted} lazyEligible=${lazyCount} bypassed=${total - lazyCount}`,
+    );
+    // eslint-disable-next-line no-console
+    console.table(rows);
+    return { total, mounted, unmounted, lazyEligible: lazyCount, rows };
+  };
+}
+
 function findScrollParent(el: HTMLElement | null): Element | null {
   let cur: HTMLElement | null = el?.parentElement ?? null;
   while (cur) {
@@ -22,6 +57,8 @@ interface LazyPieceProps {
   sizeHint: number;
   cacheKey: string;
   disabled?: boolean;
+  /** TEMP DEBUG label, e.g. "markdown[42]: Hello world..." */
+  debugLabel?: string;
 }
 
 export function LazyPiece({
@@ -30,6 +67,7 @@ export function LazyPiece({
   sizeHint,
   cacheKey,
   disabled,
+  debugLabel,
 }: LazyPieceProps) {
   const shouldLazy = !disabled && !pinned && sizeHint >= LAZY_THRESHOLD;
   const placeholderRef = useRef<HTMLDivElement | null>(null);
@@ -39,6 +77,32 @@ export function LazyPiece({
   const [cachedHeight, setCachedHeight] = useState<number | undefined>(() =>
     heightCache.get(cacheKey),
   );
+
+  // TEMP DEBUG: keep registry in sync.
+  useEffect(() => {
+    lazyDebugRegistry.set(cacheKey, {
+      label: debugLabel ?? "(unlabeled)",
+      sizeHint,
+      pinned,
+      shouldLazy,
+      mounted,
+    });
+    return () => {
+      lazyDebugRegistry.delete(cacheKey);
+    };
+  }, [cacheKey, debugLabel, sizeHint, pinned, shouldLazy, mounted]);
+
+  // TEMP DEBUG: log mount/unmount transitions.
+  const prevMountedRef = useRef(mounted);
+  useEffect(() => {
+    if (prevMountedRef.current !== mounted) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[LazyPiece] ${mounted ? "MOUNT  " : "UNMOUNT"} key=${cacheKey} size=${sizeHint} pinned=${pinned} :: ${debugLabel ?? ""}`,
+      );
+      prevMountedRef.current = mounted;
+    }
+  }, [mounted, cacheKey, sizeHint, pinned, debugLabel]);
 
   // Re-evaluate mount state when shouldLazy flips (e.g. piece becomes pinned).
   useEffect(() => {
@@ -56,9 +120,21 @@ export function LazyPiece({
     const target = placeholderRef.current;
     if (!target) return;
     const root = findScrollParent(target);
+    // TEMP DEBUG: log which scroller the observer attached to.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[LazyPiece] observer attached key=${cacheKey} root=`,
+      root,
+      `rootTag=${root ? (root as HTMLElement).tagName : "VIEWPORT"}`,
+      `rootClass=${root ? (root as HTMLElement).className : ""}`,
+    );
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[LazyPiece] entry key=${cacheKey} intersecting=${entry.isIntersecting} ratio=${entry.intersectionRatio.toFixed(2)}`,
+          );
           if (entry.isIntersecting) {
             if (unmountTimerRef.current) {
               clearTimeout(unmountTimerRef.current);

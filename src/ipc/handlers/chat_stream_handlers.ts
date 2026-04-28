@@ -281,6 +281,19 @@ export function registerChatStreamHandlers() {
     // would have been reached (e.g. quota errors during retry setup).
     let pendingIpcPatch: StreamingPatch | null = null;
     let trailingIpcTimer: NodeJS.Timeout | null = null;
+    let lastIpcSentAt = 0;
+    let placeholderAssistantMessageId: number | null = null;
+    const IPC_THROTTLE_MS = 80;
+    const sendStreamingPatch = (patch: StreamingPatch) => {
+      if (placeholderAssistantMessageId == null) return;
+      safeSend(event.sender, "chat:response:chunk", {
+        chatId: req.chatId,
+        streamingMessageId: placeholderAssistantMessageId,
+        streamingPatch: patch,
+      });
+      lastIpcSentAt = Date.now();
+      pendingIpcPatch = null;
+    };
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -602,6 +615,7 @@ ${componentSnippet}
           }),
         })
         .returning();
+      placeholderAssistantMessageId = placeholderAssistantMessage.id;
 
       // Fetch updated chat data after possible deletions and additions
       const updatedChat = await db.query.chats.findFirst({
@@ -628,18 +642,6 @@ ${componentSnippet}
       });
 
       const fullResponseBuf = new StreamingBuffer();
-      let lastIpcSentAt = 0;
-      const IPC_THROTTLE_MS = 80;
-
-      const sendStreamingPatch = (patch: StreamingPatch) => {
-        safeSend(event.sender, "chat:response:chunk", {
-          chatId: req.chatId,
-          streamingMessageId: placeholderAssistantMessage.id,
-          streamingPatch: patch,
-        });
-        lastIpcSentAt = Date.now();
-        pendingIpcPatch = null;
-      };
 
       // Merge a newer patch into a still-pending one. Each patch is
       // "replace content[offset..] with content"; the merged form
@@ -660,16 +662,6 @@ ${componentSnippet}
           content:
             pendingIpcPatch.content.slice(0, prefixLen) + next.content,
         };
-      };
-
-      const flushPendingIpcPatch = () => {
-        if (trailingIpcTimer) {
-          clearTimeout(trailingIpcTimer);
-          trailingIpcTimer = null;
-        }
-        if (pendingIpcPatch) {
-          sendStreamingPatch(pendingIpcPatch);
-        }
       };
 
       const queueStreamingPatch = (patch: StreamingPatch) => {

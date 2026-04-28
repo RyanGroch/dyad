@@ -273,6 +273,31 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const lastIndex = contentPieces.length - 1;
   const scope = cacheScope ?? "anon";
 
+  // TEMP DEBUG: log piece list when count changes for this message.
+  const lastLoggedCountRef = useRef<number>(-1);
+  if (lastLoggedCountRef.current !== contentPieces.length) {
+    lastLoggedCountRef.current = contentPieces.length;
+    // eslint-disable-next-line no-console
+    console.log(
+      `[DyadMarkdownParser] scope=${scope} pieces=${contentPieces.length} streaming=${isStreaming} safeBoundary=${safeBoundary}`,
+    );
+    // eslint-disable-next-line no-console
+    console.table(
+      contentPieces.map((p, i) => {
+        const c = p.type === "markdown" ? p.content : p.tagInfo.content;
+        return {
+          i,
+          type: p.type === "markdown" ? "markdown" : `tag<${p.tagInfo.tag}>`,
+          chars: c.length,
+          start: p._start,
+          end: p._end,
+          inRewritable: p._end > safeBoundary,
+          snippet: c.slice(0, 60).replace(/\s+/g, " "),
+        };
+      }),
+    );
+  }
+
   return (
     <>
       {contentPieces.map((piece, index) => {
@@ -287,6 +312,15 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
             ? piece.content.length
             : piece.tagInfo.content.length;
         const pieceKey = `${scope}:${piece._start}`;
+        // TEMP DEBUG: short label for logging.
+        const snippet =
+          piece.type === "markdown"
+            ? piece.content.slice(0, 80).replace(/\s+/g, " ")
+            : piece.tagInfo.content.slice(0, 80).replace(/\s+/g, " ");
+        const debugLabel =
+          piece.type === "markdown"
+            ? `markdown[${index}] (${piece.content.length}ch): ${snippet}`
+            : `tag<${piece.tagInfo.tag}>[${index}] (${piece.tagInfo.content.length}ch): ${snippet}`;
 
         return (
           <React.Fragment key={index}>
@@ -295,6 +329,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
               sizeHint={sizeHint}
               cacheKey={pieceKey}
               disabled={isTestMode}
+              debugLabel={debugLabel}
             >
               {piece.type === "markdown"
                 ? piece.content && <MemoMarkdown content={piece.content} />
