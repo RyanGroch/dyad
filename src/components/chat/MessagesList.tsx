@@ -201,29 +201,45 @@ interface AssistantPiecesEntry {
 
 /**
  * Parses every assistant message into pieces with a per-message incremental
- * cache. As `messages` updates (streaming chunks), only the streamed message's
- * tail is re-parsed; finalized messages reuse cached pieces with stable refs
- * so MemoMarkdown / MemoCustomTag can short-circuit.
+ * cache. Two caching layers:
+ * 1. Per-message: when content is unchanged, reuse the same Entry object ref
+ *    (fast path). When only the tail grew, reuse pieces ≤ prev.safeBoundary
+ *    and parse only the tail.
+ * 2. Map: when no entry was rebuilt and the message-id sequence is unchanged,
+ *    return the same Map ref. Lets downstream `flattenChatItems` short-circuit.
  */
+interface AssistantCacheSlot {
+  content: string;
+  pieces: ContentPiece[];
+  safeBoundary: number;
+  entry: AssistantPiecesEntry;
+}
+
 function useAssistantPieces(
   messages: Message[],
 ): Map<number, AssistantPiecesEntry> {
-  const cacheRef = useRef<
-    Map<
-      number,
-      { content: string; pieces: ContentPiece[]; safeBoundary: number }
-    >
-  >(new Map());
+  const cacheRef = useRef<Map<number, AssistantCacheSlot>>(new Map());
+  const prevResultRef = useRef<Map<number, AssistantPiecesEntry> | null>(null);
+  const prevIdSeqRef = useRef<number[]>([]);
 
   return useMemo(() => {
-    const result = new Map<number, AssistantPiecesEntry>();
-    const seen = new Set<number>();
+    const newCache = new Map<number, AssistantCacheSlot>();
+    const idSeq: number[] = [];
+    let anyChanged = false;
 
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
-      seen.add(msg.id);
+      idSeq.push(msg.id);
       const content = stripCancelledResponseNotice(msg.content);
       const prev = cacheRef.current.get(msg.id);
+
+      // Fast path: content unchanged → reuse entire slot (entry ref stable)
+      if (prev && prev.content === content) {
+        newCache.set(msg.id, prev);
+        continue;
+      }
+
+      anyChanged = true;
       let pieces: ContentPiece[];
       let safeBoundary: number;
 
@@ -277,8 +293,6 @@ function useAssistantPieces(
         safeBoundary = r.safeBoundary;
       }
 
-      cacheRef.current.set(msg.id, { content, pieces, safeBoundary });
-
       const errorMessages: string[] = [];
       let lastErrorPieceIndex = -1;
       pieces.forEach((p, i) => {
@@ -295,18 +309,34 @@ function useAssistantPieces(
         }
       });
 
-      result.set(msg.id, {
+      const entry: AssistantPiecesEntry = {
         pieces,
         safeBoundary,
         errorMessages,
         lastErrorPieceIndex,
-      });
+      };
+      newCache.set(msg.id, { content, pieces, safeBoundary, entry });
     }
 
-    for (const id of Array.from(cacheRef.current.keys())) {
-      if (!seen.has(id)) cacheRef.current.delete(id);
+    // Eviction is implicit (rebuilt cache only contains current ids).
+    // Detect adds/removes via id-sequence change.
+    cacheRef.current = newCache;
+
+    const prevSeq = prevIdSeqRef.current;
+    const seqUnchanged =
+      prevSeq.length === idSeq.length &&
+      prevSeq.every((id, i) => id === idSeq[i]);
+
+    if (!anyChanged && seqUnchanged && prevResultRef.current) {
+      return prevResultRef.current;
     }
 
+    const result = new Map<number, AssistantPiecesEntry>();
+    for (const [id, slot] of newCache) {
+      result.set(id, slot.entry);
+    }
+    prevResultRef.current = result;
+    prevIdSeqRef.current = idSeq;
     return result;
   }, [messages]);
 }
@@ -361,96 +391,203 @@ type FlatItem =
       assistantTextContent: string;
     };
 
-function flattenChatItems(
+/** Build FlatItems for a single message — extracted so the hook can call it
+ * only on cache misses. */
+function buildItemsForMessage(
+  message: Message,
+  isLastMessage: boolean,
+  isCancelledPrompt: boolean,
+  piecesEntry: AssistantPiecesEntry | undefined,
+  isMessageStreaming: boolean,
+  selectedChatId: number | null,
+): FlatItem[] {
+  const items: FlatItem[] = [];
+  if (message.role === "user") {
+    items.push({
+      kind: "user",
+      key: `u:${message.id}`,
+      message,
+      isLastMessage,
+      isCancelledPrompt,
+    });
+    return items;
+  }
+  const isCancelled = isCancelledResponseContent(message.content);
+  const assistantTextContent = stripCancelledResponseNotice(message.content);
+  const hasAssistantText = assistantTextContent.length > 0;
+  const pieces = piecesEntry?.pieces ?? [];
+
+  if (!hasAssistantText && isMessageStreaming) {
+    items.push({
+      kind: "assistant-streaming-init",
+      key: `aini:${message.id}`,
+      message,
+    });
+  } else if (!hasAssistantText && isCancelled) {
+    items.push({
+      kind: "assistant-cancelled-empty",
+      key: `acem:${message.id}`,
+      message,
+    });
+  } else {
+    let firstEmitted = false;
+    pieces.forEach((piece, pieceIndex) => {
+      if (piece.type === "markdown" && !piece.content) return;
+      if (
+        piece.type === "custom-tag" &&
+        HIDDEN_DYAD_TAGS.has(piece.tagInfo.tag)
+      )
+        return;
+      const isLastPiece = pieceIndex === pieces.length - 1;
+      items.push({
+        kind: "assistant-piece",
+        key: `ap:${message.id}:${pieceIndex}`,
+        message,
+        piece,
+        pieceIndex,
+        isFirstItemInMessage: !firstEmitted,
+        showStreamingAnim: isLastPiece && isMessageStreaming,
+        isCancelled,
+        isStreaming: isMessageStreaming,
+      });
+      firstEmitted = true;
+      if (
+        piecesEntry &&
+        pieceIndex === piecesEntry.lastErrorPieceIndex &&
+        piecesEntry.errorMessages.length > 1 &&
+        !isMessageStreaming &&
+        selectedChatId != null
+      ) {
+        items.push({
+          kind: "fix-all-errors",
+          key: `fxe:${message.id}`,
+          message,
+          chatId: selectedChatId,
+          errorMessages: piecesEntry.errorMessages,
+        });
+      }
+    });
+  }
+
+  items.push({
+    kind: "assistant-meta",
+    key: `am:${message.id}`,
+    message,
+    isLastMessage,
+    isCancelled,
+    hasAssistantText,
+    assistantTextContent,
+  });
+  return items;
+}
+
+interface FlatItemSig {
+  message: Message;
+  piecesEntry: AssistantPiecesEntry | undefined;
+  isLastMessage: boolean;
+  isCancelledPrompt: boolean;
+  isMessageStreaming: boolean;
+  selectedChatId: number | null;
+}
+
+interface FlatItemSlot {
+  sig: FlatItemSig;
+  items: FlatItem[];
+}
+
+/**
+ * Per-message FlatItem subarray cache. Each chunk during streaming, only the
+ * streamed message's signature changes; every other message hits the cache
+ * and we splice in the same `items` array refs. If nothing changed at all,
+ * returns the prior `items` array ref so the outer Virtuoso can short-circuit.
+ */
+function useFlatItems(
   messages: Message[],
   piecesByMsgId: Map<number, AssistantPiecesEntry>,
   isStreaming: boolean,
   cancelledPromptIndices: Set<number>,
   selectedChatId: number | null,
 ): FlatItem[] {
-  const items: FlatItem[] = [];
-  messages.forEach((message, index) => {
-    const isLastMessage = index === messages.length - 1;
-    if (message.role === "user") {
-      items.push({
-        kind: "user",
-        key: `u:${message.id}`,
+  const cacheRef = useRef<Map<number, FlatItemSlot>>(new Map());
+  const prevItemsRef = useRef<FlatItem[] | null>(null);
+  const prevIdSeqRef = useRef<number[]>([]);
+
+  return useMemo(() => {
+    const newCache = new Map<number, FlatItemSlot>();
+    const idSeq: number[] = [];
+    let anyChanged = false;
+
+    messages.forEach((message, index) => {
+      idSeq.push(message.id);
+      const isLastMessage = index === messages.length - 1;
+      const isCancelledPrompt = cancelledPromptIndices.has(index);
+      const piecesEntry = piecesByMsgId.get(message.id);
+      const isMessageStreaming =
+        message.role === "assistant" && isStreaming && isLastMessage;
+
+      const sig: FlatItemSig = {
+        message,
+        piecesEntry,
+        isLastMessage,
+        isCancelledPrompt,
+        isMessageStreaming,
+        selectedChatId,
+      };
+
+      const prev = cacheRef.current.get(message.id);
+      if (
+        prev &&
+        prev.sig.message === sig.message &&
+        prev.sig.piecesEntry === sig.piecesEntry &&
+        prev.sig.isLastMessage === sig.isLastMessage &&
+        prev.sig.isCancelledPrompt === sig.isCancelledPrompt &&
+        prev.sig.isMessageStreaming === sig.isMessageStreaming &&
+        prev.sig.selectedChatId === sig.selectedChatId
+      ) {
+        newCache.set(message.id, prev);
+        return;
+      }
+
+      anyChanged = true;
+      const items = buildItemsForMessage(
         message,
         isLastMessage,
-        isCancelledPrompt: cancelledPromptIndices.has(index),
-      });
-      return;
-    }
-    const isCancelled = isCancelledResponseContent(message.content);
-    const assistantTextContent = stripCancelledResponseNotice(message.content);
-    const hasAssistantText = assistantTextContent.length > 0;
-    const data = piecesByMsgId.get(message.id);
-    const pieces = data?.pieces ?? [];
-    const isMessageStreaming = isStreaming && isLastMessage;
-
-    if (!hasAssistantText && isMessageStreaming) {
-      items.push({
-        kind: "assistant-streaming-init",
-        key: `aini:${message.id}`,
-        message,
-      });
-    } else if (!hasAssistantText && isCancelled) {
-      items.push({
-        kind: "assistant-cancelled-empty",
-        key: `acem:${message.id}`,
-        message,
-      });
-    } else {
-      let firstEmitted = false;
-      pieces.forEach((piece, pieceIndex) => {
-        if (piece.type === "markdown" && !piece.content) return;
-        if (
-          piece.type === "custom-tag" &&
-          HIDDEN_DYAD_TAGS.has(piece.tagInfo.tag)
-        )
-          return;
-        const isLastPiece = pieceIndex === pieces.length - 1;
-        items.push({
-          kind: "assistant-piece",
-          key: `ap:${message.id}:${pieceIndex}`,
-          message,
-          piece,
-          pieceIndex,
-          isFirstItemInMessage: !firstEmitted,
-          showStreamingAnim: isLastPiece && isMessageStreaming,
-          isCancelled,
-          isStreaming: isMessageStreaming,
-        });
-        firstEmitted = true;
-        if (
-          data &&
-          pieceIndex === data.lastErrorPieceIndex &&
-          data.errorMessages.length > 1 &&
-          !isMessageStreaming &&
-          selectedChatId != null
-        ) {
-          items.push({
-            kind: "fix-all-errors",
-            key: `fxe:${message.id}`,
-            message,
-            chatId: selectedChatId,
-            errorMessages: data.errorMessages,
-          });
-        }
-      });
-    }
-
-    items.push({
-      kind: "assistant-meta",
-      key: `am:${message.id}`,
-      message,
-      isLastMessage,
-      isCancelled,
-      hasAssistantText,
-      assistantTextContent,
+        isCancelledPrompt,
+        piecesEntry,
+        isMessageStreaming,
+        selectedChatId,
+      );
+      newCache.set(message.id, { sig, items });
     });
-  });
-  return items;
+
+    cacheRef.current = newCache;
+
+    const prevSeq = prevIdSeqRef.current;
+    const seqUnchanged =
+      prevSeq.length === idSeq.length &&
+      prevSeq.every((id, i) => id === idSeq[i]);
+
+    if (!anyChanged && seqUnchanged && prevItemsRef.current) {
+      return prevItemsRef.current;
+    }
+
+    const out: FlatItem[] = [];
+    for (const message of messages) {
+      const slot = newCache.get(message.id);
+      if (slot) {
+        for (const it of slot.items) out.push(it);
+      }
+    }
+    prevItemsRef.current = out;
+    prevIdSeqRef.current = idSeq;
+    return out;
+  }, [
+    messages,
+    piecesByMsgId,
+    isStreaming,
+    cancelledPromptIndices,
+    selectedChatId,
+  ]);
 }
 
 // Context type for Virtuoso
@@ -739,22 +876,12 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     }, [messages]);
 
     const piecesByMsgId = useAssistantPieces(messages);
-    const items = useMemo(
-      () =>
-        flattenChatItems(
-          messages,
-          piecesByMsgId,
-          isStreaming,
-          cancelledPromptIndices,
-          selectedChatId,
-        ),
-      [
-        messages,
-        piecesByMsgId,
-        isStreaming,
-        cancelledPromptIndices,
-        selectedChatId,
-      ],
+    const items = useFlatItems(
+      messages,
+      piecesByMsgId,
+      isStreaming,
+      cancelledPromptIndices,
+      selectedChatId,
     );
 
     // Memoized item renderer for virtualized list. Each item kind is its own
