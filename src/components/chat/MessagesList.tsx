@@ -1,6 +1,6 @@
 import React from "react";
 import type { Message } from "@/ipc/types";
-import { forwardRef, useState, useCallback, useMemo } from "react";
+import { forwardRef, useState, useCallback, useMemo, useRef } from "react";
 import { Virtuoso } from "react-virtuoso";
 import ChatMessage from "./ChatMessage";
 import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
@@ -20,7 +20,19 @@ import { useLanguageModelProviders } from "@/hooks/useLanguageModelProviders";
 import { useSettings } from "@/hooks/useSettings";
 import { useUserBudgetInfo } from "@/hooks/useUserBudgetInfo";
 import { PromoMessage } from "./PromoMessage";
-import { isCancelledResponseContent } from "@/shared/chatCancellation";
+import {
+  isCancelledResponseContent,
+  stripCancelledResponseNotice,
+} from "@/shared/chatCancellation";
+import {
+  parseCustomTags,
+  MemoMarkdown,
+  MemoCustomTag,
+  type ContentPiece,
+} from "./DyadMarkdownParser";
+import { AssistantMetaFooter } from "./AssistantMetaFooter";
+import { StreamingLoadingAnimation } from "./StreamingLoadingAnimation";
+import { FixAllErrorsButton } from "./FixAllErrorsButton";
 
 interface MessagesListProps {
   messages: Message[];
@@ -30,6 +42,416 @@ interface MessagesListProps {
 
 // Memoize ChatMessage at module level to prevent recreation on every render
 const MemoizedChatMessage = React.memo(ChatMessage);
+
+// Per-item memoized components. React.memo's shallow compare short-circuits
+// re-renders when an item's props are unchanged — critical during streaming,
+// where MessagesList re-renders ~12/sec but only the streamed message's tail
+// piece actually changes.
+const UserItem = React.memo(function UserItem({
+  message,
+  isLastMessage,
+  isCancelledPrompt,
+}: {
+  message: Message;
+  isLastMessage: boolean;
+  isCancelledPrompt: boolean;
+}) {
+  return (
+    <div className="px-4 min-h-px">
+      <MemoizedChatMessage
+        message={message}
+        isLastMessage={isLastMessage}
+        isCancelledPrompt={isCancelledPrompt}
+      />
+    </div>
+  );
+});
+
+const StreamingInitItem = React.memo(function StreamingInitItem() {
+  return (
+    <div className="px-4 min-h-px">
+      <div className="flex justify-start">
+        <div className="mt-2 w-full max-w-3xl mx-auto group">
+          <div className="rounded-lg p-2">
+            <StreamingLoadingAnimation variant="initial" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const CancelledEmptyItem = React.memo(function CancelledEmptyItem() {
+  return (
+    <div className="px-4 min-h-px">
+      <div className="flex justify-start">
+        <div className="mt-2 w-full max-w-3xl mx-auto group opacity-50">
+          <div className="rounded-lg p-2">
+            <div className="prose dark:prose-invert max-w-none text-[15px] italic text-muted-foreground">
+              Response cancelled before any content was generated.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const PieceItem = React.memo(function PieceItem({
+  piece,
+  isFirstItemInMessage,
+  isCancelled,
+  isStreaming,
+  showStreamingAnim,
+}: {
+  piece: ContentPiece;
+  isFirstItemInMessage: boolean;
+  isCancelled: boolean;
+  isStreaming: boolean;
+  showStreamingAnim: boolean;
+}) {
+  return (
+    <div className="px-4 min-h-px">
+      <div className="flex justify-start">
+        <div
+          className={`w-full max-w-3xl mx-auto group ${
+            isFirstItemInMessage ? "mt-2" : ""
+          } ${isCancelled ? "opacity-50" : ""}`}
+        >
+          <div
+            className="prose dark:prose-invert prose-headings:mb-2 prose-p:my-1 prose-pre:my-0 max-w-none break-words text-[15px] px-2"
+            suppressHydrationWarning
+          >
+            {piece.type === "markdown"
+              ? piece.content && <MemoMarkdown content={piece.content} />
+              : <MemoCustomTag
+                  tagInfo={piece.tagInfo}
+                  isStreaming={isStreaming}
+                />}
+            {showStreamingAnim && (
+              <StreamingLoadingAnimation variant="streaming" />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const FixAllErrorsItem = React.memo(function FixAllErrorsItem({
+  chatId,
+  errorMessages,
+}: {
+  chatId: number;
+  errorMessages: string[];
+}) {
+  return (
+    <div className="px-4 min-h-px">
+      <div className="flex justify-start">
+        <div className="w-full max-w-3xl mx-auto px-2">
+          <div className="mt-3 w-full flex">
+            <FixAllErrorsButton
+              errorMessages={errorMessages}
+              chatId={chatId}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MetaItem = React.memo(function MetaItem({
+  message,
+  isLastMessage,
+  isCancelled,
+  hasAssistantText,
+  assistantTextContent,
+  versions,
+}: {
+  message: Message;
+  isLastMessage: boolean;
+  isCancelled: boolean;
+  hasAssistantText: boolean;
+  assistantTextContent: string;
+  versions: { oid: string; message: string }[];
+}) {
+  return (
+    <div className="px-4 min-h-px">
+      <AssistantMetaFooter
+        message={message}
+        isLastMessage={isLastMessage}
+        isCancelled={isCancelled}
+        hasAssistantText={hasAssistantText}
+        assistantTextContent={assistantTextContent}
+        versions={versions}
+      />
+    </div>
+  );
+});
+
+const computeItemKey = (_index: number, item: { key: string }) => item.key;
+
+interface AssistantPiecesEntry {
+  pieces: ContentPiece[];
+  safeBoundary: number;
+  errorMessages: string[];
+  lastErrorPieceIndex: number;
+}
+
+/**
+ * Parses every assistant message into pieces with a per-message incremental
+ * cache. As `messages` updates (streaming chunks), only the streamed message's
+ * tail is re-parsed; finalized messages reuse cached pieces with stable refs
+ * so MemoMarkdown / MemoCustomTag can short-circuit.
+ */
+function useAssistantPieces(
+  messages: Message[],
+): Map<number, AssistantPiecesEntry> {
+  const cacheRef = useRef<
+    Map<
+      number,
+      { content: string; pieces: ContentPiece[]; safeBoundary: number }
+    >
+  >(new Map());
+
+  return useMemo(() => {
+    const result = new Map<number, AssistantPiecesEntry>();
+    const seen = new Set<number>();
+
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      seen.add(msg.id);
+      const content = stripCancelledResponseNotice(msg.content);
+      const prev = cacheRef.current.get(msg.id);
+      let pieces: ContentPiece[];
+      let safeBoundary: number;
+
+      if (
+        prev &&
+        prev.safeBoundary > 0 &&
+        content.length >= prev.safeBoundary &&
+        content.startsWith(prev.content.slice(0, prev.safeBoundary))
+      ) {
+        const reused: ContentPiece[] = [];
+        for (const p of prev.pieces) {
+          if (p._end <= prev.safeBoundary) reused.push(p);
+          else break;
+        }
+        const reusedEnd = reused.length ? reused[reused.length - 1]._end : 0;
+        const tail = content.slice(reusedEnd);
+        const tailResult = parseCustomTags(tail, reusedEnd);
+        const merged: ContentPiece[] = reused.slice();
+        const tailPieces = tailResult.pieces;
+        let tailStart = 0;
+        if (
+          merged.length > 0 &&
+          tailPieces.length > 0 &&
+          merged[merged.length - 1].type === "markdown" &&
+          tailPieces[0].type === "markdown"
+        ) {
+          const last = merged[merged.length - 1] as Extract<
+            ContentPiece,
+            { type: "markdown" }
+          >;
+          const first = tailPieces[0] as Extract<
+            ContentPiece,
+            { type: "markdown" }
+          >;
+          merged[merged.length - 1] = {
+            type: "markdown",
+            content: last.content + first.content,
+            _start: last._start,
+            _end: first._end,
+          };
+          tailStart = 1;
+        }
+        for (let i = tailStart; i < tailPieces.length; i++) {
+          merged.push(tailPieces[i]);
+        }
+        pieces = merged;
+        safeBoundary = tailResult.safeBoundary;
+      } else {
+        const r = parseCustomTags(content, 0);
+        pieces = r.pieces;
+        safeBoundary = r.safeBoundary;
+      }
+
+      cacheRef.current.set(msg.id, { content, pieces, safeBoundary });
+
+      const errorMessages: string[] = [];
+      let lastErrorPieceIndex = -1;
+      pieces.forEach((p, i) => {
+        if (
+          p.type === "custom-tag" &&
+          p.tagInfo.tag === "dyad-output" &&
+          p.tagInfo.attributes.type === "error"
+        ) {
+          const m = p.tagInfo.attributes.message;
+          if (m?.trim()) {
+            errorMessages.push(m.trim());
+            lastErrorPieceIndex = i;
+          }
+        }
+      });
+
+      result.set(msg.id, {
+        pieces,
+        safeBoundary,
+        errorMessages,
+        lastErrorPieceIndex,
+      });
+    }
+
+    for (const id of Array.from(cacheRef.current.keys())) {
+      if (!seen.has(id)) cacheRef.current.delete(id);
+    }
+
+    return result;
+  }, [messages]);
+}
+
+// Custom tags whose `renderCustomTag` output is intentionally null/empty.
+// Skipping these in flatten avoids 0-height Virtuoso items.
+const HIDDEN_DYAD_TAGS = new Set(["dyad-chat-summary"]);
+
+type FlatItem =
+  | {
+      kind: "user";
+      key: string;
+      message: Message;
+      isLastMessage: boolean;
+      isCancelledPrompt: boolean;
+    }
+  | {
+      kind: "assistant-streaming-init";
+      key: string;
+      message: Message;
+    }
+  | {
+      kind: "assistant-cancelled-empty";
+      key: string;
+      message: Message;
+    }
+  | {
+      kind: "assistant-piece";
+      key: string;
+      message: Message;
+      piece: ContentPiece;
+      pieceIndex: number;
+      isFirstItemInMessage: boolean;
+      showStreamingAnim: boolean;
+      isCancelled: boolean;
+      isStreaming: boolean;
+    }
+  | {
+      kind: "fix-all-errors";
+      key: string;
+      message: Message;
+      chatId: number;
+      errorMessages: string[];
+    }
+  | {
+      kind: "assistant-meta";
+      key: string;
+      message: Message;
+      isLastMessage: boolean;
+      isCancelled: boolean;
+      hasAssistantText: boolean;
+      assistantTextContent: string;
+    };
+
+function flattenChatItems(
+  messages: Message[],
+  piecesByMsgId: Map<number, AssistantPiecesEntry>,
+  isStreaming: boolean,
+  cancelledPromptIndices: Set<number>,
+  selectedChatId: number | null,
+): FlatItem[] {
+  const items: FlatItem[] = [];
+  messages.forEach((message, index) => {
+    const isLastMessage = index === messages.length - 1;
+    if (message.role === "user") {
+      items.push({
+        kind: "user",
+        key: `u:${message.id}`,
+        message,
+        isLastMessage,
+        isCancelledPrompt: cancelledPromptIndices.has(index),
+      });
+      return;
+    }
+    const isCancelled = isCancelledResponseContent(message.content);
+    const assistantTextContent = stripCancelledResponseNotice(message.content);
+    const hasAssistantText = assistantTextContent.length > 0;
+    const data = piecesByMsgId.get(message.id);
+    const pieces = data?.pieces ?? [];
+    const isMessageStreaming = isStreaming && isLastMessage;
+
+    if (!hasAssistantText && isMessageStreaming) {
+      items.push({
+        kind: "assistant-streaming-init",
+        key: `aini:${message.id}`,
+        message,
+      });
+    } else if (!hasAssistantText && isCancelled) {
+      items.push({
+        kind: "assistant-cancelled-empty",
+        key: `acem:${message.id}`,
+        message,
+      });
+    } else {
+      let firstEmitted = false;
+      pieces.forEach((piece, pieceIndex) => {
+        if (piece.type === "markdown" && !piece.content) return;
+        if (
+          piece.type === "custom-tag" &&
+          HIDDEN_DYAD_TAGS.has(piece.tagInfo.tag)
+        )
+          return;
+        const isLastPiece = pieceIndex === pieces.length - 1;
+        items.push({
+          kind: "assistant-piece",
+          key: `ap:${message.id}:${pieceIndex}`,
+          message,
+          piece,
+          pieceIndex,
+          isFirstItemInMessage: !firstEmitted,
+          showStreamingAnim: isLastPiece && isMessageStreaming,
+          isCancelled,
+          isStreaming: isMessageStreaming,
+        });
+        firstEmitted = true;
+        if (
+          data &&
+          pieceIndex === data.lastErrorPieceIndex &&
+          data.errorMessages.length > 1 &&
+          !isMessageStreaming &&
+          selectedChatId != null
+        ) {
+          items.push({
+            kind: "fix-all-errors",
+            key: `fxe:${message.id}`,
+            message,
+            chatId: selectedChatId,
+            errorMessages: data.errorMessages,
+          });
+        }
+      });
+    }
+
+    items.push({
+      kind: "assistant-meta",
+      key: `am:${message.id}`,
+      message,
+      isLastMessage,
+      isCancelled,
+      hasAssistantText,
+      assistantTextContent,
+    });
+  });
+  return items;
+}
 
 // Context type for Virtuoso
 interface FooterContext {
@@ -316,23 +738,73 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
       return indices;
     }, [messages]);
 
-    // Memoized item renderer for virtualized list
-    const itemContent = useCallback(
-      (index: number, message: Message) => {
-        const isLastMessage = index === messages.length - 1;
-        const messageKey = message.id;
+    const piecesByMsgId = useAssistantPieces(messages);
+    const items = useMemo(
+      () =>
+        flattenChatItems(
+          messages,
+          piecesByMsgId,
+          isStreaming,
+          cancelledPromptIndices,
+          selectedChatId,
+        ),
+      [
+        messages,
+        piecesByMsgId,
+        isStreaming,
+        cancelledPromptIndices,
+        selectedChatId,
+      ],
+    );
 
-        return (
-          <div className="px-4" key={messageKey}>
-            <MemoizedChatMessage
-              message={message}
-              isLastMessage={isLastMessage}
-              isCancelledPrompt={cancelledPromptIndices.has(index)}
-            />
-          </div>
-        );
+    // Memoized item renderer for virtualized list. Each item kind is its own
+    // React.memo component so unchanged items short-circuit on re-render.
+    const itemContent = useCallback(
+      (_index: number, item: FlatItem) => {
+        switch (item.kind) {
+          case "user":
+            return (
+              <UserItem
+                message={item.message}
+                isLastMessage={item.isLastMessage}
+                isCancelledPrompt={item.isCancelledPrompt}
+              />
+            );
+          case "assistant-streaming-init":
+            return <StreamingInitItem />;
+          case "assistant-cancelled-empty":
+            return <CancelledEmptyItem />;
+          case "assistant-piece":
+            return (
+              <PieceItem
+                piece={item.piece}
+                isFirstItemInMessage={item.isFirstItemInMessage}
+                isCancelled={item.isCancelled}
+                isStreaming={item.isStreaming}
+                showStreamingAnim={item.showStreamingAnim}
+              />
+            );
+          case "fix-all-errors":
+            return (
+              <FixAllErrorsItem
+                chatId={item.chatId}
+                errorMessages={item.errorMessages}
+              />
+            );
+          case "assistant-meta":
+            return (
+              <MetaItem
+                message={item.message}
+                isLastMessage={item.isLastMessage}
+                isCancelled={item.isCancelled}
+                hasAssistantText={item.hasAssistantText}
+                assistantTextContent={item.assistantTextContent}
+                versions={versions}
+              />
+            );
+        }
       },
-      [messages.length, cancelledPromptIndices],
+      [versions],
     );
 
     // Create context object for Footer component with stable references
@@ -437,10 +909,11 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
         data-testid="messages-list"
       >
         <Virtuoso
-          data={messages}
-          increaseViewportBy={{ top: 1000, bottom: 500 }}
-          initialTopMostItemIndex={messages.length - 1}
+          data={items}
+          increaseViewportBy={{ top: 3000, bottom: 2000 }}
+          initialTopMostItemIndex={items.length - 1}
           itemContent={itemContent}
+          computeItemKey={computeItemKey}
           components={{ Footer: FooterComponent }}
           context={footerContext}
           atBottomThreshold={80}

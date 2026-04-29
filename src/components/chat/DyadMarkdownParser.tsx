@@ -46,8 +46,6 @@ import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
 import { unescapeXmlAttr, unescapeXmlContent } from "../../../shared/xmlEscape";
-import { LazyPiece } from "./LazyPiece";
-import { useSettings } from "@/hooks/useSettings";
 
 const DYAD_CUSTOM_TAGS = [
   "dyad-write",
@@ -93,15 +91,9 @@ const DYAD_CUSTOM_TAGS = [
 
 interface DyadMarkdownParserProps {
   content: string;
-  /**
-   * Stable scope used to namespace per-piece state (height cache for
-   * LazyPiece). Pass the message id so two messages don't collide on
-   * piece offsets.
-   */
-  cacheScope?: string | number;
 }
 
-type CustomTagInfo = {
+export type CustomTagInfo = {
   tag: string;
   attributes: Record<string, string>;
   content: string;
@@ -109,7 +101,7 @@ type CustomTagInfo = {
   inProgress?: boolean;
 };
 
-type ContentPiece =
+export type ContentPiece =
   | { type: "markdown"; content: string; _start: number; _end: number }
   | {
       type: "custom-tag";
@@ -156,12 +148,9 @@ export const VanillaMarkdownParser = ({ content }: { content: string }) => {
  */
 export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   content,
-  cacheScope,
 }) => {
   const chatId = useAtomValue(selectedChatIdAtom);
   const isStreaming = useAtomValue(isStreamingByIdAtom).get(chatId!) ?? false;
-  const { settings } = useSettings();
-  const isTestMode = settings?.isTestMode ?? false;
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
@@ -270,85 +259,29 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     };
   }, [contentPieces]);
 
-  const lastIndex = contentPieces.length - 1;
-  const scope = cacheScope ?? "anon";
-
-  // TEMP DEBUG: log piece list when count changes for this message.
-  const lastLoggedCountRef = useRef<number>(-1);
-  if (lastLoggedCountRef.current !== contentPieces.length) {
-    lastLoggedCountRef.current = contentPieces.length;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[DyadMarkdownParser] scope=${scope} pieces=${contentPieces.length} streaming=${isStreaming} safeBoundary=${safeBoundary}`,
-    );
-    // eslint-disable-next-line no-console
-    console.table(
-      contentPieces.map((p, i) => {
-        const c = p.type === "markdown" ? p.content : p.tagInfo.content;
-        return {
-          i,
-          type: p.type === "markdown" ? "markdown" : `tag<${p.tagInfo.tag}>`,
-          chars: c.length,
-          start: p._start,
-          end: p._end,
-          inRewritable: p._end > safeBoundary,
-          snippet: c.slice(0, 60).replace(/\s+/g, " "),
-        };
-      }),
-    );
-  }
-
   return (
     <>
-      {contentPieces.map((piece, index) => {
-        const isLast = index === lastIndex;
-        // Pin the streaming tail (still growing) and any piece that
-        // straddles or sits inside the parser's still-rewritable region —
-        // unmounting those would cause flicker as the tail re-parses.
-        const inRewritableTail = piece._end > safeBoundary;
-        const pinned = (isStreaming && isLast) || inRewritableTail;
-        const sizeHint =
-          piece.type === "markdown"
-            ? piece.content.length
-            : piece.tagInfo.content.length;
-        const pieceKey = `${scope}:${piece._start}`;
-        // TEMP DEBUG: short label for logging.
-        const snippet =
-          piece.type === "markdown"
-            ? piece.content.slice(0, 80).replace(/\s+/g, " ")
-            : piece.tagInfo.content.slice(0, 80).replace(/\s+/g, " ");
-        const debugLabel =
-          piece.type === "markdown"
-            ? `markdown[${index}] (${piece.content.length}ch): ${snippet}`
-            : `tag<${piece.tagInfo.tag}>[${index}] (${piece.tagInfo.content.length}ch): ${snippet}`;
-
-        return (
-          <React.Fragment key={index}>
-            <LazyPiece
-              pinned={pinned}
-              sizeHint={sizeHint}
-              cacheKey={pieceKey}
-              disabled={isTestMode}
-              debugLabel={debugLabel}
-            >
-              {piece.type === "markdown"
-                ? piece.content && <MemoMarkdown content={piece.content} />
-                : <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />}
-            </LazyPiece>
-            {index === lastErrorIndex &&
-              errorCount > 1 &&
-              !isStreaming &&
-              chatId && (
-                <div className="mt-3 w-full flex">
-                  <FixAllErrorsButton
-                    errorMessages={errorMessages}
-                    chatId={chatId}
-                  />
-                </div>
-              )}
-          </React.Fragment>
-        );
-      })}
+      {contentPieces.map((piece, index) => (
+        <React.Fragment key={index}>
+          {piece.type === "markdown"
+            ? piece.content && <MemoMarkdown content={piece.content} />
+            : <MemoCustomTag
+                tagInfo={piece.tagInfo}
+                isStreaming={isStreaming}
+              />}
+          {index === lastErrorIndex &&
+            errorCount > 1 &&
+            !isStreaming &&
+            chatId && (
+              <div className="mt-3 w-full flex">
+                <FixAllErrorsButton
+                  errorMessages={errorMessages}
+                  chatId={chatId}
+                />
+              </div>
+            )}
+        </React.Fragment>
+      ))}
     </>
   );
 };
@@ -357,7 +290,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
 // dominant per-render cost during streaming; memoizing on `content` keeps
 // completed segments from re-parsing/re-highlighting every time the trailing
 // piece grows.
-const MemoMarkdown = React.memo(function MemoMarkdown({
+export const MemoMarkdown = React.memo(function MemoMarkdown({
   content,
 }: {
   content: string;
@@ -393,7 +326,7 @@ function tagInfoEqual(a: CustomTagInfo, b: CustomTagInfo): boolean {
 // would never hit. Custom comparator deep-checks the fields that actually
 // affect the rendered output. Completed `<dyad-write>` blocks then skip
 // Shiki re-highlight when only later pieces change.
-const MemoCustomTag = React.memo(
+export const MemoCustomTag = React.memo(
   function MemoCustomTag({
     tagInfo,
     isStreaming,
@@ -481,7 +414,7 @@ function preprocessUnclosedTags(content: string): {
  *   - any unmatched `<` (might become a dyad-tag opening once `>` arrives —
  *     `preprocessUnclosedTags` only sees openings that already have a `>`).
  */
-function parseCustomTags(
+export function parseCustomTags(
   content: string,
   baseOffset: number,
 ): { pieces: ContentPiece[]; safeBoundary: number } {

@@ -189,10 +189,7 @@ const ChatMessage = ({
               >
                 {message.role === "assistant" ? (
                   <>
-                    <DyadMarkdownParser
-                      content={assistantTextContent}
-                      cacheScope={message.id}
-                    />
+                    <DyadMarkdownParser content={assistantTextContent} />
                     {isLastMessage && isStreaming && (
                       <StreamingLoadingAnimation variant="streaming" />
                     )}
