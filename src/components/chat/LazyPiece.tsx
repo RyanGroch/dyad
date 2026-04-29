@@ -1,8 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-const LAZY_THRESHOLD = 2000;
-const ROOT_MARGIN = "1500px 0px 1500px 0px";
-const UNMOUNT_DELAY_MS = 1500;
+// TEMP DEBUG: aggressive thresholds to test DOM-cost hypothesis.
+// Originals: LAZY_THRESHOLD=2000, ROOT_MARGIN="1500px ...", UNMOUNT_DELAY_MS=1500.
+const LAZY_THRESHOLD = 2;
+const ROOT_MARGIN = "100px 0px 0px 0px";
+const UNMOUNT_DELAY_MS = 2000;
 
 const heightCache = new Map<string, number>();
 
