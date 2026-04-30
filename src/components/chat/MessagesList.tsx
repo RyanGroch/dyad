@@ -108,7 +108,7 @@ function flattenMessagesToPieces(
     if (isMessageStreaming) {
       let firstEmitted = false;
       streamingPieces.forEach((piece, i) => {
-        if (piece.type === "markdown" && !piece.content) return;
+        if (piece.type === "markdown" && !piece.content.trim()) return;
         if (
           piece.type === "custom-tag" &&
           HIDDEN_PIECE_TYPES.has(piece.tagInfo.tag)
