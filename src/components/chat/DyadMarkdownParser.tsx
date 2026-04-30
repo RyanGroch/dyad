@@ -93,7 +93,7 @@ interface DyadMarkdownParserProps {
   content: string;
 }
 
-type CustomTagInfo = {
+export type CustomTagInfo = {
   tag: string;
   attributes: Record<string, string>;
   content: string;
@@ -287,7 +287,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
 // dominant per-render cost during streaming; memoizing on `content` keeps
 // completed segments from re-parsing/re-highlighting every time the trailing
 // piece grows.
-const MemoMarkdown = React.memo(function MemoMarkdown({
+export const MemoMarkdown = React.memo(function MemoMarkdown({
   content,
 }: {
   content: string;
@@ -323,7 +323,7 @@ function tagInfoEqual(a: CustomTagInfo, b: CustomTagInfo): boolean {
 // would never hit. Custom comparator deep-checks the fields that actually
 // affect the rendered output. Completed `<dyad-write>` blocks then skip
 // Shiki re-highlight when only later pieces change.
-const MemoCustomTag = React.memo(
+export const MemoCustomTag = React.memo(
   function MemoCustomTag({
     tagInfo,
     isStreaming,
@@ -507,7 +507,7 @@ function getState({
 /**
  * Render a custom tag based on its type
  */
-function renderCustomTag(
+export function renderCustomTag(
   tagInfo: CustomTagInfo,
   { isStreaming }: { isStreaming: boolean },
 ): React.ReactNode {

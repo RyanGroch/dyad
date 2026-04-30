@@ -1,6 +1,6 @@
 import { db } from "../../db";
-import { apps, chats, messages } from "../../db/schema";
-import { desc, eq, and, like } from "drizzle-orm";
+import { apps, chats, messages, messagePieces } from "../../db/schema";
+import { desc, eq, and, like, asc, gte, lt } from "drizzle-orm";
 import type { ChatSearchResult, ChatSummary } from "../../lib/schemas";
 
 import log from "electron-log";
@@ -9,6 +9,7 @@ import { getDyadAppPath } from "../../paths/paths";
 import { getCurrentCommitHash } from "../utils/git_utils";
 import { createTypedHandler } from "./base";
 import { chatContracts } from "../types/chat";
+import { ensurePiecesForMessage } from "../utils/messagePieceStore";
 
 const logger = log.scope("chat_handlers");
 
@@ -171,6 +172,96 @@ export function registerChatHandlers() {
     );
 
     return uniqueChats;
+  });
+
+  createTypedHandler(
+    chatContracts.getMessagePiecesMetadata,
+    async (_, { messageId }) => {
+      await ensurePiecesForMessage(messageId);
+      const rows = await db
+        .select({
+          pieceIndex: messagePieces.pieceIndex,
+          type: messagePieces.type,
+          attributesJson: messagePieces.attributesJson,
+          byteStart: messagePieces.byteStart,
+          byteEnd: messagePieces.byteEnd,
+          estHeightPx: messagePieces.estHeightPx,
+        })
+        .from(messagePieces)
+        .where(eq(messagePieces.messageId, messageId))
+        .orderBy(asc(messagePieces.pieceIndex));
+      return rows.map((r) => ({
+        pieceIndex: r.pieceIndex,
+        type: r.type,
+        attributes: r.attributesJson,
+        byteStart: r.byteStart,
+        byteEnd: r.byteEnd,
+        estHeightPx: r.estHeightPx,
+      }));
+    },
+  );
+
+  createTypedHandler(
+    chatContracts.getMessagePieceRange,
+    async (_, { messageId, fromIndex, toIndex }) => {
+      await ensurePiecesForMessage(messageId);
+      const rows = await db
+        .select()
+        .from(messagePieces)
+        .where(
+          and(
+            eq(messagePieces.messageId, messageId),
+            gte(messagePieces.pieceIndex, fromIndex),
+            lt(messagePieces.pieceIndex, toIndex),
+          ),
+        )
+        .orderBy(asc(messagePieces.pieceIndex));
+      return rows.map((r) => ({
+        pieceIndex: r.pieceIndex,
+        type: r.type,
+        content: r.content,
+        attributes: r.attributesJson,
+        byteStart: r.byteStart,
+        byteEnd: r.byteEnd,
+        estHeightPx: r.estHeightPx,
+      }));
+    },
+  );
+
+  createTypedHandler(
+    chatContracts.getMessagePieceDetail,
+    async (_, { messageId, pieceIndex }) => {
+      await ensurePiecesForMessage(messageId);
+      const row = await db.query.messagePieces.findFirst({
+        where: and(
+          eq(messagePieces.messageId, messageId),
+          eq(messagePieces.pieceIndex, pieceIndex),
+        ),
+      });
+      if (!row) {
+        throw new DyadError("Piece not found", DyadErrorKind.NotFound);
+      }
+      return {
+        pieceIndex: row.pieceIndex,
+        type: row.type,
+        content: row.content,
+        attributes: row.attributesJson,
+        byteStart: row.byteStart,
+        byteEnd: row.byteEnd,
+        estHeightPx: row.estHeightPx,
+      };
+    },
+  );
+
+  createTypedHandler(chatContracts.getMessageFullText, async (_, messageId) => {
+    const msg = await db.query.messages.findFirst({
+      where: eq(messages.id, messageId),
+      columns: { content: true },
+    });
+    if (!msg) {
+      throw new DyadError("Message not found", DyadErrorKind.NotFound);
+    }
+    return msg.content;
   });
 
   logger.debug("Registered chat IPC handlers");

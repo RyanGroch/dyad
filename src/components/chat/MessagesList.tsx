@@ -1,6 +1,6 @@
 import React from "react";
 import type { Message } from "@/ipc/types";
-import { forwardRef, useState, useCallback, useMemo } from "react";
+import { forwardRef, useState, useCallback, useMemo, useEffect } from "react";
 import { Virtuoso } from "react-virtuoso";
 import ChatMessage from "./ChatMessage";
 import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
@@ -21,6 +21,12 @@ import { useSettings } from "@/hooks/useSettings";
 import { useUserBudgetInfo } from "@/hooks/useUserBudgetInfo";
 import { PromoMessage } from "./PromoMessage";
 import { isCancelledResponseContent } from "@/shared/chatCancellation";
+import {
+  useMessagePieceMetadata,
+  type MessagePiecesMetadata,
+} from "@/hooks/useMessagePieceMetadata";
+import { WindowedPiece } from "./WindowedPiece";
+import type { MessagePieceMetadata } from "@/ipc/types/chat";
 
 interface MessagesListProps {
   messages: Message[];
@@ -30,6 +36,109 @@ interface MessagesListProps {
 
 // Memoize ChatMessage at module level to prevent recreation on every render
 const MemoizedChatMessage = React.memo(ChatMessage);
+
+const HIDDEN_PIECE_TYPES = new Set(["dyad-chat-summary"]);
+
+type FlatItem =
+  | {
+      kind: "user";
+      key: string;
+      message: Message;
+      isLastMessage: boolean;
+      isCancelledPrompt: boolean;
+    }
+  | {
+      kind: "assistant-streaming";
+      key: string;
+      message: Message;
+      isLastMessage: boolean;
+    }
+  | {
+      kind: "assistant-cancelled-empty";
+      key: string;
+      message: Message;
+    }
+  | {
+      kind: "assistant-piece";
+      key: string;
+      messageId: number;
+      metadata: MessagePieceMetadata;
+      isFirstItemInMessage: boolean;
+      isCancelled: boolean;
+    }
+  | {
+      kind: "assistant-pieces-loading";
+      key: string;
+      messageId: number;
+      estHeightPx: number;
+    };
+
+function flattenMessagesToPieces(
+  messages: Message[],
+  metaByMsgId: Map<number, MessagePiecesMetadata>,
+  isStreaming: boolean,
+  cancelledPromptIndices: Set<number>,
+): FlatItem[] {
+  const items: FlatItem[] = [];
+  messages.forEach((message, index) => {
+    const isLastMessage = index === messages.length - 1;
+    if (message.role === "user") {
+      items.push({
+        kind: "user",
+        key: `u:${message.id}`,
+        message,
+        isLastMessage,
+        isCancelledPrompt: cancelledPromptIndices.has(index),
+      });
+      return;
+    }
+    const isMessageStreaming = isStreaming && isLastMessage;
+    if (isMessageStreaming) {
+      items.push({
+        kind: "assistant-streaming",
+        key: `astream:${message.id}`,
+        message,
+        isLastMessage,
+      });
+      return;
+    }
+    const isCancelled = isCancelledResponseContent(message.content);
+    const meta = metaByMsgId.get(message.id);
+    if (!meta || meta.isLoading) {
+      items.push({
+        kind: "assistant-pieces-loading",
+        key: `aload:${message.id}`,
+        messageId: message.id,
+        estHeightPx: 200,
+      });
+      return;
+    }
+    const visiblePieces = meta.pieces.filter(
+      (p) => !HIDDEN_PIECE_TYPES.has(p.type),
+    );
+    if (visiblePieces.length === 0 && isCancelled) {
+      items.push({
+        kind: "assistant-cancelled-empty",
+        key: `acem:${message.id}`,
+        message,
+      });
+      return;
+    }
+    visiblePieces.forEach((piece, i) => {
+      items.push({
+        kind: "assistant-piece",
+        key: `ap:${message.id}:${piece.pieceIndex}`,
+        messageId: message.id,
+        metadata: piece,
+        isFirstItemInMessage: i === 0,
+        isCancelled,
+      });
+    });
+  });
+  return items;
+}
+
+const computeItemKey = (_index: number, item: FlatItem) => item.key;
 
 // Context type for Virtuoso
 interface FooterContext {
@@ -316,23 +425,90 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
       return indices;
     }, [messages]);
 
-    // Memoized item renderer for virtualized list
-    const itemContent = useCallback(
-      (index: number, message: Message) => {
-        const isLastMessage = index === messages.length - 1;
-        const messageKey = message.id;
+    // Refetch metadata for the streaming message after it completes — its
+    // pieces only exist post-stream-end.
+    const [refetchKey, setRefetchKey] = useState(0);
+    const wasStreamingRef = React.useRef(isStreaming);
+    useEffect(() => {
+      if (wasStreamingRef.current && !isStreaming) {
+        setRefetchKey((k) => k + 1);
+      }
+      wasStreamingRef.current = isStreaming;
+    }, [isStreaming]);
 
-        return (
-          <div className="px-4" key={messageKey}>
-            <MemoizedChatMessage
-              message={message}
-              isLastMessage={isLastMessage}
-              isCancelledPrompt={cancelledPromptIndices.has(index)}
-            />
-          </div>
-        );
+    const piecesByMsgId = useMessagePieceMetadata(
+      messages,
+      isStreaming,
+      refetchKey,
+    );
+
+    const items = useMemo(
+      () =>
+        flattenMessagesToPieces(
+          messages,
+          piecesByMsgId,
+          isStreaming,
+          cancelledPromptIndices,
+        ),
+      [messages, piecesByMsgId, isStreaming, cancelledPromptIndices],
+    );
+
+    const itemContent = useCallback(
+      (_index: number, item: FlatItem) => {
+        switch (item.kind) {
+          case "user":
+            return (
+              <div className="px-4">
+                <MemoizedChatMessage
+                  message={item.message}
+                  isLastMessage={item.isLastMessage}
+                  isCancelledPrompt={item.isCancelledPrompt}
+                />
+              </div>
+            );
+          case "assistant-streaming":
+            return (
+              <div className="px-4">
+                <MemoizedChatMessage
+                  message={item.message}
+                  isLastMessage={item.isLastMessage}
+                  isCancelledPrompt={false}
+                />
+              </div>
+            );
+          case "assistant-cancelled-empty":
+            return (
+              <div className="px-4">
+                <MemoizedChatMessage
+                  message={item.message}
+                  isLastMessage={false}
+                  isCancelledPrompt={false}
+                />
+              </div>
+            );
+          case "assistant-pieces-loading":
+            return (
+              <div
+                className="px-4"
+                style={{ minHeight: item.estHeightPx }}
+                aria-hidden="true"
+              />
+            );
+          case "assistant-piece":
+            return (
+              <div className="px-4">
+                <WindowedPiece
+                  messageId={item.messageId}
+                  metadata={item.metadata}
+                  isStreaming={false}
+                  isCancelled={item.isCancelled}
+                  isFirstItemInMessage={item.isFirstItemInMessage}
+                />
+              </div>
+            );
+        }
       },
-      [messages.length, cancelledPromptIndices],
+      [],
     );
 
     // Create context object for Footer component with stable references
@@ -437,10 +613,11 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
         data-testid="messages-list"
       >
         <Virtuoso
-          data={messages}
+          data={items}
           increaseViewportBy={{ top: 1000, bottom: 500 }}
-          initialTopMostItemIndex={messages.length - 1}
+          initialTopMostItemIndex={Math.max(0, items.length - 1)}
           itemContent={itemContent}
+          computeItemKey={computeItemKey}
           components={{ Footer: FooterComponent }}
           context={footerContext}
           atBottomThreshold={80}
