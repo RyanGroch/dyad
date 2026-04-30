@@ -26,7 +26,10 @@ import {
   type MessagePiecesMetadata,
 } from "@/hooks/useMessagePieceMetadata";
 import { WindowedPiece } from "./WindowedPiece";
+import { InlinePiece } from "./InlinePiece";
+import { useStreamingPieces } from "@/hooks/useStreamingPieces";
 import type { MessagePieceMetadata } from "@/ipc/types/chat";
+import type { ContentPiece } from "@/shared/dyadTagParser";
 
 interface MessagesListProps {
   messages: Message[];
@@ -48,7 +51,11 @@ type FlatItem =
       isCancelledPrompt: boolean;
     }
   | {
-      kind: "assistant-streaming";
+      // Full-message fallback: used when a non-streaming assistant message
+      // has no metadata yet (eager render via existing ChatMessage path).
+      // Briefly visible until metadata fetch resolves; ensures pieces stay
+      // rendered through the streaming→completed transition.
+      kind: "assistant-fallback";
       key: string;
       message: Message;
       isLastMessage: boolean;
@@ -59,6 +66,7 @@ type FlatItem =
       message: Message;
     }
   | {
+      // IPC-fetched piece for a completed message with loaded metadata.
       kind: "assistant-piece";
       key: string;
       messageId: number;
@@ -67,10 +75,13 @@ type FlatItem =
       isCancelled: boolean;
     }
   | {
-      kind: "assistant-pieces-loading";
+      // In-renderer parsed piece for the streaming message. Pieces aren't
+      // durable in DB until stream end, so these are produced from the
+      // streaming msg's `message.content` blob via parseCustomTags.
+      kind: "assistant-streaming-piece";
       key: string;
-      messageId: number;
-      estHeightPx: number;
+      piece: ContentPiece;
+      isFirstItemInMessage: boolean;
     };
 
 function flattenMessagesToPieces(
@@ -78,6 +89,7 @@ function flattenMessagesToPieces(
   metaByMsgId: Map<number, MessagePiecesMetadata>,
   isStreaming: boolean,
   cancelledPromptIndices: Set<number>,
+  streamingPieces: ContentPiece[],
 ): FlatItem[] {
   const items: FlatItem[] = [];
   messages.forEach((message, index) => {
@@ -94,22 +106,59 @@ function flattenMessagesToPieces(
     }
     const isMessageStreaming = isStreaming && isLastMessage;
     if (isMessageStreaming) {
-      items.push({
-        kind: "assistant-streaming",
-        key: `astream:${message.id}`,
-        message,
-        isLastMessage,
+      let firstEmitted = false;
+      streamingPieces.forEach((piece, i) => {
+        if (piece.type === "markdown" && !piece.content) return;
+        if (
+          piece.type === "custom-tag" &&
+          HIDDEN_PIECE_TYPES.has(piece.tagInfo.tag)
+        )
+          return;
+        items.push({
+          kind: "assistant-streaming-piece",
+          key: `asp:${message.id}:${i}`,
+          piece,
+          isFirstItemInMessage: !firstEmitted,
+        });
+        firstEmitted = true;
       });
+      // If streaming has no content yet, fall back so the loader animation
+      // renders via ChatMessage path.
+      if (!firstEmitted) {
+        items.push({
+          kind: "assistant-fallback",
+          key: `afb:${message.id}`,
+          message,
+          isLastMessage,
+        });
+      }
       return;
     }
     const isCancelled = isCancelledResponseContent(message.content);
     const meta = metaByMsgId.get(message.id);
-    if (!meta || meta.isLoading) {
+    if (!meta || meta.isLoading || meta.pieces.length === 0) {
+      // Pieces not loaded (or none segmented yet — e.g. metadata fetch
+      // returned empty due to a race). Render via ChatMessage so content
+      // never disappears between streaming end and metadata arrival.
+      if (
+        meta &&
+        !meta.isLoading &&
+        meta.pieces.length === 0 &&
+        isCancelled &&
+        !message.content.replace(/<dyad-cancelled[^>]*>.*?<\/dyad-cancelled>/g, "").trim()
+      ) {
+        items.push({
+          kind: "assistant-cancelled-empty",
+          key: `acem:${message.id}`,
+          message,
+        });
+        return;
+      }
       items.push({
-        kind: "assistant-pieces-loading",
-        key: `aload:${message.id}`,
-        messageId: message.id,
-        estHeightPx: 200,
+        kind: "assistant-fallback",
+        key: `afb:${message.id}`,
+        message,
+        isLastMessage,
       });
       return;
     }
@@ -442,6 +491,16 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
       refetchKey,
     );
 
+    // Streaming msg's pieces are parsed client-side (DB hasn't segmented
+    // them yet). Empty content while not streaming = no work.
+    const streamingMsgContent = useMemo(() => {
+      if (!isStreaming || messages.length === 0) return "";
+      const last = messages[messages.length - 1];
+      if (last.role !== "assistant") return "";
+      return last.content;
+    }, [isStreaming, messages]);
+    const streamingPieces = useStreamingPieces(streamingMsgContent);
+
     const items = useMemo(
       () =>
         flattenMessagesToPieces(
@@ -449,8 +508,15 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
           piecesByMsgId,
           isStreaming,
           cancelledPromptIndices,
+          streamingPieces,
         ),
-      [messages, piecesByMsgId, isStreaming, cancelledPromptIndices],
+      [
+        messages,
+        piecesByMsgId,
+        isStreaming,
+        cancelledPromptIndices,
+        streamingPieces,
+      ],
     );
 
     const itemContent = useCallback(
@@ -466,7 +532,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
                 />
               </div>
             );
-          case "assistant-streaming":
+          case "assistant-fallback":
             return (
               <div className="px-4">
                 <MemoizedChatMessage
@@ -486,13 +552,16 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
                 />
               </div>
             );
-          case "assistant-pieces-loading":
+          case "assistant-streaming-piece":
             return (
-              <div
-                className="px-4"
-                style={{ minHeight: item.estHeightPx }}
-                aria-hidden="true"
-              />
+              <div className="px-4">
+                <InlinePiece
+                  piece={item.piece}
+                  isStreaming={true}
+                  isCancelled={false}
+                  isFirstItemInMessage={item.isFirstItemInMessage}
+                />
+              </div>
             );
           case "assistant-piece":
             return (
