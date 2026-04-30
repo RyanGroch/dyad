@@ -153,10 +153,52 @@ export const chatsRelations = relations(chats, ({ many, one }) => ({
   }),
 }));
 
-export const messagesRelations = relations(messages, ({ one }) => ({
+export const messagesRelations = relations(messages, ({ one, many }) => ({
   chat: one(chats, {
     fields: [messages.chatId],
     references: [chats.id],
+  }),
+  pieces: many(messagePieces),
+}));
+
+/**
+ * Segmented pieces of an assistant message — one row per markdown chunk or
+ * dyad custom tag. Lets the renderer load only a window of pieces around the
+ * user's scroll position instead of mounting the whole message at once.
+ *
+ * `messages.content` remains the authoritative blob; pieces are a derived
+ * index. Backfilled lazily (on first read) for old messages.
+ */
+export const messagePieces = sqliteTable(
+  "message_pieces",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    messageId: integer("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    pieceIndex: integer("piece_index").notNull(),
+    type: text("type").notNull(),
+    content: text("content").notNull(),
+    attributesJson: text("attributes_json", { mode: "json" }).$type<Record<
+      string,
+      string
+    > | null>(),
+    byteStart: integer("byte_start").notNull(),
+    byteEnd: integer("byte_end").notNull(),
+    estHeightPx: integer("est_height_px").notNull(),
+  },
+  (table) => [
+    unique("message_pieces_msg_idx_unique").on(
+      table.messageId,
+      table.pieceIndex,
+    ),
+  ],
+);
+
+export const messagePiecesRelations = relations(messagePieces, ({ one }) => ({
+  message: one(messages, {
+    fields: [messagePieces.messageId],
+    references: [messages.id],
   }),
 }));
 

@@ -183,6 +183,53 @@ export const TokenCountResultSchema = z.object({
 
 export type TokenCountResult = z.infer<typeof TokenCountResultSchema>;
 
+/**
+ * Lightweight metadata for one piece — every piece in a message returns one
+ * of these. Renderer uses these to build spacer math + scroll-anchor maps
+ * without holding piece content in memory.
+ */
+export const MessagePieceMetadataSchema = z.object({
+  pieceIndex: z.number(),
+  type: z.string(),
+  attributes: z.record(z.string(), z.string()).nullable(),
+  byteStart: z.number(),
+  byteEnd: z.number(),
+  estHeightPx: z.number(),
+});
+
+export type MessagePieceMetadata = z.infer<typeof MessagePieceMetadataSchema>;
+
+/**
+ * Full piece — content + attributes. Returned only for pieces in the active
+ * scroll window or on click-to-expand.
+ */
+export const MessagePieceSchema = z.object({
+  pieceIndex: z.number(),
+  type: z.string(),
+  content: z.string(),
+  attributes: z.record(z.string(), z.string()).nullable(),
+  byteStart: z.number(),
+  byteEnd: z.number(),
+  estHeightPx: z.number(),
+});
+
+export type MessagePiece = z.infer<typeof MessagePieceSchema>;
+
+export const GetMessagePiecesMetadataParamsSchema = z.object({
+  messageId: z.number(),
+});
+
+export const GetMessagePieceRangeParamsSchema = z.object({
+  messageId: z.number(),
+  fromIndex: z.number(),
+  toIndex: z.number(),
+});
+
+export const GetMessagePieceDetailParamsSchema = z.object({
+  messageId: z.number(),
+  pieceIndex: z.number(),
+});
+
 // =============================================================================
 // Chat Contracts (Invoke/Response)
 // =============================================================================
@@ -258,6 +305,30 @@ export const chatContracts = {
     channel: "chat:cancel",
     input: z.number(), // chatId
     output: z.boolean(),
+  }),
+
+  getMessagePiecesMetadata: defineContract({
+    channel: "chat:pieces:get-metadata",
+    input: GetMessagePiecesMetadataParamsSchema,
+    output: z.array(MessagePieceMetadataSchema),
+  }),
+
+  getMessagePieceRange: defineContract({
+    channel: "chat:pieces:get-range",
+    input: GetMessagePieceRangeParamsSchema,
+    output: z.array(MessagePieceSchema),
+  }),
+
+  getMessagePieceDetail: defineContract({
+    channel: "chat:pieces:get-detail",
+    input: GetMessagePieceDetailParamsSchema,
+    output: MessagePieceSchema,
+  }),
+
+  getMessageFullText: defineContract({
+    channel: "chat:message:get-full-text",
+    input: z.number(), // messageId
+    output: z.string(),
   }),
 } as const;
 

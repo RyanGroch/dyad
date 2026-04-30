@@ -16,6 +16,7 @@ import {
 
 import { db } from "../../db";
 import { chats, messages } from "../../db/schema";
+import { rewritePiecesForMessage } from "../utils/messagePieceStore";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { SmartContextMode } from "../../lib/schemas";
 import {
@@ -281,6 +282,7 @@ export function registerChatStreamHandlers() {
     // would have been reached (e.g. quota errors during retry setup).
     let pendingIpcPatch: StreamingPatch | null = null;
     let trailingIpcTimer: NodeJS.Timeout | null = null;
+    let sendStreamingPatch: (patch: StreamingPatch) => void = () => {};
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -631,7 +633,7 @@ ${componentSnippet}
       let lastIpcSentAt = 0;
       const IPC_THROTTLE_MS = 80;
 
-      const sendStreamingPatch = (patch: StreamingPatch) => {
+      sendStreamingPatch = (patch: StreamingPatch) => {
         safeSend(event.sender, "chat:response:chunk", {
           chatId: req.chatId,
           streamingMessageId: placeholderAssistantMessage.id,
@@ -1882,6 +1884,17 @@ ${problemReport.problems
           columns: { content: true },
         });
         const fullResponseStr = persistedRow?.content ?? "";
+        try {
+          await rewritePiecesForMessage(
+            placeholderAssistantMessage.id,
+            fullResponseStr,
+          );
+        } catch (segErr) {
+          logger.error(
+            `Failed to segment message ${placeholderAssistantMessage.id}`,
+            segErr,
+          );
+        }
         // Scrape from: <dyad-chat-summary>Renaming profile file</dyad-chat-title>
         const chatTitle = fullResponseStr.match(
           /<dyad-chat-summary>(.*?)<\/dyad-chat-summary>/,
@@ -1915,6 +1928,25 @@ ${problemReport.problems
               },
             },
           });
+
+          // Re-segment after processFullResponseActions in case it appended
+          // error markup or otherwise mutated the message content.
+          const updatedRow = chat?.messages.find(
+            (m) => m.id === placeholderAssistantMessage.id,
+          );
+          if (updatedRow) {
+            try {
+              await rewritePiecesForMessage(
+                placeholderAssistantMessage.id,
+                updatedRow.content,
+              );
+            } catch (segErr) {
+              logger.error(
+                `Re-segmentation failed for ${placeholderAssistantMessage.id}`,
+                segErr,
+              );
+            }
+          }
 
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
