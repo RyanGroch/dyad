@@ -25,6 +25,12 @@ export const MessageSchema = z.object({
   requestId: z.string().nullable().optional(),
   totalTokens: z.number().nullable().optional(),
   model: z.string().nullable().optional(),
+  /**
+   * Server-derived flag indicating the assistant response was cancelled.
+   * Lets the renderer detect cancellation without holding the cancel-notice
+   * blob in `content` (content is dropped post-stream to save memory).
+   */
+  isCancelled: z.boolean().optional(),
 });
 
 export type Message = z.infer<typeof MessageSchema>;

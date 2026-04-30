@@ -10,6 +10,7 @@ import { getCurrentCommitHash } from "../utils/git_utils";
 import { createTypedHandler } from "./base";
 import { chatContracts } from "../types/chat";
 import { ensurePiecesForMessage } from "../utils/messagePieceStore";
+import { isCancelledResponseContent } from "@/shared/chatCancellation";
 
 const logger = log.scope("chat_handlers");
 
@@ -71,13 +72,37 @@ export function registerChatHandlers() {
       throw new DyadError("Chat not found", DyadErrorKind.NotFound);
     }
 
+    // Backfill pieces for all assistant messages so the renderer can fetch
+    // per-piece via IPC immediately on chat open. Done in parallel; failures
+    // are logged but non-fatal (renderer will retry per-message).
+    await Promise.all(
+      chat.messages
+        .filter((m) => m.role === "assistant")
+        .map((m) =>
+          ensurePiecesForMessage(m.id).catch((err) =>
+            logger.error(`backfill failed for message ${m.id}:`, err),
+          ),
+        ),
+    );
+
     return {
       ...chat,
       title: chat.title ?? "",
-      messages: chat.messages.map((m) => ({
-        ...m,
-        role: m.role as "user" | "assistant",
-      })),
+      messages: chat.messages.map((m) => {
+        const role = m.role as "user" | "assistant";
+        if (role === "assistant") {
+          // Strip content from the wire payload — pieces are durable in DB
+          // and the renderer fetches them lazily. Preserve cancel-state via
+          // the derived flag so the UI can still render the cancelled badge.
+          return {
+            ...m,
+            role,
+            content: "",
+            isCancelled: isCancelledResponseContent(m.content),
+          };
+        }
+        return { ...m, role };
+      }),
     };
   });
 

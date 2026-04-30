@@ -85,6 +85,7 @@ import { fileExists } from "../utils/file_utils";
 import {
   appendCancelledResponseNotice,
   filterCancelledMessagePairs,
+  isCancelledResponseContent,
 } from "@/shared/chatCancellation";
 import { extractMentionedAppsCodebases } from "../utils/mention_apps";
 import { parseAppMentions } from "@/shared/parse_mention_apps";
@@ -624,9 +625,21 @@ ${componentSnippet}
       }
 
       // Send the messages right away so that the loading state is shown for the message.
+      // Strip content from prior assistant messages — pieces are durable in DB
+      // and the renderer fetches per-piece via IPC. The placeholder for the
+      // in-flight response (empty content) passes through unchanged.
       safeSend(event.sender, "chat:response:chunk", {
         chatId: req.chatId,
-        messages: updatedChat.messages,
+        messages: updatedChat.messages.map((m) => {
+          if (m.role !== "assistant" || m.id === placeholderAssistantMessage.id) {
+            return m;
+          }
+          return {
+            ...m,
+            content: "",
+            isCancelled: isCancelledResponseContent(m.content),
+          };
+        }),
       });
 
       const fullResponseBuf = new StreamingBuffer();

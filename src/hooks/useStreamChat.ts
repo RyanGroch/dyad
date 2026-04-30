@@ -33,7 +33,6 @@ import { useCheckProblems } from "./useCheckProblems";
 import { useSettings } from "./useSettings";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
-import { applyCancellationNoticeToLastAssistantMessage } from "@/shared/chatCancellation";
 import { applyChatResponseChunk } from "@/shared/applyChatResponseChunk";
 
 export function getRandomNumberId() {
