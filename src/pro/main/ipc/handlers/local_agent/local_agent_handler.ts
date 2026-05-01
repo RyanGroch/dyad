@@ -336,6 +336,12 @@ export async function handleLocalAgentStream(
     settings.maxToolCallSteps ?? DEFAULT_MAX_TOOL_CALL_STEPS;
   let fullResponse = "";
   let streamingPreview = ""; // Temporary preview for current tool, not persisted
+  // Tracks what was last sent to the renderer for the placeholder
+  // assistant message so we can emit only the tail diff. Updated by both
+  // streaming-patch sends and full-messages-replacement sends so that the
+  // next tail patch is computed against the renderer's actual state.
+  // Held in a ref object so sendResponseChunk can mutate it.
+  const lastSentRef = { value: "" };
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
@@ -446,6 +452,7 @@ export async function handleLocalAgentStream(
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
           true, // Full messages: compaction changes message list
+          lastSentRef,
         );
       },
       {
@@ -497,6 +504,7 @@ export async function handleLocalAgentStream(
         placeholderMessageId,
         hiddenMessageIdsForStreaming,
         true, // Full messages: post-compaction refresh
+        lastSentRef,
       );
     }
 
@@ -577,6 +585,8 @@ export async function handleLocalAgentStream(
           fullResponse + streamingPreview,
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
+          false,
+          lastSentRef,
         );
       },
       onXmlComplete: (finalXml: string) => {
@@ -592,6 +602,8 @@ export async function handleLocalAgentStream(
           fullResponse,
           placeholderMessageId,
           hiddenMessageIdsForStreaming,
+          false,
+          lastSentRef,
         );
       },
       requireConsent: async (params: {
@@ -1108,6 +1120,8 @@ export async function handleLocalAgentStream(
                   fullResponse,
                   placeholderMessageId,
                   hiddenMessageIdsForStreaming,
+                  false,
+                  lastSentRef,
                 );
               }
             }
@@ -1345,6 +1359,8 @@ export async function handleLocalAgentStream(
         fullResponse,
         placeholderMessageId,
         hiddenMessageIdsForStreaming,
+        false,
+        lastSentRef,
       );
     }
 
@@ -1598,9 +1614,11 @@ function sendResponseChunk(
   chat: any,
   fullResponse: string,
   placeholderMessageId: number,
-  hiddenMessageIds?: Set<number>,
+  hiddenMessageIds: Set<number> | undefined,
   /** When true, sends the full messages array instead of an incremental update */
-  sendFullMessages?: boolean,
+  sendFullMessages: boolean | undefined,
+  /** Mutable ref tracking the renderer's last seen placeholder content. */
+  lastSentRef: { value: string },
 ) {
   if (sendFullMessages) {
     const currentMessages = [...chat.messages].filter(
@@ -1616,13 +1634,32 @@ function sendResponseChunk(
       chatId,
       messages: currentMessages,
     });
+    // Renderer's placeholder content now matches fullResponse — keep the
+    // tail-diff baseline in sync so the next streaming patch is correct.
+    lastSentRef.value = fullResponse;
   } else {
-    // Send incremental update with only the streaming message content
-    // to reduce IPC overhead during high-frequency streaming
+    // Send only the tail diff. cleanFullResponse may rewrite earlier
+    // bytes inside in-progress dyad-tag attributes, so use longest-common
+    // -prefix rather than assuming pure appends.
+    const last = lastSentRef.value;
+    let lcp = 0;
+    const maxLcp = Math.min(last.length, fullResponse.length);
+    while (
+      lcp < maxLcp &&
+      last.charCodeAt(lcp) === fullResponse.charCodeAt(lcp)
+    ) {
+      lcp++;
+    }
+    const tail = fullResponse.slice(lcp);
+    const prevLen = last.length;
+    lastSentRef.value = fullResponse;
+    if (tail.length === 0 && lcp === prevLen) {
+      return;
+    }
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,
-      streamingContent: fullResponse,
+      streamingPatch: { offset: lcp, content: tail },
     });
   }
 }

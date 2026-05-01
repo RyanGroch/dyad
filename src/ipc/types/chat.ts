@@ -103,19 +103,36 @@ export const ChatStreamParamsSchema = z.object({
 export type ChatStreamParams = z.infer<typeof ChatStreamParamsSchema>;
 
 /**
+ * `streamingPatch` describes a tail-only update: replace the streaming
+ * message's content from `offset` onward with `content`. Sending only the
+ * tail avoids serializing tens of thousands of unchanged bytes on every
+ * text delta during a long response.
+ *
+ * The renderer reconstructs as `current.slice(0, offset) + content`, so
+ * `offset` must be the longest common prefix length between the previously
+ * sent content and the current full response (cleanFullResponse may rewrite
+ * earlier bytes inside in-progress dyad-tag attribute values).
+ */
+export const StreamingPatchSchema = z.object({
+  offset: z.number(),
+  content: z.string(),
+});
+export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
+
+/**
  * Schema for chat response chunk event.
  *
- * Supports two modes:
+ * Supports three modes:
  * 1. Full update: `messages` is set with the complete messages array
- * 2. Incremental update: `streamingMessageId` + `streamingContent` are set
- *    to update only the content of a single message being streamed.
- *    This avoids serializing the entire messages array on every text delta.
+ * 2. Incremental full content: `streamingMessageId` + `streamingContent`
+ * 3. Incremental tail patch:   `streamingMessageId` + `streamingPatch`
  */
 export const ChatResponseChunkSchema = z.object({
   chatId: z.number(),
   messages: z.array(MessageSchema).optional(),
   streamingMessageId: z.number().optional(),
   streamingContent: z.string().optional(),
+  streamingPatch: StreamingPatchSchema.optional(),
   effectiveChatMode: ChatModeSchema.optional(),
   chatModeFallbackReason: z
     .enum(["pro-required", "quota-exhausted", "no-provider"])

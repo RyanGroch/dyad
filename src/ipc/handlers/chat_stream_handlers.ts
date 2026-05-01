@@ -1188,6 +1188,12 @@ This conversation includes one or more image attachments. When the user uploads 
         };
 
         let lastDbSaveAt = 0;
+        // Tracks what was last sent to the renderer so we can emit only the
+        // tail diff. `cleanFullResponse` may retroactively rewrite earlier
+        // bytes inside an in-progress dyad-tag's attribute values, so we
+        // compute the longest common prefix on each send rather than
+        // assuming pure appends.
+        let lastSentContent = "";
 
         const processResponseChunkUpdate = async ({
           fullResponse,
@@ -1207,12 +1213,30 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          // Send incremental update with only the streaming message content
-          // instead of the full messages array to reduce IPC overhead
+          let lcp = 0;
+          const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
+          while (
+            lcp < maxLcp &&
+            lastSentContent.charCodeAt(lcp) === fullResponse.charCodeAt(lcp)
+          ) {
+            lcp++;
+          }
+          const tail = fullResponse.slice(lcp);
+          const prevLen = lastSentContent.length;
+          lastSentContent = fullResponse;
+
+          // Skip the IPC send when nothing changed (the cleanFullResponse
+          // pass left the prefix identical and produced no new tail).
+          if (tail.length === 0 && lcp === prevLen) {
+            return fullResponse;
+          }
+
+          // Send only the tail-end of the response — the renderer
+          // reconstructs as `current.slice(0, offset) + content`.
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
-            streamingContent: fullResponse,
+            streamingPatch: { offset: lcp, content: tail },
           });
           return fullResponse;
         };

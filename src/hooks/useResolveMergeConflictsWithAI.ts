@@ -107,6 +107,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             messages,
             streamingMessageId,
             streamingContent,
+            streamingPatch,
             effectiveChatMode,
             chatModeFallbackReason,
           }) => {
@@ -140,7 +141,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               streamingMessageId !== undefined &&
               streamingContent !== undefined
             ) {
-              // Incremental update: only update the streaming message's content
+              // Incremental full-content update.
               setMessagesById((prev) => {
                 const existingMessages = prev.get(newChatId);
                 if (!existingMessages) return prev;
@@ -151,6 +152,28 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                     ? { ...msg, content: streamingContent }
                     : msg,
                 );
+                next.set(newChatId, updated);
+                return next;
+              });
+            } else if (
+              streamingMessageId !== undefined &&
+              streamingPatch !== undefined
+            ) {
+              // Tail-only patch: replace `current[offset..]` with content.
+              const { offset, content } = streamingPatch;
+              setMessagesById((prev) => {
+                const existingMessages = prev.get(newChatId);
+                if (!existingMessages) return prev;
+
+                const next = new Map(prev);
+                const updated = existingMessages.map((msg) => {
+                  if (msg.id !== streamingMessageId) return msg;
+                  const currentContent = msg.content ?? "";
+                  return {
+                    ...msg,
+                    content: currentContent.slice(0, offset) + content,
+                  };
+                });
                 next.set(newChatId, updated);
                 return next;
               });

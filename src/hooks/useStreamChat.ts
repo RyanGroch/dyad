@@ -219,6 +219,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingContent,
+              streamingPatch,
               effectiveChatMode,
               chatModeFallbackReason,
             }) => {
@@ -257,7 +258,7 @@ export function useStreamChat({
                 streamingMessageId !== undefined &&
                 streamingContent !== undefined
               ) {
-                // Incremental update: only update the streaming message's content
+                // Incremental full-content update.
                 setMessagesById((prev) => {
                   const existingMessages = prev.get(chatId);
                   if (!existingMessages) return prev;
@@ -268,6 +269,33 @@ export function useStreamChat({
                       ? { ...msg, content: streamingContent }
                       : msg,
                   );
+                  next.set(chatId, updated);
+                  return next;
+                });
+              } else if (
+                streamingMessageId !== undefined &&
+                streamingPatch !== undefined
+              ) {
+                // Incremental tail-only patch — apply
+                // `current.slice(0, offset) + content` to the streaming
+                // message. `cleanFullResponse` may rewrite earlier bytes
+                // inside in-progress dyad-tag attribute values, so the
+                // sender computes `offset` as the longest common prefix
+                // length, not just the previous content's length.
+                const { offset, content } = streamingPatch;
+                setMessagesById((prev) => {
+                  const existingMessages = prev.get(chatId);
+                  if (!existingMessages) return prev;
+
+                  const next = new Map(prev);
+                  const updated = existingMessages.map((msg) => {
+                    if (msg.id !== streamingMessageId) return msg;
+                    const currentContent = msg.content ?? "";
+                    return {
+                      ...msg,
+                      content: currentContent.slice(0, offset) + content,
+                    };
+                  });
                   next.set(chatId, updated);
                   return next;
                 });

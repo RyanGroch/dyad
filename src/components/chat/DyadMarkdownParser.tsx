@@ -194,19 +194,11 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     <>
       {contentPieces.map((piece, index) => (
         <React.Fragment key={index}>
-          {piece.type === "markdown"
-            ? piece.content && (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    code: CodeHighlight,
-                    a: customLink,
-                  }}
-                >
-                  {piece.content}
-                </ReactMarkdown>
-              )
-            : renderCustomTag(piece.tagInfo, { isStreaming })}
+          {piece.type === "markdown" ? (
+            piece.content && <MemoMarkdown content={piece.content} />
+          ) : (
+            <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />
+          )}
           {index === lastErrorIndex &&
             errorCount > 1 &&
             !isStreaming &&
@@ -223,6 +215,62 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     </>
   );
 };
+
+// Memoized markdown piece. Without this, ReactMarkdown re-parses every
+// completed segment's text into an AST on every streaming chunk —
+// the dominant per-render cost during long streams. Memoizing on
+// `content` lets completed segments skip that re-parse entirely.
+const MemoMarkdown = React.memo(function MemoMarkdown({
+  content,
+}: {
+  content: string;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code: CodeHighlight,
+        a: customLink,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
+function tagInfoEqual(a: CustomTagInfo, b: CustomTagInfo): boolean {
+  if (a.tag !== b.tag) return false;
+  if (a.content !== b.content) return false;
+  if (a.inProgress !== b.inProgress) return false;
+  const aKeys = Object.keys(a.attributes);
+  const bKeys = Object.keys(b.attributes);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (a.attributes[k] !== b.attributes[k]) return false;
+  }
+  return true;
+}
+
+// Memoized custom-tag piece. parseCustomTags rebuilds tagInfo objects on
+// every chunk (new refs), so React.memo's default referential equality
+// would never hit. The custom comparator deep-checks the fields that
+// actually affect the rendered output, so completed dyad tags skip
+// renderCustomTag and the React subtree rebuild when only later pieces
+// change.
+const MemoCustomTag = React.memo(
+  function MemoCustomTag({
+    tagInfo,
+    isStreaming,
+  }: {
+    tagInfo: CustomTagInfo;
+    isStreaming: boolean;
+  }) {
+    return <>{renderCustomTag(tagInfo, { isStreaming })}</>;
+  },
+  (prev, next) =>
+    prev.isStreaming === next.isStreaming &&
+    tagInfoEqual(prev.tagInfo, next.tagInfo),
+);
 
 /**
  * Pre-process content to handle unclosed custom tags
