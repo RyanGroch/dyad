@@ -981,11 +981,28 @@ export async function handleLocalAgentStream(
             },
           });
 
+          // Read .fullStream now (not lazily) so the SDK's `teeStream()`
+          // runs synchronously and `streamResult.baseStream` is the
+          // orphaned tee branch by the time we cancel it. WhatWG `tee()`
+          // enqueues every upstream chunk into both branches regardless
+          // of whether they have a reader; we only consume one
+          // (`fullStream`), so without this cancel the other branch's
+          // queue grows unbounded as the model streams — the dominant
+          // in-flight leak observed in heap snapshots.
+          const fullStream = streamResult.fullStream;
+          const orphan: any = streamResult;
+          orphan?.baseStream?.cancel?.()?.catch?.((err: unknown) => {
+            logger.warn(
+              "Failed to cancel orphaned streamText baseStream branch",
+              err,
+            );
+          });
+
           let inThinkingBlock = false;
           let streamErrorFromIteration: unknown;
 
           try {
-            for await (const part of streamResult.fullStream) {
+            for await (const part of fullStream) {
               if (abortController.signal.aborted) {
                 logger.log(`Stream aborted for chat ${req.chatId}`);
                 // Clean up pending consent/questionnaire requests to prevent stale UI banners

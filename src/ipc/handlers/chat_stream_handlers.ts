@@ -1181,8 +1181,32 @@ This conversation includes one or more image attachments. When the user uploads 
             },
             abortSignal: abortController.signal,
           });
+          // Read .fullStream now (not lazily) so the SDK's `teeStream()`
+          // runs synchronously: that call splits the SDK's internal
+          // `baseStream` into two branches and reassigns the unread branch
+          // back onto `streamResult.baseStream`. We immediately cancel
+          // that orphaned branch so it never queues chunks.
+          //
+          // Why: WhatWG `tee()` enqueues every upstream chunk into both
+          // branches' controllers regardless of whether they have a
+          // reader. We only consume one branch (`fullStream`), so without
+          // this cancel the other branch's queue grows unbounded as the
+          // model streams — the dominant in-flight leak observed in heap
+          // snapshots (`{part, partialOutput}` objects parked in a
+          // `ReadableStreamDefaultController` queue, rooted via the
+          // undici connection pool). Cancel runs before any chunks are
+          // pumped, so the orphan controller closes immediately and
+          // future enqueues to it are no-ops.
+          const fullStream = streamResult.fullStream;
+          const orphan: any = streamResult;
+          orphan?.baseStream?.cancel?.()?.catch?.((err: unknown) => {
+            logger.warn(
+              "Failed to cancel orphaned streamText baseStream branch",
+              err,
+            );
+          });
           return {
-            fullStream: streamResult.fullStream,
+            fullStream,
             usage: streamResult.usage,
           };
         };
