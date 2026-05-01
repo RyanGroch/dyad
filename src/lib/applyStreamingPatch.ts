@@ -1,4 +1,4 @@
-import type { Message } from "@/ipc/types";
+import type { Message, StreamingPatch } from "@/ipc/types";
 
 /**
  * Applies a tail-only streaming patch to the messages-by-id map atom.
@@ -10,7 +10,7 @@ export function applyStreamingPatch(
   ) => void,
   chatId: number,
   streamingMessageId: number,
-  streamingPatch: { offset: number; content: string },
+  streamingPatch: StreamingPatch,
 ): void {
   const { offset, content } = streamingPatch;
   setMessagesById((prev) => {

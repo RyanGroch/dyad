@@ -347,6 +347,23 @@ export async function handleLocalAgentStream(
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
   const hiddenMessageIdsForStreaming = new Set<number>();
+  // Convenience wrapper that binds the stream-invariant context args so call
+  // sites only pass the two things that vary: the current response content and
+  // whether to send the full messages array.
+  const sendChunk = (
+    response: string,
+    { fullMessages = false }: { fullMessages?: boolean } = {},
+  ) =>
+    sendResponseChunk(
+      event,
+      req.chatId,
+      chat,
+      response,
+      placeholderMessageId,
+      hiddenMessageIdsForStreaming,
+      fullMessages,
+      lastSentRef,
+    );
   let postMidTurnCompactionStartStep: number | null = null;
 
   const appendInlineCompactionToTurn = async (
@@ -445,16 +462,7 @@ export async function handleLocalAgentStream(
         const previewContent = options?.showOnTopOfCurrentResponse
           ? `${fullResponse}${streamingPreview ? streamingPreview : ""}\n${compactionPreview}`
           : compactionPreview;
-        sendResponseChunk(
-          event,
-          req.chatId,
-          chat,
-          previewContent,
-          placeholderMessageId,
-          hiddenMessageIdsForStreaming,
-          true, // Full messages: compaction changes message list
-          lastSentRef,
-        );
+        sendChunk(previewContent, { fullMessages: true });
       },
       {
         // Mid-turn compaction should not render as a separate message above the
@@ -497,16 +505,7 @@ export async function handleLocalAgentStream(
     }
 
     if (options?.showOnTopOfCurrentResponse) {
-      sendResponseChunk(
-        event,
-        req.chatId,
-        chat,
-        fullResponse + streamingPreview,
-        placeholderMessageId,
-        hiddenMessageIdsForStreaming,
-        true, // Full messages: post-compaction refresh
-        lastSentRef,
-      );
+      sendChunk(fullResponse + streamingPreview, { fullMessages: true });
     }
 
     return compactionResult.success;
@@ -515,22 +514,9 @@ export async function handleLocalAgentStream(
   // Check if compaction is pending and enabled before processing the message
   await maybePerformPendingCompaction();
 
-  // Send initial message update
-  safeSend(event.sender, "chat:response:chunk", {
-    chatId: req.chatId,
-    messages: chat.messages.filter(
-      (message) => !hiddenMessageIdsForStreaming.has(message.id),
-    ),
-  });
-  // This full-messages send may have set the renderer's placeholder content
-  // to the DB value (e.g. "" after pending compaction ran a preview). Reset
-  // the tail-diff baseline so the next patch is computed against actual state.
-  {
-    const placeholderInDb = chat.messages.find(
-      (m: any) => m.id === placeholderMessageId,
-    );
-    lastSentRef.value = placeholderInDb?.content ?? "";
-  }
+  // Send initial message update. Routed through sendChunk so lastSentRef
+  // stays in sync automatically (same as every other full-messages send).
+  sendChunk(fullResponse, { fullMessages: true });
 
   // Track pending user messages to inject after tool results
   const pendingUserMessages: UserMessageContentPart[][] = [];
@@ -588,16 +574,7 @@ export async function handleLocalAgentStream(
       onXmlStream: (accumulatedXml: string) => {
         // Stream accumulated XML to UI without persisting
         streamingPreview = accumulatedXml;
-        sendResponseChunk(
-          event,
-          req.chatId,
-          chat,
-          fullResponse + streamingPreview,
-          placeholderMessageId,
-          hiddenMessageIdsForStreaming,
-          false,
-          lastSentRef,
-        );
+        sendChunk(fullResponse + streamingPreview);
       },
       onXmlComplete: (finalXml: string) => {
         // Write final XML to DB and UI
@@ -605,16 +582,7 @@ export async function handleLocalAgentStream(
         fullResponse += xmlChunk;
         streamingPreview = ""; // Clear preview
         updateResponseInDb(placeholderMessageId, fullResponse);
-        sendResponseChunk(
-          event,
-          req.chatId,
-          chat,
-          fullResponse,
-          placeholderMessageId,
-          hiddenMessageIdsForStreaming,
-          false,
-          lastSentRef,
-        );
+        sendChunk(fullResponse);
       },
       requireConsent: async (params: {
         toolName: string;
@@ -1123,16 +1091,7 @@ export async function handleLocalAgentStream(
               if (chunk) {
                 fullResponse += chunk;
                 await updateResponseInDb(placeholderMessageId, fullResponse);
-                sendResponseChunk(
-                  event,
-                  req.chatId,
-                  chat,
-                  fullResponse,
-                  placeholderMessageId,
-                  hiddenMessageIdsForStreaming,
-                  false,
-                  lastSentRef,
-                );
+                sendChunk(fullResponse);
               }
             }
           } catch (error) {
@@ -1362,16 +1321,7 @@ export async function handleLocalAgentStream(
       postTurnXmlParts.push(stepLimitXml);
       fullResponse += `\n\n${stepLimitXml}`;
       await updateResponseInDb(placeholderMessageId, fullResponse);
-      sendResponseChunk(
-        event,
-        req.chatId,
-        chat,
-        fullResponse,
-        placeholderMessageId,
-        hiddenMessageIdsForStreaming,
-        false,
-        lastSentRef,
-      );
+      sendChunk(fullResponse);
     }
 
     // In read-only and plan mode, skip the deploy step (commit follows below)

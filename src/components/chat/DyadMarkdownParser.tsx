@@ -272,8 +272,12 @@ const MemoCustomTag = React.memo(
     return <>{renderCustomTag(tagInfo, { isStreaming })}</>;
   },
   (prev, next) =>
-    prev.isStreaming === next.isStreaming &&
-    tagInfoEqual(prev.tagInfo, next.tagInfo),
+    tagInfoEqual(prev.tagInfo, next.tagInfo) &&
+    // Completed tags don't use isStreaming (getState returns "finished"
+    // regardless), so skip the check to avoid a one-time re-render of every
+    // completed tag when streaming ends.
+    (prev.tagInfo.inProgress === false ||
+      prev.isStreaming === next.isStreaming),
 );
 
 /**
