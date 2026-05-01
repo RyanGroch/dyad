@@ -115,12 +115,15 @@ When an IPC event can fire at very high frequency (e.g., stdout/stderr from chil
 
 ## Streaming chunk optimizations
 
-The `chat:response:chunk` event supports two modes:
+The `chat:response:chunk` event supports three modes:
 
 1. **Full update** — `messages` field contains the complete messages array. Used for initial message load, post-compaction refresh, and lazy-edit completions.
-2. **Incremental update** — `streamingMessageId` + `streamingContent` fields update only the actively streaming message's content. Used for high-frequency text-delta streaming to avoid serializing the full messages array on every chunk.
+2. **Incremental full-content** — `streamingMessageId` + `streamingContent` fields replace the streaming message's entire content. Legacy mode; still handled by all consumers.
+3. **Tail-only patch** — `streamingMessageId` + `streamingPatch: { offset, content }` fields. The renderer reconstructs the full content as `current.slice(0, offset) + content`. `offset` is the longest-common-prefix length between the previously sent content and the new full response (not simply the old length), because `cleanFullResponse` may retroactively rewrite bytes inside in-progress dyad-tag attribute values. Used for all normal high-frequency text-delta streaming. Implemented via `computeStreamingPatch` in `src/ipc/utils/stream_text_utils.ts`.
 
-When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) must handle both modes.
+When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) must handle all three modes.
+
+**Tail-diff baseline invariant:** Every `safeSend("chat:response:chunk", { messages: ... })` call (full-update mode) may set the renderer's streaming-message placeholder to a content value that differs from what the sender last computed. Always reset `lastSentRef.value` (or equivalent) to the placeholder's actual content after any full-update send, otherwise the next patch computes LCP against stale state and corrupts the streamed output.
 
 **Zod schema contract changes:** Making a field optional (e.g., `messages` → `messages.optional()`) causes TypeScript errors in all consumers that assume the field is always present. Search for all destructuring/usage sites and add guards before committing.
 

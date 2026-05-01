@@ -9,6 +9,7 @@ import {
 import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
+import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
@@ -150,24 +151,12 @@ export function usePlanImplementation() {
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                // Tail-only patch: replace `current[offset..]` with content.
-                const { offset, content } = streamingPatch;
-                setMessagesById((prev) => {
-                  const existingMessages = prev.get(chatId);
-                  if (!existingMessages) return prev;
-
-                  const next = new Map(prev);
-                  const updated = existingMessages.map((msg) => {
-                    if (msg.id !== streamingMessageId) return msg;
-                    const currentContent = msg.content ?? "";
-                    return {
-                      ...msg,
-                      content: currentContent.slice(0, offset) + content,
-                    };
-                  });
-                  next.set(chatId, updated);
-                  return next;
-                });
+                applyStreamingPatch(
+                  setMessagesById,
+                  chatId,
+                  streamingMessageId,
+                  streamingPatch,
+                );
               }
             },
             onEnd: () => {

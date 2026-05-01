@@ -14,6 +14,7 @@ import { useChats } from "@/hooks/useChats";
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { useSettings } from "@/hooks/useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
+import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
@@ -159,24 +160,12 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               streamingMessageId !== undefined &&
               streamingPatch !== undefined
             ) {
-              // Tail-only patch: replace `current[offset..]` with content.
-              const { offset, content } = streamingPatch;
-              setMessagesById((prev) => {
-                const existingMessages = prev.get(newChatId);
-                if (!existingMessages) return prev;
-
-                const next = new Map(prev);
-                const updated = existingMessages.map((msg) => {
-                  if (msg.id !== streamingMessageId) return msg;
-                  const currentContent = msg.content ?? "";
-                  return {
-                    ...msg,
-                    content: currentContent.slice(0, offset) + content,
-                  };
-                });
-                next.set(newChatId, updated);
-                return next;
-              });
+              applyStreamingPatch(
+                setMessagesById,
+                newChatId,
+                streamingMessageId,
+                streamingPatch,
+              );
             }
           },
           onEnd: () => {

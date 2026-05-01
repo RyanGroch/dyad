@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { ipcMain, IpcMainInvokeEvent } from "electron";
 import { createTypedHandler } from "./base";
+import { computeStreamingPatch } from "../utils/stream_text_utils";
 import { chatContracts } from "../types/chat";
 import {
   ModelMessage,
@@ -1213,30 +1214,15 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          let lcp = 0;
-          const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
-          while (
-            lcp < maxLcp &&
-            lastSentContent.charCodeAt(lcp) === fullResponse.charCodeAt(lcp)
-          ) {
-            lcp++;
-          }
-          const tail = fullResponse.slice(lcp);
-          const prevLen = lastSentContent.length;
+          const patch = computeStreamingPatch(fullResponse, lastSentContent);
           lastSentContent = fullResponse;
-
-          // Skip the IPC send when nothing changed (the cleanFullResponse
-          // pass left the prefix identical and produced no new tail).
-          if (tail.length === 0 && lcp === prevLen) {
+          if (!patch) {
             return fullResponse;
           }
-
-          // Send only the tail-end of the response — the renderer
-          // reconstructs as `current.slice(0, offset) + content`.
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: { offset: lcp, content: tail },
+            streamingPatch: patch,
           });
           return fullResponse;
         };

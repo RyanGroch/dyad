@@ -100,6 +100,7 @@ import {
   maybeAppendRetryReplayForRetry,
 } from "./retry_replay_utils";
 import { setChatSummaryTool } from "./tools/set_chat_summary";
+import { computeStreamingPatch } from "@/ipc/utils/stream_text_utils";
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
@@ -521,6 +522,15 @@ export async function handleLocalAgentStream(
       (message) => !hiddenMessageIdsForStreaming.has(message.id),
     ),
   });
+  // This full-messages send may have set the renderer's placeholder content
+  // to the DB value (e.g. "" after pending compaction ran a preview). Reset
+  // the tail-diff baseline so the next patch is computed against actual state.
+  {
+    const placeholderInDb = chat.messages.find(
+      (m: any) => m.id === placeholderMessageId,
+    );
+    lastSentRef.value = placeholderInDb?.content ?? "";
+  }
 
   // Track pending user messages to inject after tool results
   const pendingUserMessages: UserMessageContentPart[][] = [];
@@ -1638,28 +1648,15 @@ function sendResponseChunk(
     // tail-diff baseline in sync so the next streaming patch is correct.
     lastSentRef.value = fullResponse;
   } else {
-    // Send only the tail diff. cleanFullResponse may rewrite earlier
-    // bytes inside in-progress dyad-tag attributes, so use longest-common
-    // -prefix rather than assuming pure appends.
-    const last = lastSentRef.value;
-    let lcp = 0;
-    const maxLcp = Math.min(last.length, fullResponse.length);
-    while (
-      lcp < maxLcp &&
-      last.charCodeAt(lcp) === fullResponse.charCodeAt(lcp)
-    ) {
-      lcp++;
-    }
-    const tail = fullResponse.slice(lcp);
-    const prevLen = last.length;
+    const patch = computeStreamingPatch(fullResponse, lastSentRef.value);
     lastSentRef.value = fullResponse;
-    if (tail.length === 0 && lcp === prevLen) {
+    if (!patch) {
       return;
     }
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,
-      streamingPatch: { offset: lcp, content: tail },
+      streamingPatch: patch,
     });
   }
 }
