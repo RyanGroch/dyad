@@ -122,16 +122,14 @@ export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 /**
  * Schema for chat response chunk event.
  *
- * Supports three modes:
+ * Supports two modes:
  * 1. Full update: `messages` is set with the complete messages array
- * 2. Incremental full content: `streamingMessageId` + `streamingContent`
- * 3. Incremental tail patch:   `streamingMessageId` + `streamingPatch`
+ * 2. Incremental tail patch: `streamingMessageId` + `streamingPatch`
  */
 export const ChatResponseChunkSchema = z.object({
   chatId: z.number(),
   messages: z.array(MessageSchema).optional(),
   streamingMessageId: z.number().optional(),
-  streamingContent: z.string().optional(),
   streamingPatch: StreamingPatchSchema.optional(),
   effectiveChatMode: ChatModeSchema.optional(),
   chatModeFallbackReason: z

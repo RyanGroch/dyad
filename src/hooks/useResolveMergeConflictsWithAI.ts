@@ -107,7 +107,6 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
           onChunk: ({
             messages,
             streamingMessageId,
-            streamingContent,
             streamingPatch,
             effectiveChatMode,
             chatModeFallbackReason,
@@ -136,24 +135,6 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               setMessagesById((prev) => {
                 const next = new Map(prev);
                 next.set(newChatId, messages);
-                return next;
-              });
-            } else if (
-              streamingMessageId !== undefined &&
-              streamingContent !== undefined
-            ) {
-              // Incremental full-content update.
-              setMessagesById((prev) => {
-                const existingMessages = prev.get(newChatId);
-                if (!existingMessages) return prev;
-
-                const next = new Map(prev);
-                const updated = existingMessages.map((msg) =>
-                  msg.id === streamingMessageId
-                    ? { ...msg, content: streamingContent }
-                    : msg,
-                );
-                next.set(newChatId, updated);
                 return next;
               });
             } else if (

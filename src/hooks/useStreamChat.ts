@@ -219,7 +219,6 @@ export function useStreamChat({
             onChunk: ({
               messages: updatedMessages,
               streamingMessageId,
-              streamingContent,
               streamingPatch,
               effectiveChatMode,
               chatModeFallbackReason,
@@ -253,24 +252,6 @@ export function useStreamChat({
                 setMessagesById((prev) => {
                   const next = new Map(prev);
                   next.set(chatId, updatedMessages);
-                  return next;
-                });
-              } else if (
-                streamingMessageId !== undefined &&
-                streamingContent !== undefined
-              ) {
-                // Incremental full-content update.
-                setMessagesById((prev) => {
-                  const existingMessages = prev.get(chatId);
-                  if (!existingMessages) return prev;
-
-                  const next = new Map(prev);
-                  const updated = existingMessages.map((msg) =>
-                    msg.id === streamingMessageId
-                      ? { ...msg, content: streamingContent }
-                      : msg,
-                  );
-                  next.set(chatId, updated);
                   return next;
                 });
               } else if (

@@ -118,8 +118,7 @@ When an IPC event can fire at very high frequency (e.g., stdout/stderr from chil
 The `chat:response:chunk` event supports three modes:
 
 1. **Full update** — `messages` field contains the complete messages array. Used for initial message load, post-compaction refresh, and lazy-edit completions.
-2. **Incremental full-content** — `streamingMessageId` + `streamingContent` fields replace the streaming message's entire content. Legacy mode; still handled by all consumers.
-3. **Tail-only patch** — `streamingMessageId` + `streamingPatch: { offset, content }` fields. The renderer reconstructs the full content as `current.slice(0, offset) + content`. `offset` is the longest-common-prefix length between the previously sent content and the new full response (not simply the old length), because `cleanFullResponse` may retroactively rewrite bytes inside in-progress dyad-tag attribute values. Used for all normal high-frequency text-delta streaming. Implemented via `computeStreamingPatch` in `src/ipc/utils/stream_text_utils.ts`.
+2. **Tail-only patch** — `streamingMessageId` + `streamingPatch: { offset, content }` fields. The renderer reconstructs the full content as `current.slice(0, offset) + content`. `offset` is the longest-common-prefix length between the previously sent content and the new full response (not simply the old length), because `cleanFullResponse` may retroactively rewrite bytes inside in-progress dyad-tag attribute values. Used for all normal high-frequency text-delta streaming. Implemented via `computeStreamingPatch` in `src/ipc/utils/stream_text_utils.ts`.
 
 When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) must handle all three modes.
 

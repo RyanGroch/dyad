@@ -216,6 +216,11 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   );
 };
 
+// Module-level constants so MemoMarkdown never gets fresh refs for these
+// props, which would defeat ReactMarkdown's internal prop-equality checks.
+const REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_COMPONENTS = { code: CodeHighlight, a: customLink };
+
 // Memoized markdown piece. Without this, ReactMarkdown re-parses every
 // completed segment's text into an AST on every streaming chunk —
 // the dominant per-render cost during long streams. Memoizing on
@@ -227,11 +232,8 @@ const MemoMarkdown = React.memo(function MemoMarkdown({
 }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        code: CodeHighlight,
-        a: customLink,
-      }}
+      remarkPlugins={REMARK_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
     >
       {content}
     </ReactMarkdown>
@@ -248,6 +250,8 @@ function tagInfoEqual(a: CustomTagInfo, b: CustomTagInfo): boolean {
   for (const k of aKeys) {
     if (a.attributes[k] !== b.attributes[k]) return false;
   }
+  // fullMatch intentionally omitted: renderCustomTag never reads it, so two
+  // tagInfo objects that differ only in fullMatch produce identical output.
   return true;
 }
 
