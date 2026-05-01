@@ -28,6 +28,7 @@ import { getDyadAppPath } from "@/paths/paths";
 import { detectFrameworkType } from "@/ipc/utils/framework_utils";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { safeSend } from "@/ipc/utils/safe_sender";
+import { cancelOrphanedBaseStream } from "@/ipc/utils/stream_text_utils";
 import { getMaxTokens, getTemperature } from "@/ipc/utils/token_utils";
 import {
   getProviderOptions,
@@ -661,6 +662,7 @@ export async function handleLocalAgentStream(
     const accumulatedAiMessages: ModelMessage[] = [];
     // Track total steps across all passes to detect step limit
     let totalStepsExecuted = 0;
+    let hitStepLimit = false;
 
     // If there are persisted todos from a previous turn, inject a synthetic
     // user message so the LLM is aware of them. Inserted BEFORE the user's
@@ -971,11 +973,18 @@ export async function handleLocalAgentStream(
             },
           });
 
+          // Read .fullStream now (not lazily) so the SDK's `teeStream()`
+          // runs synchronously, then cancel the orphaned tee branch
+          // before any chunks are pumped. See `cancelOrphanedBaseStream`
+          // for the underlying SDK behavior and why this is required.
+          const fullStream = streamResult.fullStream;
+          cancelOrphanedBaseStream(streamResult);
+
           let inThinkingBlock = false;
           let streamErrorFromIteration: unknown;
 
           try {
-            for await (const part of streamResult.fullStream) {
+            for await (const part of fullStream) {
               if (abortController.signal.aborted) {
                 logger.log(`Stream aborted for chat ${req.chatId}`);
                 // Clean up pending consent/questionnaire requests to prevent stale UI banners
@@ -1314,6 +1323,7 @@ export async function handleLocalAgentStream(
 
     // Check if we hit the step limit and append a notice to the response
     if (totalStepsExecuted >= maxToolCallSteps) {
+      hitStepLimit = true;
       logger.info(
         `Chat ${req.chatId} hit step limit of ${maxToolCallSteps} steps`,
       );
@@ -1421,6 +1431,7 @@ export async function handleLocalAgentStream(
       chatSummary: ctx.chatSummary,
       warningMessages:
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
+      pausePromptQueue: hitStepLimit || undefined,
     } satisfies ChatResponseEnd);
 
     return true; // Success

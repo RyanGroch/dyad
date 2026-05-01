@@ -104,7 +104,10 @@ export function useStreamChat({
       attachments?: FileAttachment[];
       selectedComponents?: ComponentSelection[];
       requestedChatMode?: Chat["chatMode"] | null;
-      onSettled?: (result: { success: boolean }) => void;
+      onSettled?: (result: {
+        success: boolean;
+        pausedByStepLimit?: boolean;
+      }) => void;
     }) => {
       if (
         (!prompt.trim() && (!attachments || attachments.length === 0)) ||
@@ -290,6 +293,14 @@ export function useStreamChat({
                   });
                 }
 
+                if (response.pausePromptQueue) {
+                  setQueuePausedById((prev) => {
+                    const next = new Map(prev);
+                    next.set(chatId, true);
+                    return next;
+                  });
+                }
+
                 if (!response.wasCancelled) {
                   setStreamCompletedSuccessfullyById((prev) => {
                     const next = new Map(prev);
@@ -399,7 +410,10 @@ export function useStreamChat({
                 refreshApp();
                 refreshVersions();
                 invalidateTokenCount();
-                onSettled?.({ success: true });
+                onSettled?.({
+                  success: true,
+                  pausedByStepLimit: response.pausePromptQueue === true,
+                });
               })().catch((error) => {
                 console.error(
                   `[CHAT] Failed to finalize stream for ${chatId}:`,
@@ -474,6 +488,7 @@ export function useStreamChat({
       setIsStreamingById,
       setIsPreviewOpen,
       setStreamCompletedSuccessfullyById,
+      setQueuePausedById,
       selectedAppId,
       refetchUserBudget,
       settings,
