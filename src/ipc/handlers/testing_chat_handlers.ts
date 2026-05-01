@@ -40,6 +40,18 @@ import React from 'react';
 </dyad-write>
 AFTER TAG
 `,
+  "100-files": `Generating 100 files.
+${Array.from({ length: 100 }, (_, i) => {
+  const lines = Array.from({ length: 500 }, (_, j) => {
+    const base = `export const reallyLongVariableNameForTesting_${i + 1}_${j + 1} = "value-${i + 1}-${j + 1}-`;
+    const padLen = Math.max(0, 100 - base.length - 2);
+    return `${base}${"x".repeat(padLen)}";`;
+  }).join("\n");
+  return `<dyad-write path="src/generated/file-${i + 1}.ts" description="Generated file ${i + 1}.">
+${lines}
+</dyad-write>`;
+}).join("\n")}
+EOM`,
 };
 
 /**
