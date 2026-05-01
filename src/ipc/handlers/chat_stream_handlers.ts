@@ -244,6 +244,12 @@ async function processStreamChunks({
 export function registerChatStreamHandlers() {
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    // Throttle IPC streaming-content sends so the renderer isn't flooded
+    // during fast token streams. Hoisted above the try block so the
+    // catch/finally can cancel the trailing timer regardless of where an
+    // error throws (e.g. quota errors during retry setup).
+    let pendingStreamingContent: string | null = null;
+    let trailingStreamingTimer: NodeJS.Timeout | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -1188,6 +1194,39 @@ This conversation includes one or more image attachments. When the user uploads 
         };
 
         let lastDbSaveAt = 0;
+        let lastStreamingSentAt = 0;
+        const STREAMING_THROTTLE_MS = 80;
+
+        const sendStreamingContentNow = (fullResponse: string) => {
+          safeSend(event.sender, "chat:response:chunk", {
+            chatId: req.chatId,
+            streamingMessageId: placeholderAssistantMessage.id,
+            streamingContent: fullResponse,
+          });
+          lastStreamingSentAt = Date.now();
+          pendingStreamingContent = null;
+        };
+
+        const queueStreamingContent = (fullResponse: string) => {
+          // `fullResponse` is cumulative — newer always supersedes older,
+          // so the merge is just "replace pending with the latest".
+          pendingStreamingContent = fullResponse;
+          const now = Date.now();
+          const elapsed = now - lastStreamingSentAt;
+          if (elapsed >= STREAMING_THROTTLE_MS && !trailingStreamingTimer) {
+            sendStreamingContentNow(fullResponse);
+            return;
+          }
+          if (!trailingStreamingTimer) {
+            const wait = Math.max(0, STREAMING_THROTTLE_MS - elapsed);
+            trailingStreamingTimer = setTimeout(() => {
+              trailingStreamingTimer = null;
+              if (pendingStreamingContent !== null) {
+                sendStreamingContentNow(pendingStreamingContent);
+              }
+            }, wait);
+          }
+        };
 
         const processResponseChunkUpdate = async ({
           fullResponse,
@@ -1207,13 +1246,9 @@ This conversation includes one or more image attachments. When the user uploads 
             lastDbSaveAt = now;
           }
 
-          // Send incremental update with only the streaming message content
-          // instead of the full messages array to reduce IPC overhead
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingContent: fullResponse,
-          });
+          // Throttled incremental update — newer fullResponse strings
+          // supersede older ones so a coalesced trailing send is enough.
+          queueStreamingContent(fullResponse);
           return fullResponse;
         };
 
@@ -1729,6 +1764,16 @@ ${problemReport.problems
         }
       }
 
+      // Cancel any pending throttled streaming-content send. The DB row
+      // already holds the final fullResponse, and any subsequent
+      // messages-replacement supersedes it — a stale streaming send after
+      // that point would briefly revert the renderer to old content.
+      if (trailingStreamingTimer) {
+        clearTimeout(trailingStreamingTimer);
+        trailingStreamingTimer = null;
+      }
+      pendingStreamingContent = null;
+
       // Only save the response and process it if we weren't aborted
       if (!abortController.signal.aborted && fullResponse) {
         // Scrape from: <dyad-chat-summary>Renaming profile file</dyad-chat-title>
@@ -1810,6 +1855,15 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Belt-and-suspenders: ensure no throttled streaming send fires
+      // after the stream has ended, which would otherwise be enqueued
+      // against a renderer that has already moved on.
+      if (trailingStreamingTimer) {
+        clearTimeout(trailingStreamingTimer);
+        trailingStreamingTimer = null;
+      }
+      pendingStreamingContent = null;
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 

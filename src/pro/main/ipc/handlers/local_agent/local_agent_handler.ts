@@ -336,6 +336,55 @@ export async function handleLocalAgentStream(
     settings.maxToolCallSteps ?? DEFAULT_MAX_TOOL_CALL_STEPS;
   let fullResponse = "";
   let streamingPreview = ""; // Temporary preview for current tool, not persisted
+
+  // Throttle IPC streaming-content sends so the renderer isn't flooded
+  // during fast token streams. Any code path that follows a streaming
+  // send with a full-messages send (post-compaction, end-of-turn) must
+  // call `flushPendingStreamingChunk()` first so the renderer doesn't
+  // briefly revert to a stale streaming-content state.
+  let pendingStreamingContent: string | null = null;
+  let trailingStreamingTimer: NodeJS.Timeout | null = null;
+  let lastStreamingSentAt = 0;
+  const STREAMING_THROTTLE_MS = 80;
+
+  const sendStreamingContentNow = (content: string) => {
+    safeSend(event.sender, "chat:response:chunk", {
+      chatId: req.chatId,
+      streamingMessageId: placeholderMessageId,
+      streamingContent: content,
+    });
+    lastStreamingSentAt = Date.now();
+    pendingStreamingContent = null;
+  };
+
+  const queueStreamingChunk = (content: string) => {
+    pendingStreamingContent = content;
+    const now = Date.now();
+    const elapsed = now - lastStreamingSentAt;
+    if (elapsed >= STREAMING_THROTTLE_MS && !trailingStreamingTimer) {
+      sendStreamingContentNow(content);
+      return;
+    }
+    if (!trailingStreamingTimer) {
+      const wait = Math.max(0, STREAMING_THROTTLE_MS - elapsed);
+      trailingStreamingTimer = setTimeout(() => {
+        trailingStreamingTimer = null;
+        if (pendingStreamingContent !== null) {
+          sendStreamingContentNow(pendingStreamingContent);
+        }
+      }, wait);
+    }
+  };
+
+  const flushPendingStreamingChunk = () => {
+    if (trailingStreamingTimer) {
+      clearTimeout(trailingStreamingTimer);
+      trailingStreamingTimer = null;
+    }
+    if (pendingStreamingContent !== null) {
+      sendStreamingContentNow(pendingStreamingContent);
+    }
+  };
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
@@ -438,6 +487,7 @@ export async function handleLocalAgentStream(
         const previewContent = options?.showOnTopOfCurrentResponse
           ? `${fullResponse}${streamingPreview ? streamingPreview : ""}\n${compactionPreview}`
           : compactionPreview;
+        flushPendingStreamingChunk();
         sendResponseChunk(
           event,
           req.chatId,
@@ -489,6 +539,7 @@ export async function handleLocalAgentStream(
     }
 
     if (options?.showOnTopOfCurrentResponse) {
+      flushPendingStreamingChunk();
       sendResponseChunk(
         event,
         req.chatId,
@@ -570,14 +621,7 @@ export async function handleLocalAgentStream(
       onXmlStream: (accumulatedXml: string) => {
         // Stream accumulated XML to UI without persisting
         streamingPreview = accumulatedXml;
-        sendResponseChunk(
-          event,
-          req.chatId,
-          chat,
-          fullResponse + streamingPreview,
-          placeholderMessageId,
-          hiddenMessageIdsForStreaming,
-        );
+        queueStreamingChunk(fullResponse + streamingPreview);
       },
       onXmlComplete: (finalXml: string) => {
         // Write final XML to DB and UI
@@ -585,14 +629,7 @@ export async function handleLocalAgentStream(
         fullResponse += xmlChunk;
         streamingPreview = ""; // Clear preview
         updateResponseInDb(placeholderMessageId, fullResponse);
-        sendResponseChunk(
-          event,
-          req.chatId,
-          chat,
-          fullResponse,
-          placeholderMessageId,
-          hiddenMessageIdsForStreaming,
-        );
+        queueStreamingChunk(fullResponse);
       },
       requireConsent: async (params: {
         toolName: string;
@@ -1101,14 +1138,7 @@ export async function handleLocalAgentStream(
               if (chunk) {
                 fullResponse += chunk;
                 await updateResponseInDb(placeholderMessageId, fullResponse);
-                sendResponseChunk(
-                  event,
-                  req.chatId,
-                  chat,
-                  fullResponse,
-                  placeholderMessageId,
-                  hiddenMessageIdsForStreaming,
-                );
+                queueStreamingChunk(fullResponse);
               }
             }
           } catch (error) {
@@ -1338,6 +1368,7 @@ export async function handleLocalAgentStream(
       postTurnXmlParts.push(stepLimitXml);
       fullResponse += `\n\n${stepLimitXml}`;
       await updateResponseInDb(placeholderMessageId, fullResponse);
+      flushPendingStreamingChunk();
       sendResponseChunk(
         event,
         req.chatId,
@@ -1438,6 +1469,11 @@ export async function handleLocalAgentStream(
       }
     }
 
+    // Flush any pending throttled chunk before signaling completion so
+    // the renderer's last seen content is the final response, not the
+    // second-to-last throttled snapshot.
+    flushPendingStreamingChunk();
+
     // Send completion
     safeSend(event.sender, "chat:response:end", {
       chatId: req.chatId,
@@ -1449,6 +1485,15 @@ export async function handleLocalAgentStream(
 
     return true; // Success
   } catch (error) {
+    // Cancel any pending throttled chunk so it cannot fire after the
+    // error event lands — the renderer would otherwise briefly revert
+    // the placeholder to the in-flight (non-final) content.
+    if (trailingStreamingTimer) {
+      clearTimeout(trailingStreamingTimer);
+      trailingStreamingTimer = null;
+    }
+    pendingStreamingContent = null;
+
     // Clean up any pending consent/questionnaire requests for this chat to prevent
     // stale UI banners and orphaned promises
     clearPendingConsentsForChat(req.chatId);
