@@ -28,6 +28,7 @@ import { getDyadAppPath } from "@/paths/paths";
 import { detectFrameworkType } from "@/ipc/utils/framework_utils";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { safeSend } from "@/ipc/utils/safe_sender";
+import { cancelOrphanedBaseStream } from "@/ipc/utils/stream_text_utils";
 import { getMaxTokens, getTemperature } from "@/ipc/utils/token_utils";
 import {
   getProviderOptions,
@@ -982,21 +983,11 @@ export async function handleLocalAgentStream(
           });
 
           // Read .fullStream now (not lazily) so the SDK's `teeStream()`
-          // runs synchronously and `streamResult.baseStream` is the
-          // orphaned tee branch by the time we cancel it. WhatWG `tee()`
-          // enqueues every upstream chunk into both branches regardless
-          // of whether they have a reader; we only consume one
-          // (`fullStream`), so without this cancel the other branch's
-          // queue grows unbounded as the model streams — the dominant
-          // in-flight leak observed in heap snapshots.
+          // runs synchronously, then cancel the orphaned tee branch
+          // before any chunks are pumped. See `cancelOrphanedBaseStream`
+          // for the underlying SDK behavior and why this is required.
           const fullStream = streamResult.fullStream;
-          const orphan: any = streamResult;
-          orphan?.baseStream?.cancel?.()?.catch?.((err: unknown) => {
-            logger.warn(
-              "Failed to cancel orphaned streamText baseStream branch",
-              err,
-            );
-          });
+          cancelOrphanedBaseStream(streamResult);
 
           let inThinkingBlock = false;
           let streamErrorFromIteration: unknown;
