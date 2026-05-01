@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   previewIdleTimeoutPolicy: "default",
 };
 
+const CRASH_SENTINEL_FILE = "session.lock";
 const SETTINGS_FILE = "user-settings.json";
 const RESTORE_SETTINGS_DOCS_URL =
   "https://www.dyad.sh/docs/guides/migrate-restore#restoring-settings-from-backup";
@@ -72,6 +73,30 @@ const rendererErrorToastReadyWebContents = new WeakSet<WebContents>();
 
 export function getSettingsFilePath(): string {
   return path.join(getUserDataPath(), SETTINGS_FILE);
+}
+
+export function getCrashSentinelPath(): string {
+  return path.join(getUserDataPath(), CRASH_SENTINEL_FILE);
+}
+
+export function writeCrashSentinel(): void {
+  try {
+    fs.writeFileSync(getCrashSentinelPath(), String(Date.now()));
+  } catch (error) {
+    logger.error("Error writing crash sentinel:", error);
+  }
+}
+
+export function clearCrashSentinel(): void {
+  try {
+    fs.unlinkSync(getCrashSentinelPath());
+  } catch {
+    // File may not exist; that's fine
+  }
+}
+
+export function crashSentinelExists(): boolean {
+  return fs.existsSync(getCrashSentinelPath());
 }
 
 export function readSettings(): UserSettings {
