@@ -5,6 +5,7 @@ import {
   isStreamingByIdAtom,
   chatMessagesByIdAtom,
   chatErrorByIdAtom,
+  chatStreamCountByIdAtom,
 } from "@/atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
@@ -24,6 +25,7 @@ export function usePlanImplementation() {
   const setIsStreamingById = useSetAtom(isStreamingByIdAtom);
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setErrorById = useSetAtom(chatErrorByIdAtom);
+  const setStreamCountById = useSetAtom(chatStreamCountByIdAtom);
   const store = useStore();
   const { settings } = useSettings();
 
@@ -88,6 +90,8 @@ export function usePlanImplementation() {
           return next;
         });
 
+        let hasIncrementedStreamCount = false;
+
         // Clear any previous errors
         setErrorById((prev) => {
           const next = new Map(prev);
@@ -121,6 +125,15 @@ export function usePlanImplementation() {
                 )
               ) {
                 return;
+              }
+
+              if (!hasIncrementedStreamCount) {
+                setStreamCountById((prev) => {
+                  const next = new Map(prev);
+                  next.set(chatId, (prev.get(chatId) ?? 0) + 1);
+                  return next;
+                });
+                hasIncrementedStreamCount = true;
               }
 
               if (updatedMessages) {
@@ -199,6 +212,7 @@ export function usePlanImplementation() {
     setIsStreamingById,
     setMessagesById,
     setErrorById,
+    setStreamCountById,
     settings,
     store,
   ]);

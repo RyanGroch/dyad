@@ -1,6 +1,6 @@
 import { ipc } from "@/ipc/types";
 import type { Message } from "@/ipc/types";
-import { getDefaultStore } from "jotai";
+import type { getDefaultStore } from "jotai";
 import {
   isStreamingByIdAtom,
   chatStreamCountByIdAtom,
