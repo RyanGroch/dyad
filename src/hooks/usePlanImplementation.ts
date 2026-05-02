@@ -159,7 +159,7 @@ export function usePlanImplementation() {
               }
             },
             onEnd: () => {
-              if (!isMountedRef.current) return;
+              // Global Jotai state — must run even if unmounted, else chat stays stuck isStreaming=true.
               setIsStreamingById((prev) => {
                 const next = new Map(prev);
                 next.set(chatId, false);
@@ -173,7 +173,6 @@ export function usePlanImplementation() {
               );
             },
             onError: ({ error }) => {
-              if (!isMountedRef.current) return;
               console.error("Plan implementation stream error:", error);
               setErrorById((prev) => {
                 const next = new Map(prev);
