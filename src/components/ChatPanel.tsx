@@ -125,12 +125,16 @@ export function ChatPanel({
       return;
     }
     const chat = await ipc.chat.getChat(chatId);
+    // Skip overwrite if streaming is active: the patch stream carries fresher
+    // content than the throttled DB snapshot, and overwriting would corrupt the
+    // renderer's base for subsequent patches (offset mismatch).
+    if (isStreamingById.get(chatId)) return;
     setMessagesById((prev) => {
       const next = new Map(prev);
       next.set(chatId, chat.messages);
       return next;
     });
-  }, [chatId, setMessagesById]);
+  }, [chatId, isStreamingById, setMessagesById]);
 
   useEffect(() => {
     fetchChatMessages();

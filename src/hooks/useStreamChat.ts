@@ -261,12 +261,27 @@ export function useStreamChat({
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                applyStreamingPatch(
+                const applied = applyStreamingPatch(
                   setMessagesById,
                   chatId,
                   streamingMessageId,
                   streamingPatch,
                 );
+                if (!applied) {
+                  // Stale full-refresh overwrote renderer state. Re-fetch the
+                  // latest DB snapshot so the user sees fresher content;
+                  // onEnd will do a final correct sync when the stream finishes.
+                  ipc.chat
+                    .getChat(chatId)
+                    .then((chat) => {
+                      setMessagesById((prev) => {
+                        const next = new Map(prev);
+                        next.set(chatId, chat.messages);
+                        return next;
+                      });
+                    })
+                    .catch(() => {});
+                }
               }
             },
             onEnd: (response: ChatResponseEnd) => {
