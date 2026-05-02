@@ -146,8 +146,25 @@ export function usePlanImplementation() {
                     .getChat(chatId)
                     .then((chat) => {
                       setMessagesById((prev) => {
+                        const prevMessages = prev.get(chatId);
+                        if (!prevMessages) return prev;
                         const next = new Map(prev);
-                        next.set(chatId, chat.messages);
+                        next.set(
+                          chatId,
+                          chat.messages.map((dbMsg) => {
+                            const live = prevMessages.find(
+                              (m) => m.id === dbMsg.id,
+                            );
+                            if (
+                              live &&
+                              (live.content?.length ?? 0) >
+                                (dbMsg.content?.length ?? 0)
+                            ) {
+                              return live;
+                            }
+                            return dbMsg;
+                          }),
+                        );
                         return next;
                       });
                     })

@@ -155,8 +155,25 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                   .getChat(newChatId)
                   .then((chat) => {
                     setMessagesById((prev) => {
+                      const prevMessages = prev.get(newChatId);
+                      if (!prevMessages) return prev;
                       const next = new Map(prev);
-                      next.set(newChatId, chat.messages);
+                      next.set(
+                        newChatId,
+                        chat.messages.map((dbMsg) => {
+                          const live = prevMessages.find(
+                            (m) => m.id === dbMsg.id,
+                          );
+                          if (
+                            live &&
+                            (live.content?.length ?? 0) >
+                              (dbMsg.content?.length ?? 0)
+                          ) {
+                            return live;
+                          }
+                          return dbMsg;
+                        }),
+                      );
                       return next;
                     });
                   })
