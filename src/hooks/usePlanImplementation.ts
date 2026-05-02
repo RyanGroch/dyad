@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { pendingPlanImplementationAtom } from "@/atoms/planAtoms";
 import {
   isStreamingByIdAtom,
@@ -24,6 +24,7 @@ export function usePlanImplementation() {
   const setIsStreamingById = useSetAtom(isStreamingByIdAtom);
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setErrorById = useSetAtom(chatErrorByIdAtom);
+  const store = useStore();
   const { settings } = useSettings();
 
   // Track if we've already triggered implementation for this pending plan
@@ -151,7 +152,12 @@ export function usePlanImplementation() {
                 next.set(chatId, false);
                 return next;
               });
-              syncChatFromDb(chatId, setMessagesById, "[CHAT] Plan onEnd");
+              syncChatFromDb(
+                chatId,
+                setMessagesById,
+                "[CHAT] Plan onEnd",
+                store,
+              );
             },
             onError: ({ error }) => {
               if (!isMountedRef.current) return;
@@ -166,7 +172,12 @@ export function usePlanImplementation() {
                 next.set(chatId, false);
                 return next;
               });
-              syncChatFromDb(chatId, setMessagesById, "[CHAT] Plan onError");
+              syncChatFromDb(
+                chatId,
+                setMessagesById,
+                "[CHAT] Plan onError",
+                store,
+              );
             },
           },
         );
@@ -189,5 +200,6 @@ export function usePlanImplementation() {
     setMessagesById,
     setErrorById,
     settings,
+    store,
   ]);
 }

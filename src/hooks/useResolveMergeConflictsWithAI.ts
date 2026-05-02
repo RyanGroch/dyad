@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { useSetAtom } from "jotai";
+import { useSetAtom, useStore } from "jotai";
 import { useNavigate } from "@tanstack/react-router";
 import { ipc } from "@/ipc/types";
 import {
@@ -37,6 +37,7 @@ export function useResolveMergeConflictsWithAI({
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setIsStreamingById = useSetAtom(isStreamingByIdAtom);
   const setStreamCountById = useSetAtom(chatStreamCountByIdAtom);
+  const store = useStore();
   const navigate = useNavigate();
   const [isResolving, setIsResolving] = useState(false);
   const isResolvingRef = useRef(false);
@@ -167,6 +168,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               newChatId,
               setMessagesById,
               "[CHAT] Merge conflict onEnd",
+              store,
             );
           },
           onError: ({ error }) => {
@@ -184,6 +186,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               newChatId,
               setMessagesById,
               "[CHAT] Merge conflict onError",
+              store,
             );
           },
         },
@@ -213,6 +216,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
     invalidateChats,
     refreshApp,
     settings,
+    store,
   ]);
 
   return { resolveWithAI, isResolving };

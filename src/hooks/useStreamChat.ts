@@ -4,7 +4,7 @@ import type {
   FileAttachment,
   ChatAttachment,
 } from "@/ipc/types";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import {
   chatErrorByIdAtom,
   chatMessagesByIdAtom,
@@ -61,6 +61,7 @@ export function useStreamChat({
   const { invalidateChats } = useChats(selectedAppId);
   const { refreshApp } = useLoadApp(selectedAppId);
 
+  const store = useStore();
   const setStreamCountById = useSetAtom(chatStreamCountByIdAtom);
   const { refreshVersions } = useVersions(selectedAppId);
   const { refreshAppIframe } = useRunApp();
@@ -457,7 +458,7 @@ export function useStreamChat({
                 next.set(chatId, false);
                 return next;
               });
-              syncChatFromDb(chatId, setMessagesById, "[CHAT] onError");
+              syncChatFromDb(chatId, setMessagesById, "[CHAT] onError", store);
               invalidateChats();
               refreshApp();
               refreshVersions();
@@ -498,6 +499,7 @@ export function useStreamChat({
       refetchUserBudget,
       settings,
       queryClient,
+      store,
     ],
   );
 

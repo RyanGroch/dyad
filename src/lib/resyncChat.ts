@@ -1,5 +1,7 @@
 import { ipc } from "@/ipc/types";
 import type { Message } from "@/ipc/types";
+import { getDefaultStore } from "jotai";
+import { isStreamingByIdAtom } from "@/atoms/chatAtoms";
 
 const pendingResyncChatIds = new Set<number>();
 
@@ -40,15 +42,21 @@ type SetMessagesById = (
 /**
  * Fetches the latest DB snapshot for a chat and writes it into the atom.
  * Used in onEnd and onError handlers as an authoritative final sync.
+ * Skips the write if a new stream has become active while the fetch was
+ * in-flight (checked via store.get to read the live atom state).
  */
 export function syncChatFromDb(
   chatId: number,
   setMessagesById: SetMessagesById,
   label: string,
+  store: ReturnType<typeof getDefaultStore>,
 ): void {
   ipc.chat
     .getChat(chatId)
     .then((chat) => {
+      // A new stream may have started while getChat was in flight; bail out to
+      // avoid overwriting its in-progress or placeholder messages.
+      if (store.get(isStreamingByIdAtom).get(chatId) === true) return;
       setMessagesById((prev) => {
         const currentMessages = prev.get(chatId);
         if (!currentMessages) {
