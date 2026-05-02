@@ -415,13 +415,13 @@ const createWindow = () => {
     if (pendingCrashDetected && !forceCloseMessageSent) {
       forceCloseMessageSent = true;
 
-      if (pendingForceCloseData) {
-        const windowRef = mainWindow;
-        if (!windowRef?.isDestroyed()) {
-          windowRef?.webContents.send("force-close-detected", {
+      const windowRef = mainWindow;
+      if (!windowRef?.isDestroyed()) {
+        windowRef?.webContents.send("force-close-detected", {
+          ...(pendingForceCloseData && {
             performanceData: pendingForceCloseData,
-          });
-        }
+          }),
+        });
       }
 
       sendTelemetryEvent("app:crash_detected", {
