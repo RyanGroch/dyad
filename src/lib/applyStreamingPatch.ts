@@ -8,7 +8,7 @@ import { hashPrefix } from "@/lib/prefixHash";
  * Returns false when the patch cannot be applied cleanly:
  *   - chatId has no local messages yet (missing placeholder)
  *   - streamingMessageId is not found in local messages
- *   - content is shorter than offset (stale DB overwrite dropped bytes)
+ *   - local renderer content is shorter than patch offset (stale DB overwrite dropped bytes)
  *   - djb2 hash of the local prefix disagrees with prefixHash (stale DB content
  *     has same length but different prefix, e.g. a cleanFullResponse < → ＜
  *     rewrite anywhere in the prefix after the DB write)

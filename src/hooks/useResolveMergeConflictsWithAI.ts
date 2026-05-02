@@ -15,9 +15,7 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 import { useSettings } from "@/hooks/useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { mergeResyncMessages } from "@/lib/prefixHash";
-
-const pendingResyncChatIds = new Set<number>();
+import { triggerResync } from "@/lib/resyncChat";
 
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
@@ -150,27 +148,8 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                 streamingMessageId,
                 streamingPatch,
               );
-              if (!applied && !pendingResyncChatIds.has(newChatId)) {
-                pendingResyncChatIds.add(newChatId);
-                ipc.chat
-                  .getChat(newChatId)
-                  .then((chat) => {
-                    setMessagesById((prev) => {
-                      const prevMessages = prev.get(newChatId);
-                      const next = new Map(prev);
-                      next.set(
-                        newChatId,
-                        prevMessages
-                          ? mergeResyncMessages(chat.messages, prevMessages)
-                          : chat.messages,
-                      );
-                      return next;
-                    });
-                  })
-                  .catch(() => {})
-                  .finally(() => {
-                    pendingResyncChatIds.delete(newChatId);
-                  });
+              if (!applied) {
+                triggerResync(newChatId, setMessagesById);
               }
             }
           },

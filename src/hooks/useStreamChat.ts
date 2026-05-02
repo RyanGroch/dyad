@@ -24,7 +24,7 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { mergeResyncMessages } from "@/lib/prefixHash";
+import { triggerResync } from "@/lib/resyncChat";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useVersions } from "./useVersions";
 import { showExtraFilesToast, showWarning } from "@/lib/toast";
@@ -47,10 +47,6 @@ export function getRandomNumberId() {
 // Module-level set to track chatIds with active/pending streams
 // This prevents race conditions when clicking rapidly before state updates
 const pendingStreamChatIds = new Set<number>();
-
-// Gate concurrent resync fetches per chatId to avoid spamming ipc.chat.getChat
-// when multiple consecutive patches fail the base check.
-const pendingResyncChatIds = new Set<number>();
 
 export function useStreamChat({
   hasChatId = true,
@@ -272,32 +268,8 @@ export function useStreamChat({
                   streamingMessageId,
                   streamingPatch,
                 );
-                if (!applied && !pendingResyncChatIds.has(chatId)) {
-                  // Stale full-refresh overwrote renderer state. Re-fetch the
-                  // latest DB snapshot so the user sees fresher content;
-                  // onEnd will do a final correct sync when the stream finishes.
-                  // Gate with pendingResyncChatIds to avoid spamming getChat on
-                  // every subsequent mismatched chunk.
-                  pendingResyncChatIds.add(chatId);
-                  ipc.chat
-                    .getChat(chatId)
-                    .then((chat) => {
-                      setMessagesById((prev) => {
-                        const prevMessages = prev.get(chatId);
-                        const next = new Map(prev);
-                        next.set(
-                          chatId,
-                          prevMessages
-                            ? mergeResyncMessages(chat.messages, prevMessages)
-                            : chat.messages,
-                        );
-                        return next;
-                      });
-                    })
-                    .catch(() => {})
-                    .finally(() => {
-                      pendingResyncChatIds.delete(chatId);
-                    });
+                if (!applied) {
+                  triggerResync(chatId, setMessagesById);
                 }
               }
             },

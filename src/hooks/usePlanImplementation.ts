@@ -10,9 +10,7 @@ import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { mergeResyncMessages } from "@/lib/prefixHash";
-
-const pendingResyncChatIds = new Set<number>();
+import { triggerResync } from "@/lib/resyncChat";
 
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
@@ -141,27 +139,8 @@ export function usePlanImplementation() {
                   streamingMessageId,
                   streamingPatch,
                 );
-                if (!applied && !pendingResyncChatIds.has(chatId)) {
-                  pendingResyncChatIds.add(chatId);
-                  ipc.chat
-                    .getChat(chatId)
-                    .then((chat) => {
-                      setMessagesById((prev) => {
-                        const prevMessages = prev.get(chatId);
-                        const next = new Map(prev);
-                        next.set(
-                          chatId,
-                          prevMessages
-                            ? mergeResyncMessages(chat.messages, prevMessages)
-                            : chat.messages,
-                        );
-                        return next;
-                      });
-                    })
-                    .catch(() => {})
-                    .finally(() => {
-                      pendingResyncChatIds.delete(chatId);
-                    });
+                if (!applied) {
+                  triggerResync(chatId, setMessagesById);
                 }
               }
             },

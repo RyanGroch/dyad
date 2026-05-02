@@ -1118,6 +1118,7 @@ export async function handleLocalAgentStream(
             const closingThinkBlock = "</think>\n";
             fullResponse += closingThinkBlock;
             await updateResponseInDb(placeholderMessageId, fullResponse);
+            sendChunk(fullResponse);
           }
           activeRetryReplayEvents = null;
 
