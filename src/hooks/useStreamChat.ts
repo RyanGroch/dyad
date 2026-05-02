@@ -24,7 +24,11 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
+import {
+  triggerResync,
+  syncChatFromDb,
+  mergeResyncMessages,
+} from "@/lib/resyncChat";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useVersions } from "./useVersions";
 import { showExtraFilesToast, showWarning } from "@/lib/toast";
@@ -399,11 +403,27 @@ export function useStreamChat({
                       queryKeys.chats.detail({ chatId }),
                       latestChat,
                     );
-                    setMessagesById((prev) => {
-                      const next = new Map(prev);
-                      next.set(chatId, latestChat.messages);
-                      return next;
-                    });
+                    // Guard against a racing new stream that started after
+                    // setIsStreamingById(false) above.
+                    if (!store.get(isStreamingByIdAtom).get(chatId)) {
+                      setMessagesById((prev) => {
+                        const currentMessages = prev.get(chatId);
+                        if (!currentMessages) {
+                          const next = new Map(prev);
+                          next.set(chatId, latestChat.messages);
+                          return next;
+                        }
+                        if (currentMessages.length > latestChat.messages.length)
+                          return prev;
+                        const merged = mergeResyncMessages(
+                          latestChat.messages,
+                          currentMessages,
+                        );
+                        const next = new Map(prev);
+                        next.set(chatId, merged);
+                        return next;
+                      });
+                    }
                   } catch (error) {
                     console.warn(
                       `[CHAT] Failed to refresh latest chat for ${chatId}:`,
