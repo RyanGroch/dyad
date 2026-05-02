@@ -114,7 +114,7 @@ export type ChatStreamParams = z.infer<typeof ChatStreamParamsSchema>;
  * earlier bytes inside in-progress dyad-tag attribute values).
  */
 export const StreamingPatchSchema = z.object({
-  offset: z.number(),
+  offset: z.number().int().nonnegative(),
   content: z.string(),
   /**
    * djb2 hash of `fullResponse.slice(0, offset)` — the full agreed-upon prefix.
@@ -123,7 +123,7 @@ export const StreamingPatchSchema = z.object({
    * mismatch at the boundary character.
    * Absent when offset === 0 (no agreed-upon prefix to check).
    */
-  prefixHash: z.number().optional(),
+  prefixHash: z.number().int().nonnegative().optional(),
 });
 export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 
