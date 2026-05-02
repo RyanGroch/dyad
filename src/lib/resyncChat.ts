@@ -108,6 +108,9 @@ export function triggerResync(
     .then((chat) => {
       setMessagesById((prev) => {
         const prevMessages = prev.get(chatId);
+        // A newer stream added messages while the fetch was in flight; skip.
+        if (prevMessages && prevMessages.length > chat.messages.length)
+          return prev;
         const next = new Map(prev);
         next.set(
           chatId,
