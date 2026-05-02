@@ -216,6 +216,8 @@ export async function onReady() {
     }
   }
 
+  // TODO: Remove legacyIsRunningCrash migration path after a few releases
+  // once existing users have launched at least once on the sentinel build.
   if (legacyIsRunningCrash) {
     writeSettings({ isRunning: false });
   }
@@ -425,6 +427,7 @@ const createWindow = () => {
       }
 
       sendTelemetryEvent("app:crash_detected", {
+        has_performance_data: !!pendingForceCloseData,
         ...(pendingForceCloseData && {
           last_known_memory_mb: pendingForceCloseData.memoryUsageMB,
           last_known_cpu_pct: pendingForceCloseData.cpuUsagePercent,

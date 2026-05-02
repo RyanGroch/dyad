@@ -75,7 +75,7 @@ export function getSettingsFilePath(): string {
   return path.join(getUserDataPath(), SETTINGS_FILE);
 }
 
-export function getCrashSentinelPath(): string {
+function getCrashSentinelPath(): string {
   return path.join(getUserDataPath(), CRASH_SENTINEL_FILE);
 }
 
