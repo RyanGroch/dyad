@@ -116,6 +116,14 @@ export type ChatStreamParams = z.infer<typeof ChatStreamParamsSchema>;
 export const StreamingPatchSchema = z.object({
   offset: z.number(),
   content: z.string(),
+  /**
+   * The character at position `offset - 1` in the agreed-upon prefix.
+   * Lets the renderer detect stale-base mismatches where the DB snapshot has
+   * the same length as the expected prefix but different content (e.g. a
+   * cleanFullResponse `<` → `＜` rewrite that occurred after the DB write).
+   * Absent when offset === 0 (no agreed-upon prefix to check).
+   */
+  checkChar: z.string().optional(),
 });
 export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 

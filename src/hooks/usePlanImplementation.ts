@@ -11,6 +11,8 @@ import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 
+const pendingResyncChatIds = new Set<number>();
+
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
  * Watches for pending plan implementations and sends the plan to the agent
@@ -132,12 +134,28 @@ export function usePlanImplementation() {
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                applyStreamingPatch(
+                const applied = applyStreamingPatch(
                   setMessagesById,
                   chatId,
                   streamingMessageId,
                   streamingPatch,
                 );
+                if (!applied && !pendingResyncChatIds.has(chatId)) {
+                  pendingResyncChatIds.add(chatId);
+                  ipc.chat
+                    .getChat(chatId)
+                    .then((chat) => {
+                      setMessagesById((prev) => {
+                        const next = new Map(prev);
+                        next.set(chatId, chat.messages);
+                        return next;
+                      });
+                    })
+                    .catch(() => {})
+                    .finally(() => {
+                      pendingResyncChatIds.delete(chatId);
+                    });
+                }
               }
             },
             onEnd: () => {

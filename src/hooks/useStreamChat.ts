@@ -47,6 +47,10 @@ export function getRandomNumberId() {
 // This prevents race conditions when clicking rapidly before state updates
 const pendingStreamChatIds = new Set<number>();
 
+// Gate concurrent resync fetches per chatId to avoid spamming ipc.chat.getChat
+// when multiple consecutive patches fail the base check.
+const pendingResyncChatIds = new Set<number>();
+
 export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
@@ -267,10 +271,13 @@ export function useStreamChat({
                   streamingMessageId,
                   streamingPatch,
                 );
-                if (!applied) {
+                if (!applied && !pendingResyncChatIds.has(chatId)) {
                   // Stale full-refresh overwrote renderer state. Re-fetch the
                   // latest DB snapshot so the user sees fresher content;
                   // onEnd will do a final correct sync when the stream finishes.
+                  // Gate with pendingResyncChatIds to avoid spamming getChat on
+                  // every subsequent mismatched chunk.
+                  pendingResyncChatIds.add(chatId);
                   ipc.chat
                     .getChat(chatId)
                     .then((chat) => {
@@ -280,7 +287,10 @@ export function useStreamChat({
                         return next;
                       });
                     })
-                    .catch(() => {});
+                    .catch(() => {})
+                    .finally(() => {
+                      pendingResyncChatIds.delete(chatId);
+                    });
                 }
               }
             },

@@ -4,8 +4,12 @@ import type { Message, StreamingPatch } from "@/ipc/types";
  * Applies a tail-only streaming patch to the messages-by-id map atom.
  * Reconstructs the streaming message content as `current.slice(0, offset) + content`.
  *
- * Returns false when the local content is shorter than offset, which means a
- * stale full-refresh overwrote the renderer state. The caller should resync.
+ * Returns false when the local content is an invalid base for the patch:
+ *   - content is shorter than offset (stale DB overwrite dropped bytes), or
+ *   - the char at offset-1 disagrees with checkChar (same-length wrong prefix,
+ *     e.g. a cleanFullResponse rewrite that landed in the DB before the rewrite).
+ * The caller should resync on false instead of applying subsequent patches to a
+ * corrupt base.
  */
 export function applyStreamingPatch(
   setMessagesById: (
@@ -15,8 +19,8 @@ export function applyStreamingPatch(
   streamingMessageId: number,
   streamingPatch: StreamingPatch,
 ): boolean {
-  const { offset, content } = streamingPatch;
-  let offsetMismatch = false;
+  const { offset, content, checkChar } = streamingPatch;
+  let baseMismatch = false;
   setMessagesById((prev) => {
     const existingMessages = prev.get(chatId);
     if (!existingMessages) return prev;
@@ -25,7 +29,15 @@ export function applyStreamingPatch(
       if (msg.id !== streamingMessageId) return msg;
       const currentContent = msg.content ?? "";
       if (currentContent.length < offset) {
-        offsetMismatch = true;
+        baseMismatch = true;
+        return msg;
+      }
+      if (
+        checkChar !== undefined &&
+        offset > 0 &&
+        currentContent[offset - 1] !== checkChar
+      ) {
+        baseMismatch = true;
         return msg;
       }
       return { ...msg, content: currentContent.slice(0, offset) + content };
@@ -33,5 +45,5 @@ export function applyStreamingPatch(
     next.set(chatId, updated);
     return next;
   });
-  return !offsetMismatch;
+  return !baseMismatch;
 }

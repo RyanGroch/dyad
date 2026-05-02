@@ -124,10 +124,13 @@ export function ChatPanel({
       // no-op when no chat
       return;
     }
-    const chat = await ipc.chat.getChat(chatId);
-    // Skip overwrite if streaming is active: the patch stream carries fresher
+    // Skip IPC fetch entirely when streaming: the patch stream carries fresher
     // content than the throttled DB snapshot, and overwriting would corrupt the
-    // renderer's base for subsequent patches (offset mismatch).
+    // renderer's base for subsequent patches (offset mismatch). onEnd will do
+    // a correct full sync when the stream finishes.
+    if (isStreamingById.get(chatId)) return;
+    const chat = await ipc.chat.getChat(chatId);
+    // Re-check after the async getChat in case streaming started while we waited.
     if (isStreamingById.get(chatId)) return;
     setMessagesById((prev) => {
       const next = new Map(prev);

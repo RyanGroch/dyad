@@ -13,7 +13,7 @@ const logger = log.scope("stream_text_utils");
 export function computeStreamingPatch(
   fullResponse: string,
   lastSentContent: string,
-): { offset: number; content: string } | null {
+): { offset: number; content: string; checkChar?: string } | null {
   let lcp = 0;
   const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
   while (
@@ -26,7 +26,14 @@ export function computeStreamingPatch(
   if (tail.length === 0 && lcp === lastSentContent.length) {
     return null;
   }
-  return { offset: lcp, content: tail };
+  return {
+    offset: lcp,
+    content: tail,
+    // Include the last char of the agreed prefix so the renderer can detect
+    // stale-base mismatches that have the same length but wrong content
+    // (e.g. a cleanFullResponse < → ＜ rewrite that occurred after the DB write).
+    checkChar: lcp > 0 ? fullResponse[lcp - 1] : undefined,
+  };
 }
 
 /**
