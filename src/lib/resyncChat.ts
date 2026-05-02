@@ -50,8 +50,17 @@ export function syncChatFromDb(
     .getChat(chatId)
     .then((chat) => {
       setMessagesById((prev) => {
+        const currentMessages = prev.get(chatId);
+        if (!currentMessages) {
+          const next = new Map(prev);
+          next.set(chatId, chat.messages);
+          return next;
+        }
+        // New stream added messages while fetch was in flight; skip overwrite.
+        if (currentMessages.length > chat.messages.length) return prev;
+        const merged = mergeResyncMessages(chat.messages, currentMessages);
         const next = new Map(prev);
-        next.set(chatId, chat.messages);
+        next.set(chatId, merged);
         return next;
       });
     })
