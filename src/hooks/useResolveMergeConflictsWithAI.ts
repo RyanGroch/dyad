@@ -163,6 +163,23 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             setIsResolving(false);
             invalidateChats();
             refreshApp();
+            // Final authoritative sync from DB, matching useStreamChat's onEnd pattern.
+            ipc.chat
+              .getChat(newChatId)
+              .then((chat) => {
+                setMessagesById((prev) => {
+                  const next = new Map(prev);
+                  next.set(newChatId, chat.messages);
+                  return next;
+                });
+              })
+              .catch((err) => {
+                console.warn(
+                  "[CHAT] Merge conflict onEnd DB sync failed for chat",
+                  newChatId,
+                  err,
+                );
+              });
           },
           onError: ({ error }) => {
             showError(error || "Failed to resolve conflicts");

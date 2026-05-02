@@ -1,4 +1,5 @@
 import log from "electron-log";
+import type { StreamingPatch } from "@/ipc/types";
 import { hashPrefix } from "@/lib/prefixHash";
 
 const logger = log.scope("stream_text_utils");
@@ -14,7 +15,7 @@ const logger = log.scope("stream_text_utils");
 export function computeStreamingPatch(
   fullResponse: string,
   lastSentContent: string,
-): { offset: number; content: string; prefixHash?: number } | null {
+): StreamingPatch | null {
   let lcp = 0;
   const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
   while (

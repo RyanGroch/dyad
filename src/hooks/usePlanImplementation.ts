@@ -146,12 +146,29 @@ export function usePlanImplementation() {
             },
             onEnd: () => {
               if (!isMountedRef.current) return;
-              // Stream completed - update streaming state
               setIsStreamingById((prev) => {
                 const next = new Map(prev);
                 next.set(chatId, false);
                 return next;
               });
+              // Final authoritative sync from DB, matching useStreamChat's onEnd pattern.
+              ipc.chat
+                .getChat(chatId)
+                .then((chat) => {
+                  if (!isMountedRef.current) return;
+                  setMessagesById((prev) => {
+                    const next = new Map(prev);
+                    next.set(chatId, chat.messages);
+                    return next;
+                  });
+                })
+                .catch((err) => {
+                  console.warn(
+                    "[CHAT] Plan onEnd DB sync failed for chat",
+                    chatId,
+                    err,
+                  );
+                });
             },
             onError: ({ error }) => {
               if (!isMountedRef.current) return;
