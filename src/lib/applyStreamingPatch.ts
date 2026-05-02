@@ -1,4 +1,5 @@
 import type { Message, StreamingPatch } from "@/ipc/types";
+import { hashPrefix } from "@/lib/prefixHash";
 
 /**
  * Applies a tail-only streaming patch to the messages-by-id map atom.
@@ -6,10 +7,10 @@ import type { Message, StreamingPatch } from "@/ipc/types";
  *
  * Returns false when the local content is an invalid base for the patch:
  *   - content is shorter than offset (stale DB overwrite dropped bytes), or
- *   - the char at offset-1 disagrees with checkChar (same-length wrong prefix,
- *     e.g. a cleanFullResponse rewrite that landed in the DB before the rewrite).
- * The caller should resync on false instead of applying subsequent patches to a
- * corrupt base.
+ *   - djb2 hash of the local prefix disagrees with prefixHash (stale DB content
+ *     has same length but different prefix, e.g. a cleanFullResponse < → ＜
+ *     rewrite that occurred anywhere in the prefix after the DB write).
+ * The caller should resync on false instead of splicing a new tail onto the wrong base.
  */
 export function applyStreamingPatch(
   setMessagesById: (
@@ -19,7 +20,7 @@ export function applyStreamingPatch(
   streamingMessageId: number,
   streamingPatch: StreamingPatch,
 ): boolean {
-  const { offset, content, checkChar } = streamingPatch;
+  const { offset, content, prefixHash } = streamingPatch;
   let baseMismatch = false;
   setMessagesById((prev) => {
     const existingMessages = prev.get(chatId);
@@ -33,9 +34,9 @@ export function applyStreamingPatch(
         return msg;
       }
       if (
-        checkChar !== undefined &&
+        prefixHash !== undefined &&
         offset > 0 &&
-        currentContent[offset - 1] !== checkChar
+        hashPrefix(currentContent, offset) !== prefixHash
       ) {
         baseMismatch = true;
         return msg;

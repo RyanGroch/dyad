@@ -1,4 +1,5 @@
 import log from "electron-log";
+import { hashPrefix } from "@/lib/prefixHash";
 
 const logger = log.scope("stream_text_utils");
 
@@ -13,7 +14,7 @@ const logger = log.scope("stream_text_utils");
 export function computeStreamingPatch(
   fullResponse: string,
   lastSentContent: string,
-): { offset: number; content: string; checkChar?: string } | null {
+): { offset: number; content: string; prefixHash?: number } | null {
   let lcp = 0;
   const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
   while (
@@ -29,10 +30,9 @@ export function computeStreamingPatch(
   return {
     offset: lcp,
     content: tail,
-    // Include the last char of the agreed prefix so the renderer can detect
-    // stale-base mismatches that have the same length but wrong content
-    // (e.g. a cleanFullResponse < → ＜ rewrite that occurred after the DB write).
-    checkChar: lcp > 0 ? fullResponse[lcp - 1] : undefined,
+    // Hash the full agreed-upon prefix so the renderer can detect any stale-base
+    // mismatch (e.g. a cleanFullResponse < → ＜ rewrite anywhere in the prefix).
+    prefixHash: lcp > 0 ? hashPrefix(fullResponse, lcp) : undefined,
   };
 }
 
