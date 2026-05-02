@@ -198,7 +198,14 @@ export async function onReady() {
   // Check if app was force-closed by checking for the crash sentinel file.
   // The sentinel is written at startup and deleted in before-quit on clean exit.
   // If it exists at startup, the previous session ended without a clean quit.
-  if (crashSentinelExists()) {
+  //
+  // Migration fallback: builds prior to the sentinel approach used a
+  // settings.isRunning flag to detect crashes. On first launch of a new build
+  // after a force-close of an old build, the sentinel won't exist yet but
+  // settings.isRunning may still be true. Honour it once, then clear it so
+  // subsequent runs rely solely on the sentinel.
+  const legacyIsRunningCrash = settings.isRunning === true;
+  if (crashSentinelExists() || legacyIsRunningCrash) {
     logger.warn("App was force-closed on previous run");
     pendingCrashDetected = true;
 
@@ -207,6 +214,10 @@ export async function onReady() {
       logger.warn("Last known performance:", settings.lastKnownPerformance);
       pendingForceCloseData = settings.lastKnownPerformance;
     }
+  }
+
+  if (legacyIsRunningCrash) {
+    writeSettings({ isRunning: false });
   }
 
   writeCrashSentinel();

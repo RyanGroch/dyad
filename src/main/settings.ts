@@ -90,8 +90,10 @@ export function writeCrashSentinel(): void {
 export function clearCrashSentinel(): void {
   try {
     fs.unlinkSync(getCrashSentinelPath());
-  } catch {
-    // File may not exist; that's fine
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.error("Error clearing crash sentinel:", error);
+    }
   }
 }
 
