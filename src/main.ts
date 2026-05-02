@@ -427,6 +427,9 @@ const createWindow = () => {
       }
 
       sendTelemetryEvent("app:crash_detected", {
+        // Mark as error so renderer PostHog before_send sampling does not
+        // drop 90% of events for non-Pro users (see src/renderer.tsx).
+        error: true,
         has_performance_data: !!pendingForceCloseData,
         ...(pendingForceCloseData && {
           last_known_memory_mb: pendingForceCloseData.memoryUsageMB,
