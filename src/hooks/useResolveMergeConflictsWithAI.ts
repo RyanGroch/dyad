@@ -157,11 +157,12 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                   .then((chat) => {
                     setMessagesById((prev) => {
                       const prevMessages = prev.get(newChatId);
-                      if (!prevMessages) return prev;
                       const next = new Map(prev);
                       next.set(
                         newChatId,
-                        mergeResyncMessages(chat.messages, prevMessages),
+                        prevMessages
+                          ? mergeResyncMessages(chat.messages, prevMessages)
+                          : chat.messages,
                       );
                       return next;
                     });

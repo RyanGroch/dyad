@@ -148,11 +148,12 @@ export function usePlanImplementation() {
                     .then((chat) => {
                       setMessagesById((prev) => {
                         const prevMessages = prev.get(chatId);
-                        if (!prevMessages) return prev;
                         const next = new Map(prev);
                         next.set(
                           chatId,
-                          mergeResyncMessages(chat.messages, prevMessages),
+                          prevMessages
+                            ? mergeResyncMessages(chat.messages, prevMessages)
+                            : chat.messages,
                         );
                         return next;
                       });
