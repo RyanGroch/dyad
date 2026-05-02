@@ -65,6 +65,13 @@ export function ChatPanel({
   // Ref to track previous streaming state for stream-complete scroll
   const prevIsStreamingRef = useRef(false);
 
+  // Always-current ref so async callbacks (fetchChatMessages) can read the
+  // latest isStreamingById without closing over a stale Map instance.
+  const isStreamingByIdRef = useRef(isStreamingById);
+  useEffect(() => {
+    isStreamingByIdRef.current = isStreamingById;
+  }, [isStreamingById]);
+
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
@@ -128,16 +135,18 @@ export function ChatPanel({
     // content than the throttled DB snapshot, and overwriting would corrupt the
     // renderer's base for subsequent patches (offset mismatch). onEnd will do
     // a correct full sync when the stream finishes.
-    if (isStreamingById.get(chatId)) return;
+    // Use the ref so both checks read the current atom value, not the Map
+    // instance captured when this callback was created.
+    if (isStreamingByIdRef.current.get(chatId)) return;
     const chat = await ipc.chat.getChat(chatId);
-    // Re-check after the async getChat in case streaming started while we waited.
-    if (isStreamingById.get(chatId)) return;
+    // Re-check after the async fetch: streaming may have started while in flight.
+    if (isStreamingByIdRef.current.get(chatId)) return;
     setMessagesById((prev) => {
       const next = new Map(prev);
       next.set(chatId, chat.messages);
       return next;
     });
-  }, [chatId, isStreamingById, setMessagesById]);
+  }, [chatId, setMessagesById]); // isStreamingById intentionally omitted; ref always current
 
   useEffect(() => {
     fetchChatMessages();

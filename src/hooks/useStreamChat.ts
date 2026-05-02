@@ -24,6 +24,7 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { mergeResyncMessages } from "@/lib/prefixHash";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useVersions } from "./useVersions";
 import { showExtraFilesToast, showWarning } from "@/lib/toast";
@@ -285,24 +286,9 @@ export function useStreamChat({
                         const prevMessages = prev.get(chatId);
                         if (!prevMessages) return prev;
                         const next = new Map(prev);
-                        // Preserve renderer content that is already longer than the
-                        // DB snapshot: streaming patches may have advanced past the
-                        // resync point while the fetch was in flight.
                         next.set(
                           chatId,
-                          chat.messages.map((dbMsg) => {
-                            const live = prevMessages.find(
-                              (m) => m.id === dbMsg.id,
-                            );
-                            if (
-                              live &&
-                              (live.content?.length ?? 0) >
-                                (dbMsg.content?.length ?? 0)
-                            ) {
-                              return live;
-                            }
-                            return dbMsg;
-                          }),
+                          mergeResyncMessages(chat.messages, prevMessages),
                         );
                         return next;
                       });

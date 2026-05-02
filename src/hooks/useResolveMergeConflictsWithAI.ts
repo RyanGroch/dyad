@@ -15,6 +15,7 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 import { useSettings } from "@/hooks/useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { mergeResyncMessages } from "@/lib/prefixHash";
 
 const pendingResyncChatIds = new Set<number>();
 
@@ -160,19 +161,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                       const next = new Map(prev);
                       next.set(
                         newChatId,
-                        chat.messages.map((dbMsg) => {
-                          const live = prevMessages.find(
-                            (m) => m.id === dbMsg.id,
-                          );
-                          if (
-                            live &&
-                            (live.content?.length ?? 0) >
-                              (dbMsg.content?.length ?? 0)
-                          ) {
-                            return live;
-                          }
-                          return dbMsg;
-                        }),
+                        mergeResyncMessages(chat.messages, prevMessages),
                       );
                       return next;
                     });

@@ -10,6 +10,7 @@ import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { mergeResyncMessages } from "@/lib/prefixHash";
 
 const pendingResyncChatIds = new Set<number>();
 
@@ -151,19 +152,7 @@ export function usePlanImplementation() {
                         const next = new Map(prev);
                         next.set(
                           chatId,
-                          chat.messages.map((dbMsg) => {
-                            const live = prevMessages.find(
-                              (m) => m.id === dbMsg.id,
-                            );
-                            if (
-                              live &&
-                              (live.content?.length ?? 0) >
-                                (dbMsg.content?.length ?? 0)
-                            ) {
-                              return live;
-                            }
-                            return dbMsg;
-                          }),
+                          mergeResyncMessages(chat.messages, prevMessages),
                         );
                         return next;
                       });
