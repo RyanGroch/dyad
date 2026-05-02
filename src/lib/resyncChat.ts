@@ -1,6 +1,5 @@
 import { ipc } from "@/ipc/types";
 import type { Message } from "@/ipc/types";
-import { hashPrefix } from "@/lib/prefixHash";
 
 const pendingResyncChatIds = new Set<number>();
 
@@ -9,9 +8,9 @@ const RESYNC_TIMEOUT_MS = 10_000;
 /**
  * Merges a DB messages snapshot into the live renderer messages for a chat.
  * For the streaming message, keeps the live version only when it is a valid
- * extension of the DB snapshot: live content must be longer AND its prefix up
- * to the DB snapshot length must hash-match (proving patches advanced the
- * renderer correctly past the snapshot without corrupting the base).
+ * extension of the DB snapshot: live content must be longer AND must start with
+ * the full DB content (proving patches correctly advanced the renderer past the
+ * snapshot without corrupting the base).
  * Falls back to the DB version otherwise, including when live content is longer
  * but has a wrong prefix (corrupted base that caused the patch failure).
  */
@@ -22,17 +21,43 @@ export function mergeResyncMessages(
   return dbMessages.map((dbMsg) => {
     const live = prevMessages.find((m) => m.id === dbMsg.id);
     if (!live) return dbMsg;
-    const dbLen = dbMsg.content?.length ?? 0;
-    const liveLen = live.content?.length ?? 0;
+    const dbContent = dbMsg.content ?? "";
+    const liveContent = live.content ?? "";
     if (
-      liveLen > dbLen &&
-      hashPrefix(live.content ?? "", dbLen) ===
-        hashPrefix(dbMsg.content ?? "", dbLen)
+      liveContent.length > dbContent.length &&
+      liveContent.startsWith(dbContent)
     ) {
       return live;
     }
     return dbMsg;
   });
+}
+
+type SetMessagesById = (
+  update: (prev: Map<number, Message[]>) => Map<number, Message[]>,
+) => void;
+
+/**
+ * Fetches the latest DB snapshot for a chat and writes it into the atom.
+ * Used in onEnd and onError handlers as an authoritative final sync.
+ */
+export function syncChatFromDb(
+  chatId: number,
+  setMessagesById: SetMessagesById,
+  label: string,
+): void {
+  ipc.chat
+    .getChat(chatId)
+    .then((chat) => {
+      setMessagesById((prev) => {
+        const next = new Map(prev);
+        next.set(chatId, chat.messages);
+        return next;
+      });
+    })
+    .catch((err) => {
+      console.warn(`${label} DB sync failed for chat`, chatId, err);
+    });
 }
 
 /**
@@ -45,9 +70,7 @@ export function mergeResyncMessages(
  */
 export function triggerResync(
   chatId: number,
-  setMessagesById: (
-    update: (prev: Map<number, Message[]>) => Map<number, Message[]>,
-  ) => void,
+  setMessagesById: SetMessagesById,
 ): void {
   if (pendingResyncChatIds.has(chatId)) return;
   pendingResyncChatIds.add(chatId);

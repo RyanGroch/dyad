@@ -15,7 +15,7 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 import { useSettings } from "@/hooks/useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { triggerResync } from "@/lib/resyncChat";
+import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
 
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
@@ -163,23 +163,11 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             setIsResolving(false);
             invalidateChats();
             refreshApp();
-            // Final authoritative sync from DB, matching useStreamChat's onEnd pattern.
-            ipc.chat
-              .getChat(newChatId)
-              .then((chat) => {
-                setMessagesById((prev) => {
-                  const next = new Map(prev);
-                  next.set(newChatId, chat.messages);
-                  return next;
-                });
-              })
-              .catch((err) => {
-                console.warn(
-                  "[CHAT] Merge conflict onEnd DB sync failed for chat",
-                  newChatId,
-                  err,
-                );
-              });
+            syncChatFromDb(
+              newChatId,
+              setMessagesById,
+              "[CHAT] Merge conflict onEnd",
+            );
           },
           onError: ({ error }) => {
             showError(error || "Failed to resolve conflicts");
@@ -192,6 +180,11 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             setIsResolving(false);
             invalidateChats();
             refreshApp();
+            syncChatFromDb(
+              newChatId,
+              setMessagesById,
+              "[CHAT] Merge conflict onError",
+            );
           },
         },
       );

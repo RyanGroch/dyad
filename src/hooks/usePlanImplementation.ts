@@ -10,7 +10,7 @@ import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { triggerResync } from "@/lib/resyncChat";
+import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
 
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
@@ -151,40 +151,22 @@ export function usePlanImplementation() {
                 next.set(chatId, false);
                 return next;
               });
-              // Final authoritative sync from DB, matching useStreamChat's onEnd pattern.
-              ipc.chat
-                .getChat(chatId)
-                .then((chat) => {
-                  if (!isMountedRef.current) return;
-                  setMessagesById((prev) => {
-                    const next = new Map(prev);
-                    next.set(chatId, chat.messages);
-                    return next;
-                  });
-                })
-                .catch((err) => {
-                  console.warn(
-                    "[CHAT] Plan onEnd DB sync failed for chat",
-                    chatId,
-                    err,
-                  );
-                });
+              syncChatFromDb(chatId, setMessagesById, "[CHAT] Plan onEnd");
             },
             onError: ({ error }) => {
               if (!isMountedRef.current) return;
               console.error("Plan implementation stream error:", error);
-              // Update error state
               setErrorById((prev) => {
                 const next = new Map(prev);
                 next.set(chatId, error);
                 return next;
               });
-              // Also set streaming to false on error
               setIsStreamingById((prev) => {
                 const next = new Map(prev);
                 next.set(chatId, false);
                 return next;
               });
+              syncChatFromDb(chatId, setMessagesById, "[CHAT] Plan onError");
             },
           },
         );

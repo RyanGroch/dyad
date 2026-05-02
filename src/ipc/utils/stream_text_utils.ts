@@ -16,6 +16,7 @@ export function computeStreamingPatch(
   fullResponse: string,
   lastSentContent: string,
 ): StreamingPatch | null {
+  if (fullResponse === lastSentContent) return null;
   let lcp = 0;
   const maxLcp = Math.min(lastSentContent.length, fullResponse.length);
   while (
@@ -24,13 +25,9 @@ export function computeStreamingPatch(
   ) {
     lcp++;
   }
-  const tail = fullResponse.slice(lcp);
-  if (tail.length === 0 && lcp === lastSentContent.length) {
-    return null;
-  }
   return {
     offset: lcp,
-    content: tail,
+    content: fullResponse.slice(lcp),
     // Hash the full agreed-upon prefix so the renderer can detect any stale-base
     // mismatch (e.g. a cleanFullResponse < → ＜ rewrite anywhere in the prefix).
     prefixHash: lcp > 0 ? hashPrefix(fullResponse, lcp) : undefined,

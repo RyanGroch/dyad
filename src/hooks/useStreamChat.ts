@@ -24,7 +24,7 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
-import { triggerResync } from "@/lib/resyncChat";
+import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useVersions } from "./useVersions";
 import { showExtraFilesToast, showWarning } from "@/lib/toast";
@@ -457,6 +457,7 @@ export function useStreamChat({
                 next.set(chatId, false);
                 return next;
               });
+              syncChatFromDb(chatId, setMessagesById, "[CHAT] onError");
               invalidateChats();
               refreshApp();
               refreshVersions();
