@@ -1,7 +1,10 @@
 import { ipc } from "@/ipc/types";
 import type { Message } from "@/ipc/types";
 import { getDefaultStore } from "jotai";
-import { isStreamingByIdAtom } from "@/atoms/chatAtoms";
+import {
+  isStreamingByIdAtom,
+  chatStreamCountByIdAtom,
+} from "@/atoms/chatAtoms";
 
 const pendingResyncChatIds = new Set<number>();
 
@@ -88,9 +91,14 @@ export function syncChatFromDb(
 export function triggerResync(
   chatId: number,
   setMessagesById: SetMessagesById,
+  store: ReturnType<typeof getDefaultStore>,
 ): void {
   if (pendingResyncChatIds.has(chatId)) return;
   pendingResyncChatIds.add(chatId);
+
+  // Snapshot the stream generation so we can detect if a new stream starts
+  // before the fetch resolves and skip the stale write.
+  const streamGenAtStart = store.get(chatStreamCountByIdAtom).get(chatId) ?? 0;
 
   let timeoutId: ReturnType<typeof setTimeout>;
   const fetchWithTimeout = Promise.race([
@@ -106,6 +114,12 @@ export function triggerResync(
 
   fetchWithTimeout
     .then((chat) => {
+      // A different stream started while the fetch was in flight; skip.
+      if (
+        (store.get(chatStreamCountByIdAtom).get(chatId) ?? 0) !==
+        streamGenAtStart
+      )
+        return;
       setMessagesById((prev) => {
         const prevMessages = prev.get(chatId);
         // A newer stream added messages while the fetch was in flight; skip.

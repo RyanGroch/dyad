@@ -150,7 +150,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
                 streamingPatch,
               );
               if (!applied) {
-                triggerResync(newChatId, setMessagesById);
+                triggerResync(newChatId, setMessagesById, store);
               }
             }
           },

@@ -274,7 +274,7 @@ export function useStreamChat({
                   streamingPatch,
                 );
                 if (!applied) {
-                  triggerResync(chatId, setMessagesById);
+                  triggerResync(chatId, setMessagesById, store);
                 }
               }
             },
