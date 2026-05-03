@@ -620,7 +620,7 @@ ${componentSnippet}
           req.chatId,
           testResponse,
           abortController,
-          updatedChat,
+          placeholderAssistantMessage.id,
         );
       } else {
         // Normal AI processing for non-test prompts

@@ -40,6 +40,26 @@ import React from 'react';
 </dyad-write>
 AFTER TAG
 `,
+  "stress-many-writes": `Generating 100 small files for stress test.
+
+${Array.from(
+  { length: 5000 },
+  (_, i) =>
+    `<dyad-write path="src/stress/file_${i}.ts" description="stress file ${i}">
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+export function get${i}() {
+  return id${i};
+}
+export function describe${i}() {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+export const meta${i} = { id: id${i}, name: name${i} };
+export default meta${i};
+</dyad-write>`,
+).join("\n")}
+
+EOM`,
 };
 
 /**
@@ -62,7 +82,7 @@ export function getTestResponse(prompt: string): string | null {
  * @param chatId The chat ID
  * @param testResponse The canned response to stream
  * @param abortController The abort controller for this stream
- * @param updatedChat The chat data with messages
+ * @param placeholderAssistantMessageId The DB id of the placeholder assistant message to update incrementally
  * @returns The full streamed response
  */
 export async function streamTestResponse(
@@ -70,38 +90,50 @@ export async function streamTestResponse(
   chatId: number,
   testResponse: string,
   abortController: AbortController,
-  updatedChat: any,
+  placeholderAssistantMessageId: number,
 ): Promise<string> {
   console.log(`Using canned response for test prompt`);
 
-  // Simulate streaming by splitting the response into chunks
   const chunks = testResponse.split(" ");
   let fullResponse = "";
 
+  let num = 0;
+  // Throttle IPC sends in the test path only so the renderer can keep up
+  // when the canned response is large. Real LLM streaming intentionally
+  // skips this so we observe true backpressure behavior during experiments.
+  const SEND_INTERVAL_MS = 16;
+  let lastSentAt = 0;
+
   for (const chunk of chunks) {
-    // Skip processing if aborted
     if (abortController.signal.aborted) {
       break;
     }
 
-    // Add the word plus a space
     fullResponse += chunk + " ";
     fullResponse = cleanFullResponse(fullResponse);
 
-    // Send the current accumulated response
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId: chatId,
-      messages: [
-        ...updatedChat.messages,
-        {
-          role: "assistant",
-          content: fullResponse,
-        },
-      ],
-    });
+    const now = Date.now();
+    if (now - lastSentAt >= SEND_INTERVAL_MS) {
+      safeSend(event.sender, "chat:response:chunk", {
+        chatId,
+        streamingMessageId: placeholderAssistantMessageId,
+        streamingContent: fullResponse,
+      });
+      lastSentAt = now;
+      console.log(`SENT CHUNK ${++num} : ${chunk}`);
+    }
 
-    // Add a small delay to simulate streaming
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  // Always flush the final accumulated content so the renderer ends in sync
+  // with the full canned response, even if the last iteration was throttled.
+  if (!abortController.signal.aborted) {
+    safeSend(event.sender, "chat:response:chunk", {
+      chatId,
+      streamingMessageId: placeholderAssistantMessageId,
+      streamingContent: fullResponse,
+    });
   }
 
   return fullResponse;
