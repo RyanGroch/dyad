@@ -273,3 +273,14 @@ export const queuePausedByIdAtom = atom<Map<number, boolean>>(new Map());
 export const streamingBlocksByMessageIdAtom = atom<Map<number, ParserState>>(
   new Map(),
 );
+
+// Cumulative bytes dropped from the front of the renderer-local
+// message.content for each message, while a stream is in progress. The
+// chunk handler trims old completed blocks from memory once the count
+// exceeds a threshold; the count translates server-side patch offsets
+// (which are absolute) into local-content offsets used by
+// applyStreamingPatch. Cleared on stream end (full content is re-fetched
+// from the database).
+export const contentBytesDroppedByMessageIdAtom = atom<Map<number, number>>(
+  new Map(),
+);
