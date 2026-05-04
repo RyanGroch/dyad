@@ -76,8 +76,38 @@ export function getTestResponse(prompt: string): string | null {
   return null;
 }
 
+// Ack-based backpressure state for the canned test stream.
+// Real LLM streams do not register entries here, so noteAck is a no-op for them.
+type AckEntry = { lastAcked: number };
+const ackState = new Map<number, AckEntry>();
+
+export function noteAck(chatId: number, lastSeq: number): void {
+  const entry = ackState.get(chatId);
+  if (!entry) return;
+  if (lastSeq > entry.lastAcked) {
+    entry.lastAcked = lastSeq;
+  }
+}
+
+function clearAck(chatId: number): void {
+  ackState.delete(chatId);
+}
+
 /**
- * Streams a canned test response to the client
+ * Streams a canned test response to the client.
+ *
+ * Uses adaptive ack-based backpressure: the loop never blocks on the
+ * renderer. Each iteration appends to fullResponse and increments
+ * currentSeq. The IPC send is conditional on in-flight headroom
+ * (lastSentSeq - lastAcked <= STRESS_BACKPRESSURE_THRESHOLD); when the
+ * renderer is behind, sends are skipped while content keeps growing,
+ * so the next allowed send naturally coalesces. Effective send rate
+ * tracks whatever rate the renderer can sustain.
+ *
+ * Yields to the event loop every YIELD_EVERY_N_CHUNKS iterations so
+ * the noteAck IPC handler can run; without yielding, the synchronous
+ * for-loop monopolizes the main process and acks are never observed.
+ *
  * @param event The IPC event
  * @param chatId The chat ID
  * @param testResponse The canned response to stream
@@ -94,46 +124,56 @@ export async function streamTestResponse(
 ): Promise<string> {
   console.log(`Using canned response for test prompt`);
 
+  const STRESS_BACKPRESSURE_THRESHOLD = 100;
+
   const chunks = testResponse.split(" ");
   let fullResponse = "";
+  let currentSeq = 0;
+  let lastSentSeq = 0;
 
-  let num = 0;
-  // Throttle IPC sends in the test path only so the renderer can keep up
-  // when the canned response is large. Real LLM streaming intentionally
-  // skips this so we observe true backpressure behavior during experiments.
-  const SEND_INTERVAL_MS = 16;
-  let lastSentAt = 0;
+  ackState.set(chatId, { lastAcked: 0 });
 
-  for (const chunk of chunks) {
-    if (abortController.signal.aborted) {
-      break;
+  try {
+    for (const chunk of chunks) {
+      if (abortController.signal.aborted) break;
+
+      fullResponse += chunk + " ";
+      fullResponse = cleanFullResponse(fullResponse);
+      currentSeq++;
+
+      const lastAcked = ackState.get(chatId)?.lastAcked ?? 0;
+      const inFlight = lastSentSeq - lastAcked;
+
+      if (inFlight <= STRESS_BACKPRESSURE_THRESHOLD) {
+        safeSend(event.sender, "chat:response:chunk", {
+          chatId,
+          streamingMessageId: placeholderAssistantMessageId,
+          streamingContent: fullResponse,
+          chunkSeq: currentSeq,
+        });
+        lastSentSeq = currentSeq;
+        console.log(
+          `[stress] SEND seq=${currentSeq} inFlight=${currentSeq - lastAcked}`,
+        );
+      }
+
+      await new Promise<void>((res) => setTimeout(() => res(undefined), 10));
     }
 
-    fullResponse += chunk + " ";
-    fullResponse = cleanFullResponse(fullResponse);
-
-    const now = Date.now();
-    if (now - lastSentAt >= SEND_INTERVAL_MS) {
+    // Final flush: guarantee the renderer ends with the complete response,
+    // even if the last iterations were skipped due to backpressure.
+    if (!abortController.signal.aborted && lastSentSeq < currentSeq) {
       safeSend(event.sender, "chat:response:chunk", {
         chatId,
         streamingMessageId: placeholderAssistantMessageId,
         streamingContent: fullResponse,
+        chunkSeq: currentSeq,
       });
-      lastSentAt = now;
-      console.log(`SENT CHUNK ${++num} : ${chunk}`);
+      lastSentSeq = currentSeq;
+      console.log(`[stress] FINAL FLUSH seq=${currentSeq}`);
     }
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  // Always flush the final accumulated content so the renderer ends in sync
-  // with the full canned response, even if the last iteration was throttled.
-  if (!abortController.signal.aborted) {
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId,
-      streamingMessageId: placeholderAssistantMessageId,
-      streamingContent: fullResponse,
-    });
+  } finally {
+    clearAck(chatId);
   }
 
   return fullResponse;

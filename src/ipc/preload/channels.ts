@@ -55,6 +55,9 @@ const HELP_STREAM_CHANNELS = getStreamChannels(helpStreamContract);
 const TEST_INVOKE_CHANNELS = [
   "test:simulateQuotaTimeElapsed",
   "test:set-node-mock",
+  // Renderer→main ack for stress-test backpressure on the canned test
+  // streaming path. Real LLM streams do not use this channel.
+  "chat:response:ack",
 ] as const;
 
 /**

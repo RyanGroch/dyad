@@ -116,6 +116,10 @@ export const ChatResponseChunkSchema = z.object({
   messages: z.array(MessageSchema).optional(),
   streamingMessageId: z.number().optional(),
   streamingContent: z.string().optional(),
+  // Monotonic chunk sequence used for ack-based backpressure in the test
+  // streaming path. Real LLM streams omit this field; renderer only acks
+  // when chunkSeq is present.
+  chunkSeq: z.number().optional(),
   effectiveChatMode: ChatModeSchema.optional(),
   chatModeFallbackReason: z
     .enum(["pro-required", "quota-exhausted", "no-provider"])
