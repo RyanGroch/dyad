@@ -125,13 +125,18 @@ export async function streamTestResponse(
 ): Promise<string> {
   console.log(`Using canned response for test prompt`);
 
-  const STRESS_BACKPRESSURE_THRESHOLD = 100;
+  const STRESS_BACKPRESSURE_THRESHOLD = 1;
+  // Hard floor on send interval so the renderer never receives more than
+  // one chunk per MIN_SEND_INTERVAL_MS, regardless of how fast the loop
+  // produces content. Sits on top of the adaptive backpressure gate.
+  const MIN_SEND_INTERVAL_MS = 500;
 
   const chunks = testResponse.split(" ");
   let fullResponse = "";
   let currentSeq = 0;
   let lastSentSeq = 0;
   let lastSentContent = "";
+  let lastSentAt = 0;
 
   ackState.set(chatId, { lastAcked: 0 });
 
@@ -145,8 +150,13 @@ export async function streamTestResponse(
 
       const lastAcked = ackState.get(chatId)?.lastAcked ?? 0;
       const inFlight = lastSentSeq - lastAcked;
+      const now = Date.now();
+      const sinceLastSend = now - lastSentAt;
 
-      if (inFlight <= STRESS_BACKPRESSURE_THRESHOLD) {
+      if (
+        inFlight <= STRESS_BACKPRESSURE_THRESHOLD &&
+        sinceLastSend >= MIN_SEND_INTERVAL_MS
+      ) {
         const patch = computeStreamingPatch(fullResponse, lastSentContent);
         if (patch) {
           safeSend(event.sender, "chat:response:chunk", {
@@ -157,6 +167,7 @@ export async function streamTestResponse(
           });
           lastSentContent = fullResponse;
           lastSentSeq = currentSeq;
+          lastSentAt = now;
           console.log(
             `[stress] SEND seq=${currentSeq} inFlight=${currentSeq - lastAcked}`,
           );
