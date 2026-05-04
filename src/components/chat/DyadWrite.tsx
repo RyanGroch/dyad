@@ -125,6 +125,14 @@ export const DyadWrite: React.FC<DyadWriteProps> = ({
             <div className="h-96 min-h-96 border border-border rounded-lg overflow-hidden">
               <FileEditor appId={appId ?? null} filePath={path} />
             </div>
+          ) : inProgress ? (
+            // Skip syntax highlighting while bytes are still arriving — Shiki
+            // would re-run on every chunk and the block's content is going to
+            // change shape repeatedly anyway. Fall through to CodeHighlight
+            // once the closing tag arrives.
+            <pre className="overflow-auto text-xs">
+              <code>{children}</code>
+            </pre>
           ) : (
             <CodeHighlight className="language-typescript">
               {children}
