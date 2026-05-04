@@ -79,7 +79,7 @@ export function getTestResponse(prompt: string): string | null {
 
 // Ack-based backpressure state for the canned test stream.
 // Real LLM streams do not register entries here, so noteAck is a no-op for them.
-type AckEntry = { lastAcked: number };
+type AckEntry = { lastAcked: number; lastAckedAt: number };
 const ackState = new Map<number, AckEntry>();
 
 export function noteAck(chatId: number, lastSeq: number): void {
@@ -87,6 +87,7 @@ export function noteAck(chatId: number, lastSeq: number): void {
   if (!entry) return;
   if (lastSeq > entry.lastAcked) {
     entry.lastAcked = lastSeq;
+    entry.lastAckedAt = Date.now();
   }
 }
 
@@ -130,6 +131,10 @@ export async function streamTestResponse(
   // one chunk per MIN_SEND_INTERVAL_MS, regardless of how fast the loop
   // produces content. Sits on top of the adaptive backpressure gate.
   const MIN_SEND_INTERVAL_MS = 500;
+  // After an ack arrives, wait this long before sending the next chunk so
+  // the IPC queue can briefly drain. Without this, main fires the next
+  // send the moment lastAcked moves, refilling the queue immediately.
+  const POST_ACK_DELAY_MS = 500;
 
   const chunks = testResponse.split(" ");
   let fullResponse = "";
@@ -138,7 +143,7 @@ export async function streamTestResponse(
   let lastSentContent = "";
   let lastSentAt = 0;
 
-  ackState.set(chatId, { lastAcked: 0 });
+  ackState.set(chatId, { lastAcked: 0, lastAckedAt: 0 });
 
   try {
     for (const chunk of chunks) {
@@ -148,14 +153,18 @@ export async function streamTestResponse(
       fullResponse = cleanFullResponse(fullResponse);
       currentSeq++;
 
-      const lastAcked = ackState.get(chatId)?.lastAcked ?? 0;
+      const entry = ackState.get(chatId);
+      const lastAcked = entry?.lastAcked ?? 0;
+      const lastAckedAt = entry?.lastAckedAt ?? 0;
       const inFlight = lastSentSeq - lastAcked;
       const now = Date.now();
       const sinceLastSend = now - lastSentAt;
+      const sinceLastAck = now - lastAckedAt;
 
       if (
         inFlight <= STRESS_BACKPRESSURE_THRESHOLD &&
-        sinceLastSend >= MIN_SEND_INTERVAL_MS
+        sinceLastSend >= MIN_SEND_INTERVAL_MS &&
+        sinceLastAck >= POST_ACK_DELAY_MS
       ) {
         const patch = computeStreamingPatch(fullResponse, lastSentContent);
         if (patch) {
