@@ -53,7 +53,7 @@ const pendingStreamChatIds = new Set<number>();
 // threshold (occasional overshoot is fine — main has a timeout fallback)
 // for much lower IPC + main-thread pressure on the renderer, which keeps
 // paint smooth during heavy streams.
-const ACK_THROTTLE_MS = 1000;
+const ACK_THROTTLE_MS = 2000;
 const latestChunkSeqByChatId = new Map<number, number>();
 const ackTimerByChatId = new Map<number, ReturnType<typeof setTimeout>>();
 
