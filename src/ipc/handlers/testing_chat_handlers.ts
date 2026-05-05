@@ -40,6 +40,26 @@ import React from 'react';
 </dyad-write>
 AFTER TAG
 `,
+  "stress-many-writes": `Generating 100 small files for stress test.
+
+${Array.from(
+  { length: 5000 },
+  (_, i) =>
+    `<dyad-write path="src/stress/file_${i}.ts" description="stress file ${i}">
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+export function get${i}() {
+  return id${i};
+}
+export function describe${i}() {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+export const meta${i} = { id: id${i}, name: name${i} };
+export default meta${i};
+</dyad-write>`,
+).join("\n")}
+
+EOM`,
 };
 
 /**
