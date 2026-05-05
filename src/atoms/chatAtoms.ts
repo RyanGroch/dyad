@@ -7,7 +7,20 @@ import type {
 import type { ListedApp } from "@/ipc/types/app";
 import type { Getter, Setter } from "jotai";
 import { atom } from "jotai";
+import type { ReactElement } from "react";
 import type { ParserState } from "@/lib/streamingMessageParser";
+
+/**
+ * Per-message cache of pre-rendered React elements for committed (closed)
+ * blocks. Built at chunk-handle time so the renderer never re-creates them
+ * during render.
+ */
+export interface CachedClosedBlock {
+  /** The pre-built React element (key already set, props frozen). */
+  element: ReactElement;
+  /** Pre-extracted error message (for FixAllErrorsButton aggregation). */
+  errorMessage?: string;
+}
 
 // Per-chat atoms implemented with maps keyed by chatId
 export const chatMessagesByIdAtom = atom<Map<number, Message[]>>(new Map());
@@ -282,5 +295,15 @@ export const streamingBlocksByMessageIdAtom = atom<Map<number, ParserState>>(
 // applyStreamingPatch. Cleared on stream end (full content is re-fetched
 // from the database).
 export const contentBytesDroppedByMessageIdAtom = atom<Map<number, number>>(
+  new Map(),
+);
+
+// Append-only list of pre-rendered React elements for committed blocks of
+// a streaming (and post-stream) message. Building each element ONCE at
+// chunk-handle time means the renderer never re-creates JSX for closed
+// blocks. Memory holds the response as React elements (with the source
+// string nested inside element.props.children), not as the original
+// concatenated content string.
+export const messageJsxByIdAtom = atom<Map<number, CachedClosedBlock[]>>(
   new Map(),
 );

@@ -22,6 +22,8 @@ import {
   isStreamingByIdAtom,
   selectedChatIdAtom,
   streamingBlocksByMessageIdAtom,
+  messageJsxByIdAtom,
+  type CachedClosedBlock,
 } from "@/atoms/chatAtoms";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
@@ -52,11 +54,7 @@ import { DyadReadGuide } from "./DyadReadGuide";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
-import {
-  type Block,
-  getParserBlocks,
-  parseFullMessage,
-} from "@/lib/streamingMessageParser";
+import { type Block, parseFullMessage } from "@/lib/streamingMessageParser";
 
 interface DyadMarkdownParserProps {
   content: string;
@@ -123,96 +121,93 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const cachedState =
     messageId !== undefined ? streamingStates.get(messageId) : undefined;
 
-  const blocks = useMemo<Block[]>(() => {
-    // Cache hit: parser cursor matches content length, so the cached blocks
-    // are exactly what one-shot parsing would produce — without re-parsing
-    // the whole message. Completed blocks in the cache are referentially
-    // stable across patches, which is what the renderer's memoization
-    // depends on.
-    if (cachedState && cachedState.cursor === contentToParse.length) {
-      return getParserBlocks(cachedState);
-    }
-    // Cache miss (no streaming state, or stale length after resync /
-    // cancellation notice). One-shot parse. Cheap relative to React.
+  const messageJsxMap = useAtomValue(messageJsxByIdAtom);
+  const cachedJsx =
+    messageId !== undefined ? messageJsxMap.get(messageId) : undefined;
+
+  // Open block (in-progress) is sourced from the parser state. Closed blocks
+  // come from the JSX cache when present. Falls back to one-shot parse for
+  // history / non-streaming messages with no cache entry.
+  const openBlock = cachedState?.openBlock ?? null;
+
+  // Fallback path: no JSX cache (history, post-DB-restore). One-shot parse.
+  const fallbackBlocks = useMemo<Block[] | null>(() => {
+    if (cachedJsx !== undefined) return null;
     return parseFullMessage(contentToParse).blocks;
-  }, [cachedState, contentToParse]);
+  }, [cachedJsx, contentToParse]);
 
-  // EXPERIMENT: clamp the number of mounted dyad-write cards to the most
-  // recent N. Goal: confirm whether the per-chunk lag is dominated by
-  // browser layout/paint scaling with total DOM size (single-mega-Virtuoso
-  // -item reflow) versus React work. If lag flattens with this clamp,
-  // structural fix (block-level virtualization) is warranted.
-  const MAX_DYAD_WRITE_CARDS = 20;
-  const visibleBlocks = useMemo<Block[]>(() => {
-    let writeCount = 0;
-    for (const b of blocks) {
-      if (b.kind === "custom-tag" && b.tag === "dyad-write") writeCount++;
-    }
-    if (writeCount <= MAX_DYAD_WRITE_CARDS) return blocks;
-    const dropBefore = writeCount - MAX_DYAD_WRITE_CARDS;
-    let seen = 0;
-    return blocks.filter((b) => {
-      if (b.kind === "custom-tag" && b.tag === "dyad-write") {
-        seen++;
-        return seen > dropBefore;
-      }
-      return true;
-    });
-  }, [blocks]);
-
-  // Extract error messages and track positions
-  const { errorMessages, lastErrorIndex, errorCount } = useMemo(() => {
+  // Aggregate error messages for the FixAllErrorsButton.
+  const { errorMessages, errorCount } = useMemo(() => {
     const errors: string[] = [];
-    let lastIndex = -1;
-    let count = 0;
-
-    visibleBlocks.forEach((block, index) => {
-      if (
-        block.kind === "custom-tag" &&
-        block.tag === "dyad-output" &&
-        block.attributes.type === "error"
-      ) {
-        const errorMessage = block.attributes.message;
-        if (errorMessage?.trim()) {
-          errors.push(errorMessage.trim());
-          count++;
-          lastIndex = index;
+    if (cachedJsx) {
+      for (const entry of cachedJsx) {
+        if (entry.errorMessage) errors.push(entry.errorMessage);
+      }
+    } else if (fallbackBlocks) {
+      for (const block of fallbackBlocks) {
+        if (
+          block.kind === "custom-tag" &&
+          block.tag === "dyad-output" &&
+          block.attributes.type === "error"
+        ) {
+          const msg = block.attributes.message?.trim();
+          if (msg) errors.push(msg);
         }
       }
-    });
+    }
+    return { errorMessages: errors, errorCount: errors.length };
+  }, [cachedJsx, fallbackBlocks]);
 
-    return {
-      errorMessages: errors,
-      lastErrorIndex: lastIndex,
-      errorCount: count,
-    };
-  }, [visibleBlocks]);
+  const showFixAll =
+    errorCount > 1 && !isStreaming && chatId !== null && chatId !== undefined;
 
   return (
     <>
-      {visibleBlocks.map((block, index) => (
-        <React.Fragment key={block.id}>
-          {block.kind === "markdown" ? (
-            block.content && <MemoMarkdown content={block.content} />
-          ) : (
-            <MemoBlockCustomTag block={block} isStreaming={isStreaming} />
-          )}
-          {index === lastErrorIndex &&
-            errorCount > 1 &&
-            !isStreaming &&
-            chatId && (
-              <div className="mt-3 w-full flex">
-                <FixAllErrorsButton
-                  errorMessages={errorMessages}
-                  chatId={chatId}
-                />
-              </div>
+      {cachedJsx ? (
+        <MemoCachedClosedBlocks entries={cachedJsx} />
+      ) : fallbackBlocks ? (
+        fallbackBlocks.map((block) => (
+          <React.Fragment key={block.id}>
+            {block.kind === "markdown" ? (
+              block.content && <MemoMarkdown content={block.content} />
+            ) : (
+              <MemoBlockCustomTag block={block} isStreaming={isStreaming} />
             )}
-        </React.Fragment>
-      ))}
+          </React.Fragment>
+        ))
+      ) : null}
+      {openBlock ? (
+        openBlock.kind === "markdown" ? (
+          openBlock.content && <MemoMarkdown content={openBlock.content} />
+        ) : (
+          <MemoBlockCustomTag block={openBlock} isStreaming={isStreaming} />
+        )
+      ) : null}
+      {showFixAll && (
+        <div className="mt-3 w-full flex">
+          <FixAllErrorsButton errorMessages={errorMessages} chatId={chatId!} />
+        </div>
+      )}
     </>
   );
 };
+
+// Memoized renderer for the closed-block JSX cache. Skips re-rendering its
+// subtree entirely when the entries array reference is unchanged. The chunk
+// handler creates a new array reference only when blocks are appended.
+const MemoCachedClosedBlocks = React.memo(function MemoCachedClosedBlocks({
+  entries,
+}: {
+  entries: CachedClosedBlock[];
+}) {
+  return (
+    <>
+      {entries.map((entry, i) => (
+        <React.Fragment key={i}>{entry.element}</React.Fragment>
+      ))}
+    </>
+  );
+});
 
 // Module-level constants so MemoMarkdown never gets fresh refs for these
 // props, which would defeat ReactMarkdown's internal prop-equality checks.
@@ -259,6 +254,36 @@ const MemoBlockCustomTag = React.memo(
     // completed tag when streaming ends.
     (prev.block.inProgress === false || prev.isStreaming === next.isStreaming),
 );
+
+/**
+ * Build a React element for a committed (closed) block. Called from the
+ * chunk handler on commit so the renderer stores a fully-built element
+ * and never re-creates it across renders. The element is wrapped in a
+ * memoized component so React.memo's ref equality skips re-rendering for
+ * unchanged blocks even if the parent re-renders.
+ */
+export function buildClosedBlockJsx(block: Block): CachedClosedBlock {
+  if (block.kind === "markdown") {
+    return {
+      element: <MemoMarkdown key={`m${block.id}`} content={block.content} />,
+    };
+  }
+  let errorMessage: string | undefined;
+  if (block.tag === "dyad-output" && block.attributes.type === "error") {
+    const trimmed = block.attributes.message?.trim();
+    if (trimmed) errorMessage = trimmed;
+  }
+  return {
+    element: (
+      <MemoBlockCustomTag
+        key={`t${block.id}`}
+        block={block}
+        isStreaming={false}
+      />
+    ),
+    errorMessage,
+  };
+}
 
 function getState({
   isStreaming,
