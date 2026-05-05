@@ -67,6 +67,42 @@ const DYAD_CUSTOM_TAG_NAMES = [
 ];
 const DYAD_CUSTOM_TAG_SET = new Set(DYAD_CUSTOM_TAG_NAMES);
 
+/**
+ * Tags that represent a tool call (i.e. the LLM interacting with its
+ * environment). Sourced from `pro/main/ipc/handlers/local_agent/tools/`:
+ * any tool whose `buildXml` emits one of these dyad-* tags is a tool call.
+ * Used by the renderer's tail-only cap to bucket dropped blocks into
+ * "markdown" vs "tool-call" for the omitted-blocks summary.
+ */
+export const TOOL_CALL_TAGS: ReadonlySet<string> = new Set([
+  "dyad-write",
+  "dyad-rename",
+  "dyad-delete",
+  "dyad-add-dependency",
+  "dyad-execute-sql",
+  "dyad-read-logs",
+  "dyad-add-integration",
+  "dyad-enable-nitro",
+  "dyad-grep",
+  "dyad-search-replace",
+  "dyad-web-search",
+  "dyad-web-crawl",
+  "dyad-web-fetch",
+  "dyad-code-search",
+  "dyad-read",
+  "dyad-list-files",
+  "dyad-db-table-schema",
+  "dyad-supabase-project-info",
+  "dyad-neon-project-info",
+  "dyad-read-guide",
+  "dyad-status",
+  "dyad-copy",
+  "dyad-image-generation",
+  "dyad-write-plan",
+  "dyad-exit-plan",
+  "dyad-questionnaire",
+]);
+
 export type Block =
   | {
       kind: "markdown";
