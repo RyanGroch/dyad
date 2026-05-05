@@ -149,6 +149,40 @@ export function getRandomNumberId() {
 // This prevents race conditions when clicking rapidly before state updates
 const pendingStreamChatIds = new Set<number>();
 
+// Throttled ack scheduler for the canned test stream's ack-based
+// backpressure. Stores the highest chunkSeq received per chatId; at most
+// one ack per ACK_THROTTLE_MS is sent per chatId, carrying the latest
+// received seq. Real LLM streams omit chunkSeq, so the scheduler is never
+// armed for them.
+const ACK_THROTTLE_MS = 250;
+const latestChunkSeqByChatId = new Map<number, number>();
+const ackTimerByChatId = new Map<number, ReturnType<typeof setTimeout>>();
+
+function scheduleThrottledAck(chatId: number): void {
+  if (ackTimerByChatId.has(chatId)) return;
+  const timer = setTimeout(() => {
+    ackTimerByChatId.delete(chatId);
+    const seq = latestChunkSeqByChatId.get(chatId);
+    if (seq === undefined) return;
+    const electron = (window as unknown as { electron?: any }).electron;
+    void electron?.ipcRenderer
+      ?.invoke("chat:response:ack", { chatId, lastSeq: seq })
+      ?.catch(() => {
+        // Ignore ack failures; main has no retry path and acks are
+        // advisory under throttling.
+      });
+  }, ACK_THROTTLE_MS);
+  ackTimerByChatId.set(chatId, timer);
+}
+
+function cancelAckTimer(chatId: number): void {
+  const timer = ackTimerByChatId.get(chatId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    ackTimerByChatId.delete(chatId);
+  }
+}
+
 export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
@@ -331,6 +365,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              chunkSeq,
               effectiveChatMode,
               chatModeFallbackReason,
             }) => {
@@ -521,9 +556,23 @@ export function useStreamChat({
                   });
                 }
               }
+
+              // Ack-based backpressure for the canned test stream. Real
+              // LLM streams omit chunkSeq, so this is a no-op for them.
+              // Coalesce many incoming chunks into a single ack fired on a
+              // fixed throttle interval (ACK_THROTTLE_MS).
+              if (chunkSeq !== undefined) {
+                const prev = latestChunkSeqByChatId.get(chatId) ?? 0;
+                if (chunkSeq > prev) {
+                  latestChunkSeqByChatId.set(chatId, chunkSeq);
+                }
+                scheduleThrottledAck(chatId);
+              }
             },
             onEnd: (response: ChatResponseEnd) => {
               pendingStreamChatIds.delete(chatId);
+              latestChunkSeqByChatId.delete(chatId);
+              cancelAckTimer(chatId);
               void (async () => {
                 // Only mark as successful if NOT cancelled - wasCancelled flag is set
                 // by the backend when user cancels the stream
@@ -744,6 +793,8 @@ export function useStreamChat({
             onError: ({ error: errorMessage, warningMessages }) => {
               // Remove from pending set now that stream ended with error
               pendingStreamChatIds.delete(chatId);
+              latestChunkSeqByChatId.delete(chatId);
+              cancelAckTimer(chatId);
 
               for (const warningMessage of warningMessages ?? []) {
                 showWarning(warningMessage);
@@ -779,6 +830,8 @@ export function useStreamChat({
       } catch (error) {
         // Remove from pending set on exception
         pendingStreamChatIds.delete(chatId);
+        latestChunkSeqByChatId.delete(chatId);
+        cancelAckTimer(chatId);
 
         console.error("[CHAT] Exception during streaming setup:", error);
         setIsStreamingById((prev) => {

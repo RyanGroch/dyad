@@ -45,6 +45,7 @@ import {
 } from "../processors/response_processor";
 import { streamTestResponse } from "./testing_chat_handlers";
 import { getTestResponse } from "./testing_chat_handlers";
+import { noteAck } from "./testing_chat_handlers";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
@@ -244,6 +245,13 @@ async function processStreamChunks({
 }
 
 export function registerChatStreamHandlers() {
+  ipcMain.handle(
+    "chat:response:ack",
+    (_event, payload: { chatId: number; lastSeq: number }) => {
+      noteAck(payload.chatId, payload.lastSeq);
+    },
+  );
+
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
     try {
