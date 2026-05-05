@@ -1,5 +1,6 @@
 import { safeSend } from "../utils/safe_sender";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
+import { computeStreamingPatch } from "../utils/stream_text_utils";
 
 // e.g. [dyad-qa=add-dep]
 // Canned responses for test prompts
@@ -77,12 +78,16 @@ export function getTestResponse(prompt: string): string | null {
 }
 
 /**
- * Streams a canned test response to the client
+ * Streams a canned test response to the client incrementally via tail-only
+ * streaming patches, mirroring the real LLM path. The renderer applies each
+ * patch to its local copy of the placeholder assistant message, so the UI
+ * updates as bytes arrive instead of waiting for the full response.
+ *
  * @param event The IPC event
  * @param chatId The chat ID
  * @param testResponse The canned response to stream
  * @param abortController The abort controller for this stream
- * @param updatedChat The chat data with messages
+ * @param placeholderAssistantMessageId DB id of the placeholder assistant message to update incrementally
  * @returns The full streamed response
  */
 export async function streamTestResponse(
@@ -90,38 +95,33 @@ export async function streamTestResponse(
   chatId: number,
   testResponse: string,
   abortController: AbortController,
-  updatedChat: any,
+  placeholderAssistantMessageId: number,
 ): Promise<string> {
   console.log(`Using canned response for test prompt`);
 
-  // Simulate streaming by splitting the response into chunks
   const chunks = testResponse.split(" ");
   let fullResponse = "";
+  let lastSentContent = "";
 
   for (const chunk of chunks) {
-    // Skip processing if aborted
     if (abortController.signal.aborted) {
       break;
     }
 
-    // Add the word plus a space
     fullResponse += chunk + " ";
     fullResponse = cleanFullResponse(fullResponse);
 
-    // Send the current accumulated response
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId: chatId,
-      messages: [
-        ...updatedChat.messages,
-        {
-          role: "assistant",
-          content: fullResponse,
-        },
-      ],
-    });
+    const patch = computeStreamingPatch(fullResponse, lastSentContent);
+    if (patch) {
+      safeSend(event.sender, "chat:response:chunk", {
+        chatId,
+        streamingMessageId: placeholderAssistantMessageId,
+        streamingPatch: patch,
+      });
+      lastSentContent = fullResponse;
+    }
 
-    // Add a small delay to simulate streaming
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), 10));
   }
 
   return fullResponse;
