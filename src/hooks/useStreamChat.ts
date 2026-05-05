@@ -13,9 +13,14 @@ import {
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingBlocksByMessageIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
+import {
+  advanceParser,
+  initialParserState,
+} from "@/lib/streamingMessageParser";
 import { ipc } from "@/ipc/types";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { pendingScreenshotAppIdAtom } from "@/atoms/previewAtoms";
@@ -79,6 +84,7 @@ export function useStreamChat({
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
   );
+  const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -263,6 +269,22 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
+                // Drop any cached parser states for messages no longer in this
+                // payload — keeps the cache from accumulating stale entries
+                // across compaction/resync replacements.
+                setStreamingBlocksById((prev) => {
+                  if (prev.size === 0) return prev;
+                  const validIds = new Set(updatedMessages.map((m) => m.id));
+                  let changed = false;
+                  const next = new Map(prev);
+                  for (const id of prev.keys()) {
+                    if (!validIds.has(id)) {
+                      next.delete(id);
+                      changed = true;
+                    }
+                  }
+                  return changed ? next : prev;
+                });
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
@@ -273,8 +295,41 @@ export function useStreamChat({
                   streamingMessageId,
                   streamingPatch,
                 );
-                if (!applied) {
+                if (applied) {
+                  // Feed the just-applied content into the per-message parser.
+                  // Reading from the store is cheap and avoids duplicating the
+                  // patch-merge logic here.
+                  const messages = store.get(chatMessagesByIdAtom).get(chatId);
+                  const msg = messages?.find(
+                    (m) => m.id === streamingMessageId,
+                  );
+                  if (msg) {
+                    const newContent = msg.content ?? "";
+                    setStreamingBlocksById((prev) => {
+                      const cur =
+                        prev.get(streamingMessageId) ?? initialParserState();
+                      // No-op if the parser cursor is already at the end (e.g.
+                      // double-fired chunk). advanceParser early-exits when
+                      // newContent.length === cur.cursor.
+                      if (newContent.length === cur.cursor && cur.cursor > 0) {
+                        return prev;
+                      }
+                      const advanced = advanceParser(cur, newContent);
+                      const next = new Map(prev);
+                      next.set(streamingMessageId, advanced);
+                      return next;
+                    });
+                  }
+                } else {
                   triggerResync(chatId, setMessagesById, store);
+                  // Drop the parser state for this message so the renderer
+                  // re-parses from scratch once resync replaces content.
+                  setStreamingBlocksById((prev) => {
+                    if (!prev.has(streamingMessageId)) return prev;
+                    const next = new Map(prev);
+                    next.delete(streamingMessageId);
+                    return next;
+                  });
                 }
               }
             },

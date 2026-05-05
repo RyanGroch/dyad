@@ -7,6 +7,7 @@ import type {
 import type { ListedApp } from "@/ipc/types/app";
 import type { Getter, Setter } from "jotai";
 import { atom } from "jotai";
+import type { ParserState } from "@/lib/streamingMessageParser";
 
 // Per-chat atoms implemented with maps keyed by chatId
 export const chatMessagesByIdAtom = atom<Map<number, Message[]>>(new Map());
@@ -263,3 +264,12 @@ export const streamCompletedSuccessfullyByIdAtom = atom<Map<number, boolean>>(
 
 // Tracks if the queue is paused for each chat (Map<chatId, isPaused>)
 export const queuePausedByIdAtom = atom<Map<number, boolean>>(new Map());
+
+// Cache of incremental parser state per assistant message id. The renderer
+// reads from this map when present; otherwise it falls back to a one-shot
+// parse from message.content. Updated in the streaming chunk handler so
+// committed blocks keep stable refs across patches and only the open
+// trailing block changes shape per chunk.
+export const streamingBlocksByMessageIdAtom = atom<Map<number, ParserState>>(
+  new Map(),
+);

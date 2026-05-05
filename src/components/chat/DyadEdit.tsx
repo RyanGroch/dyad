@@ -81,9 +81,15 @@ export const DyadEdit: React.FC<DyadEditProps> = ({
           className="text-xs cursor-text"
           onClick={(e) => e.stopPropagation()}
         >
-          <CodeHighlight className="language-typescript">
-            {children}
-          </CodeHighlight>
+          {inProgress ? (
+            <pre className="overflow-auto text-xs">
+              <code>{children}</code>
+            </pre>
+          ) : (
+            <CodeHighlight className="language-typescript">
+              {children}
+            </CodeHighlight>
+          )}
         </div>
       </DyadCardContent>
     </DyadCard>

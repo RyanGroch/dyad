@@ -85,9 +85,15 @@ export const DyadSearchReplace: React.FC<DyadSearchReplaceProps> = ({
           onClick={(e) => e.stopPropagation()}
         >
           {blocks.length === 0 ? (
-            <CodeHighlight className="language-typescript">
-              {children}
-            </CodeHighlight>
+            inProgress ? (
+              <pre className="overflow-auto text-xs">
+                <code>{children}</code>
+              </pre>
+            ) : (
+              <CodeHighlight className="language-typescript">
+                {children}
+              </CodeHighlight>
+            )
           ) : (
             <div className="space-y-2">
               {blocks.map((b, i) => (
