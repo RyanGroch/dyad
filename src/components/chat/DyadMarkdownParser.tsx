@@ -137,13 +137,36 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     return parseFullMessage(contentToParse).blocks;
   }, [cachedState, contentToParse]);
 
+  // EXPERIMENT: clamp the number of mounted dyad-write cards to the most
+  // recent N. Goal: confirm whether the per-chunk lag is dominated by
+  // browser layout/paint scaling with total DOM size (single-mega-Virtuoso
+  // -item reflow) versus React work. If lag flattens with this clamp,
+  // structural fix (block-level virtualization) is warranted.
+  const MAX_DYAD_WRITE_CARDS = 20;
+  const visibleBlocks = useMemo<Block[]>(() => {
+    let writeCount = 0;
+    for (const b of blocks) {
+      if (b.kind === "custom-tag" && b.tag === "dyad-write") writeCount++;
+    }
+    if (writeCount <= MAX_DYAD_WRITE_CARDS) return blocks;
+    const dropBefore = writeCount - MAX_DYAD_WRITE_CARDS;
+    let seen = 0;
+    return blocks.filter((b) => {
+      if (b.kind === "custom-tag" && b.tag === "dyad-write") {
+        seen++;
+        return seen > dropBefore;
+      }
+      return true;
+    });
+  }, [blocks]);
+
   // Extract error messages and track positions
   const { errorMessages, lastErrorIndex, errorCount } = useMemo(() => {
     const errors: string[] = [];
     let lastIndex = -1;
     let count = 0;
 
-    blocks.forEach((block, index) => {
+    visibleBlocks.forEach((block, index) => {
       if (
         block.kind === "custom-tag" &&
         block.tag === "dyad-output" &&
@@ -163,11 +186,11 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
       lastErrorIndex: lastIndex,
       errorCount: count,
     };
-  }, [blocks]);
+  }, [visibleBlocks]);
 
   return (
     <>
-      {blocks.map((block, index) => (
+      {visibleBlocks.map((block, index) => (
         <React.Fragment key={block.id}>
           {block.kind === "markdown" ? (
             block.content && <MemoMarkdown content={block.content} />
