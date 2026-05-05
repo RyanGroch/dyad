@@ -41,24 +41,62 @@ import React from 'react';
 </dyad-write>
 AFTER TAG
 `,
-  "stress-many-writes": `Generating 100 small files for stress test.
+  "stress-many-writes": `Generating 10000 ~100-line files for stress test.
 
-${Array.from(
-  { length: 5000 },
-  (_, i) =>
-    `<dyad-write path="src/stress/file_${i}.ts" description="stress file ${i}">
+${Array.from({ length: 10000 }, (_, i) => {
+  const fields = Array.from(
+    { length: 20 },
+    (_, j) => `  field_${j}: ${i * 20 + j},`,
+  ).join("\n");
+  const helpers = Array.from(
+    { length: 20 },
+    (_, j) =>
+      `export function helper_${i}_${j}(x: number): number {
+  return x + id${i} + ${j};
+}`,
+  ).join("\n");
+  return `<dyad-write path="src/stress/file_${i}.ts" description="stress file ${i}">
 export const id${i} = ${i};
 export const name${i} = "file_${i}";
-export function get${i}() {
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
   return id${i};
 }
-export function describe${i}() {
+
+export function describe${i}(): string {
   return \`\${name${i}}:\${id${i}}\`;
 }
-export const meta${i} = { id: id${i}, name: name${i} };
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
 export default meta${i};
-</dyad-write>`,
-).join("\n")}
+</dyad-write>`;
+}).join("\n")}
 
 EOM`,
 };
