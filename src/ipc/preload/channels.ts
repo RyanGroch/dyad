@@ -51,19 +51,10 @@ import { imageGenerationContracts } from "../types/image_generation";
 const CHAT_STREAM_CHANNELS = getStreamChannels(chatStreamContract);
 const HELP_STREAM_CHANNELS = getStreamChannels(helpStreamContract);
 
-// Test-only channels. Most entries here have their handler only
-// registered in E2E test builds (the channel is always whitelisted in
-// preload). `chat:response:ack` is an exception: its handler is
-// registered unconditionally because the canned `[dyad-qa=...]` prompts
-// it backs are shipped in production builds, but the renderer only
-// arms its ack scheduler when a chunk carries a `chunkSeq`, and real
-// LLM streams never set that field — so the channel is invoked solely
-// for the canned test streams that issue stress-test [dyad-qa=...]
-// prompts.
+// Test-only channels (handler only registered in E2E test builds, but channel always allowed)
 const TEST_INVOKE_CHANNELS = [
   "test:simulateQuotaTimeElapsed",
   "test:set-node-mock",
-  "chat:response:ack",
 ] as const;
 
 /**

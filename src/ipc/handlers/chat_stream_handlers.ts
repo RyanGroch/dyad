@@ -246,22 +246,13 @@ async function processStreamChunks({
   return { fullResponse, incrementalResponse };
 }
 
-const AckPayloadSchema = z.object({
-  chatId: z.number().int().nonnegative().finite(),
-  lastSeq: z.number().int().nonnegative().finite(),
-});
-
 export function registerChatStreamHandlers() {
-  ipcMain.handle("chat:response:ack", (_event, payload: unknown) => {
-    const parsed = AckPayloadSchema.safeParse(payload);
-    if (!parsed.success) {
-      logger.warn(
-        `chat:response:ack rejected invalid payload: ${parsed.error.message}`,
-      );
-      return;
-    }
-    noteAck(parsed.data.chatId, parsed.data.lastSeq);
-  });
+  createTypedHandler(
+    chatContracts.responseAck,
+    async (_event, { chatId, lastSeq }) => {
+      noteAck(chatId, lastSeq);
+    },
+  );
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];

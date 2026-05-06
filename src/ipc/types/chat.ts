@@ -303,6 +303,19 @@ export const chatContracts = {
     input: z.number(), // chatId
     output: z.boolean(),
   }),
+
+  // Renderer→main ack for stress-test backpressure on the canned test
+  // streaming path. The handler is registered unconditionally, but real
+  // LLM streams omit `chunkSeq`, so the renderer only invokes this
+  // channel for canned [dyad-qa=...] streams.
+  responseAck: defineContract({
+    channel: "chat:response:ack",
+    input: z.object({
+      chatId: z.number().int().nonnegative().finite(),
+      lastSeq: z.number().int().nonnegative().finite(),
+    }),
+    output: z.void(),
+  }),
 } as const;
 
 // =============================================================================
