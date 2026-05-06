@@ -249,6 +249,7 @@ async function processStreamChunks({
 const AckPayloadSchema = z.object({
   chatId: z.number().int().nonnegative().finite(),
   lastSeq: z.number().int().nonnegative().finite(),
+  streamToken: z.number().int().nonnegative().finite(),
 });
 
 export function registerChatStreamHandlers() {
@@ -260,7 +261,7 @@ export function registerChatStreamHandlers() {
       );
       return;
     }
-    noteAck(parsed.data.chatId, parsed.data.lastSeq);
+    noteAck(parsed.data.chatId, parsed.data.lastSeq, parsed.data.streamToken);
   });
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
