@@ -10,46 +10,15 @@ import { computeStreamingPatch } from "../utils/stream_text_utils";
  */
 const MAX_IN_FLIGHT = 1;
 
-// e.g. [dyad-qa=add-dep]
-// Canned responses for test prompts
-const TEST_RESPONSES: Record<string, string> = {
-  "ts-error": `This will get a TypeScript error.
-  
-  <dyad-write path="src/bad-file.ts" description="This will get a TypeScript error.">
-  import NonExistentClass from 'non-existent-class';
+type ResponseEntry = string | (() => string);
 
-  const x = new Object();
-  x.nonExistentMethod();
-  </dyad-write>
-  
-  EOM`,
-  "add-dep": `I'll add that dependency for you.
-  
-  <dyad-add-dependency packages="deno"></dyad-add-dependency>
-  
-  EOM`,
-  "add-non-existing-dep": `I'll add that dependency for you.
-  
-  <dyad-add-dependency packages="@angular/does-not-exist"></dyad-add-dependency>
-  
-  EOM`,
-  "add-multiple-deps": `I'll add that dependency for you.
-  
-  <dyad-add-dependency packages="react-router-dom react-query"></dyad-add-dependency>
-  
-  EOM`,
-  write: `Hello world
-  <dyad-write path="src/hello.ts" content="Hello world">
-  console.log("Hello world");
-  </dyad-write>
-  EOM`,
-  "string-literal-leak": `BEFORE TAG
-  <dyad-write path="src/pages/locations/neighborhoods/louisville/Highlands.tsx" description="Updating Highlands neighborhood page to use <a> tags.">
-import React from 'react';
-</dyad-write>
-AFTER TAG
-`,
-  "stress-many-writes-small": `Generating 5000 small files for stress test.
+function memoize(fn: () => string): () => string {
+  let cached: string | undefined;
+  return () => (cached ??= fn());
+}
+
+function buildStressManyWritesSmall(): string {
+  return `Generating 5000 small files for stress test.
 
 ${Array.from(
   { length: 5000 },
@@ -63,8 +32,11 @@ export default meta${i};
 </dyad-write>`,
 ).join("\n")}
 
-EOM`,
-  "stress-many-writes-large": `Generating 10000 ~100-line files for stress test.
+EOM`;
+}
+
+function buildStressManyWritesLarge(): string {
+  return `Generating 10000 ~100-line files for stress test.
 
 ${Array.from({ length: 10000 }, (_, i) => {
   const fields = Array.from(
@@ -121,7 +93,52 @@ export default meta${i};
 </dyad-write>`;
 }).join("\n")}
 
-EOM`,
+EOM`;
+}
+
+// e.g. [dyad-qa=add-dep]
+// Canned responses for test prompts. Stress fixtures are wrapped in
+// memoized thunks so the multi-megabyte strings are only built when an
+// explicit [dyad-qa=stress-...] prompt fires, not at module import.
+const TEST_RESPONSES: Record<string, ResponseEntry> = {
+  "ts-error": `This will get a TypeScript error.
+
+  <dyad-write path="src/bad-file.ts" description="This will get a TypeScript error.">
+  import NonExistentClass from 'non-existent-class';
+
+  const x = new Object();
+  x.nonExistentMethod();
+  </dyad-write>
+
+  EOM`,
+  "add-dep": `I'll add that dependency for you.
+
+  <dyad-add-dependency packages="deno"></dyad-add-dependency>
+
+  EOM`,
+  "add-non-existing-dep": `I'll add that dependency for you.
+
+  <dyad-add-dependency packages="@angular/does-not-exist"></dyad-add-dependency>
+
+  EOM`,
+  "add-multiple-deps": `I'll add that dependency for you.
+
+  <dyad-add-dependency packages="react-router-dom react-query"></dyad-add-dependency>
+
+  EOM`,
+  write: `Hello world
+  <dyad-write path="src/hello.ts" content="Hello world">
+  console.log("Hello world");
+  </dyad-write>
+  EOM`,
+  "string-literal-leak": `BEFORE TAG
+  <dyad-write path="src/pages/locations/neighborhoods/louisville/Highlands.tsx" description="Updating Highlands neighborhood page to use <a> tags.">
+import React from 'react';
+</dyad-write>
+AFTER TAG
+`,
+  "stress-many-writes-small": memoize(buildStressManyWritesSmall),
+  "stress-many-writes-large": memoize(buildStressManyWritesLarge),
 };
 
 /**
@@ -132,8 +149,9 @@ EOM`,
 export function getTestResponse(prompt: string): string | null {
   const match = prompt.match(/\[dyad-qa=([^\]]+)\]/);
   if (match) {
-    const testKey = match[1];
-    return TEST_RESPONSES[testKey] || null;
+    const entry = TEST_RESPONSES[match[1]];
+    if (entry === undefined) return null;
+    return typeof entry === "function" ? entry() : entry;
   }
   return null;
 }
@@ -159,6 +177,13 @@ function clearAck(chatId: number): void {
 }
 
 /**
+ * Byte size of each streamed chunk. Sized to keep the 24 MB stress fixture
+ * under a few thousand iterations so the loop yield + per-iter work stay
+ * tractable.
+ */
+const CHUNK_SIZE = 10000;
+
+/**
  * Streams a canned test response to the client incrementally via tail-only
  * streaming patches, mirroring the real LLM path. The renderer applies each
  * patch to its local copy of the placeholder assistant message.
@@ -172,12 +197,10 @@ function clearAck(chatId: number): void {
  * synchronous loop monopolizes the main process and acks are never
  * observed.
  *
- * @param event The IPC event
- * @param chatId The chat ID
- * @param testResponse The canned response to stream
- * @param abortController The abort controller for this stream
- * @param placeholderAssistantMessageId DB id of the placeholder assistant message to update incrementally
- * @returns The full streamed response
+ * `cleanFullResponse` runs once on the canned input up front. Its rewrite
+ * is local to fully-formed `<dyad-*>` tags and idempotent, so the cleaned
+ * full string is identical to the result of cleaning every growing prefix
+ * — and pre-cleaning avoids an O(N²) regex sweep over the accumulator.
  */
 export async function streamTestResponse(
   event: Electron.IpcMainInvokeEvent,
@@ -188,20 +211,22 @@ export async function streamTestResponse(
 ): Promise<string> {
   console.log(`Using canned response for test prompt`);
 
-  const chunks = testResponse.split(" ");
+  const cleanedResponse = cleanFullResponse(testResponse);
   let fullResponse = "";
   let lastSentContent = "";
   let currentSeq = 0;
   let lastSentSeq = 0;
+  let offset = 0;
 
   ackState.set(chatId, { lastAcked: 0 });
 
   try {
-    for (const chunk of chunks) {
+    while (offset < cleanedResponse.length) {
       if (abortController.signal.aborted) break;
 
-      fullResponse += chunk + " ";
-      fullResponse = cleanFullResponse(fullResponse);
+      const end = Math.min(offset + CHUNK_SIZE, cleanedResponse.length);
+      fullResponse += cleanedResponse.slice(offset, end);
+      offset = end;
       currentSeq++;
 
       const lastAcked = ackState.get(chatId)?.lastAcked ?? 0;
@@ -235,9 +260,7 @@ export async function streamTestResponse(
           streamingPatch: patch,
           chunkSeq: currentSeq,
         });
-        lastSentContent = fullResponse;
       }
-      lastSentSeq = currentSeq;
     }
   } finally {
     clearAck(chatId);

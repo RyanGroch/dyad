@@ -43,9 +43,11 @@ import {
   dryRunSearchReplace,
   processFullResponseActions,
 } from "../processors/response_processor";
-import { streamTestResponse } from "./testing_chat_handlers";
-import { getTestResponse } from "./testing_chat_handlers";
-import { noteAck } from "./testing_chat_handlers";
+import {
+  streamTestResponse,
+  getTestResponse,
+  noteAck,
+} from "./testing_chat_handlers";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
@@ -244,13 +246,22 @@ async function processStreamChunks({
   return { fullResponse, incrementalResponse };
 }
 
+const AckPayloadSchema = z.object({
+  chatId: z.number().int().nonnegative().finite(),
+  lastSeq: z.number().int().nonnegative().finite(),
+});
+
 export function registerChatStreamHandlers() {
-  ipcMain.handle(
-    "chat:response:ack",
-    (_event, payload: { chatId: number; lastSeq: number }) => {
-      noteAck(payload.chatId, payload.lastSeq);
-    },
-  );
+  ipcMain.handle("chat:response:ack", (_event, payload: unknown) => {
+    const parsed = AckPayloadSchema.safeParse(payload);
+    if (!parsed.success) {
+      logger.warn(
+        `chat:response:ack rejected invalid payload: ${parsed.error.message}`,
+      );
+      return;
+    }
+    noteAck(parsed.data.chatId, parsed.data.lastSeq);
+  });
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
