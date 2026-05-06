@@ -53,29 +53,23 @@ export function getRandomNumberId() {
 const pendingStreamChatIds = new Set<number>();
 
 // Throttled ack scheduler for the canned test stream's ack-based
-// backpressure. Stores the highest chunkSeq received per chatId along
-// with the stream-instance token it belongs to; at most one ack per
-// ACK_THROTTLE_MS is sent per chatId, carrying the latest received seq
-// and its token. Real LLM streams omit chunkSeq, so the scheduler is
-// never armed for them.
+// backpressure. Stores the highest chunkSeq received per chatId; at most
+// one ack per ACK_THROTTLE_MS is sent per chatId, carrying the latest
+// received seq. Real LLM streams omit chunkSeq, so the scheduler is never
+// armed for them.
 const ACK_THROTTLE_MS = 250;
-type LatestChunkState = { token: number; seq: number };
-const latestChunkByChatId = new Map<number, LatestChunkState>();
+const latestChunkByChatId = new Map<number, number>();
 const ackTimerByChatId = new Map<number, ReturnType<typeof setTimeout>>();
 
 function scheduleThrottledAck(chatId: number): void {
   if (ackTimerByChatId.has(chatId)) return;
   const timer = setTimeout(() => {
     ackTimerByChatId.delete(chatId);
-    const state = latestChunkByChatId.get(chatId);
-    if (state === undefined) return;
+    const seq = latestChunkByChatId.get(chatId);
+    if (seq === undefined) return;
     const electron = (window as unknown as { electron?: any }).electron;
     void electron?.ipcRenderer
-      ?.invoke("chat:response:ack", {
-        chatId,
-        lastSeq: state.seq,
-        streamToken: state.token,
-      })
+      ?.invoke("chat:response:ack", { chatId, lastSeq: seq })
       ?.catch(() => {
         // Ignore ack failures; main has no retry path and acks are
         // advisory under throttling.
@@ -270,7 +264,6 @@ export function useStreamChat({
               streamingMessageId,
               streamingPatch,
               chunkSeq,
-              chunkStreamToken,
               effectiveChatMode,
               chatModeFallbackReason,
             }) => {
@@ -323,18 +316,11 @@ export function useStreamChat({
               // Ack-based backpressure for the canned test stream. Real
               // LLM streams omit chunkSeq, so this is a no-op for them.
               // Coalesce many incoming chunks into a single ack fired on a
-              // fixed throttle interval (ACK_THROTTLE_MS). State is keyed
-              // by stream token so a chunk from a new stream resets seq
-              // tracking and any pending ack reflects the new stream.
-              if (chunkSeq !== undefined && chunkStreamToken !== undefined) {
-                const prev = latestChunkByChatId.get(chatId);
-                if (prev === undefined || prev.token !== chunkStreamToken) {
-                  latestChunkByChatId.set(chatId, {
-                    token: chunkStreamToken,
-                    seq: chunkSeq,
-                  });
-                } else if (chunkSeq > prev.seq) {
-                  prev.seq = chunkSeq;
+              // fixed throttle interval (ACK_THROTTLE_MS).
+              if (chunkSeq !== undefined) {
+                const prev = latestChunkByChatId.get(chatId) ?? 0;
+                if (chunkSeq > prev) {
+                  latestChunkByChatId.set(chatId, chunkSeq);
                 }
                 scheduleThrottledAck(chatId);
               }

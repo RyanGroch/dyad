@@ -143,10 +143,6 @@ export const ChatResponseChunkSchema = z.object({
   // test streaming path. Real LLM streams omit this field; the renderer
   // only acks when chunkSeq is present.
   chunkSeq: z.number().int().nonnegative().finite().optional(),
-  // Per-stream-instance token paired with chunkSeq. Lets main reject
-  // delayed acks from a previous stream that target the same chatId.
-  // Always sent together with chunkSeq.
-  chunkStreamToken: z.number().int().nonnegative().finite().optional(),
   effectiveChatMode: ChatModeSchema.optional(),
   chatModeFallbackReason: z.literal("quota-exhausted").optional(),
 });

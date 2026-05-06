@@ -160,34 +160,13 @@ export function getTestResponse(prompt: string): string | null {
  * Per-stream ack state for the canned test stream backpressure path. Real
  * LLM streams do not register entries here, so `noteAck` is a no-op for
  * them.
- *
- * `token` is a generation counter assigned at stream start and echoed by
- * the renderer in every ack. It scopes acks to the stream instance that
- * produced them, so a delayed ack from a prior stream on the same chatId
- * is dropped instead of corrupting the new stream's `lastAcked`.
  */
-type AckEntry = { token: number; lastAcked: number };
+type AckEntry = { lastAcked: number };
 const ackState = new Map<number, AckEntry>();
 
-let nextStreamToken = 1;
-
-function allocateStreamToken(): number {
-  // Math.MAX_SAFE_INTEGER wraparound is well beyond any realistic stream
-  // count, but keep the arithmetic safe just in case.
-  const token = nextStreamToken;
-  nextStreamToken =
-    nextStreamToken >= Number.MAX_SAFE_INTEGER ? 1 : nextStreamToken + 1;
-  return token;
-}
-
-export function noteAck(
-  chatId: number,
-  lastSeq: number,
-  streamToken: number,
-): void {
+export function noteAck(chatId: number, lastSeq: number): void {
   const entry = ackState.get(chatId);
   if (!entry) return;
-  if (entry.token !== streamToken) return;
   if (lastSeq > entry.lastAcked) {
     entry.lastAcked = lastSeq;
   }
@@ -239,8 +218,7 @@ export async function streamTestResponse(
   let lastSentSeq = 0;
   let offset = 0;
 
-  const streamToken = allocateStreamToken();
-  ackState.set(chatId, { token: streamToken, lastAcked: 0 });
+  ackState.set(chatId, { lastAcked: 0 });
 
   try {
     while (offset < cleanedResponse.length) {
@@ -262,7 +240,6 @@ export async function streamTestResponse(
             streamingMessageId: placeholderAssistantMessageId,
             streamingPatch: patch,
             chunkSeq: currentSeq,
-            chunkStreamToken: streamToken,
           });
           lastSentContent = fullResponse;
           lastSentSeq = currentSeq;
@@ -282,7 +259,6 @@ export async function streamTestResponse(
           streamingMessageId: placeholderAssistantMessageId,
           streamingPatch: patch,
           chunkSeq: currentSeq,
-          chunkStreamToken: streamToken,
         });
       }
     }
