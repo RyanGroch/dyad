@@ -43,8 +43,11 @@ import {
   dryRunSearchReplace,
   processFullResponseActions,
 } from "../processors/response_processor";
-import { streamTestResponse } from "./testing_chat_handlers";
-import { getTestResponse } from "./testing_chat_handlers";
+import {
+  streamTestResponse,
+  getTestResponse,
+  noteAck,
+} from "./testing_chat_handlers";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
@@ -244,6 +247,13 @@ async function processStreamChunks({
 }
 
 export function registerChatStreamHandlers() {
+  createTypedHandler(
+    chatContracts.responseAck,
+    async (_event, { chatId, lastSeq }) => {
+      noteAck(chatId, lastSeq);
+    },
+  );
+
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
     try {
@@ -621,7 +631,7 @@ ${componentSnippet}
           req.chatId,
           testResponse,
           abortController,
-          updatedChat,
+          placeholderAssistantMessage.id,
         );
       } else {
         // Normal AI processing for non-test prompts
