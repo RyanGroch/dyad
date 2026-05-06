@@ -67,13 +67,10 @@ function scheduleThrottledAck(chatId: number): void {
     ackTimerByChatId.delete(chatId);
     const seq = latestChunkByChatId.get(chatId);
     if (seq === undefined) return;
-    const electron = (window as unknown as { electron?: any }).electron;
-    void electron?.ipcRenderer
-      ?.invoke("chat:response:ack", { chatId, lastSeq: seq })
-      ?.catch(() => {
-        // Ignore ack failures; main has no retry path and acks are
-        // advisory under throttling.
-      });
+    void ipc.chat.responseAck({ chatId, lastSeq: seq }).catch(() => {
+      // Ignore ack failures; main has no retry path and acks are
+      // advisory under throttling.
+    });
   }, ACK_THROTTLE_MS);
   ackTimerByChatId.set(chatId, timer);
 }
