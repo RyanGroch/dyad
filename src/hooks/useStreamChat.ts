@@ -12,6 +12,7 @@ import {
   isStreamingByIdAtom,
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
+  renderBenchByChatIdAtom,
   streamCompletedSuccessfullyByIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
@@ -110,6 +111,7 @@ export function useStreamChat({
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
   );
+  const setRenderBenchByChatId = useSetAtom(renderBenchByChatIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -261,9 +263,19 @@ export function useStreamChat({
               streamingMessageId,
               streamingPatch,
               chunkSeq,
+              emitTs,
               effectiveChatMode,
               chatModeFallbackReason,
             }) => {
+              // Capture renderer recv timestamp ASAP, before any state work,
+              // so the IPC→recv delta is not polluted by downstream cost.
+              // Use timeOrigin + now() so the value shares an origin with
+              // the main-process emitTs (bare performance.now() is per-
+              // process monotonic and not subtractable across processes).
+              const recvTs =
+                chunkSeq !== undefined && emitTs !== undefined
+                  ? performance.timeOrigin + performance.now()
+                  : undefined;
               if (
                 handleEffectiveChatModeChunk(
                   { effectiveChatMode, chatModeFallbackReason },
@@ -320,12 +332,28 @@ export function useStreamChat({
                   latestChunkByChatId.set(chatId, chunkSeq);
                 }
                 scheduleThrottledAck(chatId);
+
+                // Publish render-bench sample for the StreamRenderAck
+                // sentinel to consume. Test-only path.
+                if (emitTs !== undefined && recvTs !== undefined) {
+                  setRenderBenchByChatId((prevMap) => {
+                    const next = new Map(prevMap);
+                    next.set(chatId, { seq: chunkSeq, emitTs, recvTs });
+                    return next;
+                  });
+                }
               }
             },
             onEnd: (response: ChatResponseEnd) => {
               pendingStreamChatIds.delete(chatId);
               latestChunkByChatId.delete(chatId);
               cancelAckTimer(chatId);
+              setRenderBenchByChatId((prevMap) => {
+                if (!prevMap.has(chatId)) return prevMap;
+                const next = new Map(prevMap);
+                next.delete(chatId);
+                return next;
+              });
               void (async () => {
                 // Only mark as successful if NOT cancelled - wasCancelled flag is set
                 // by the backend when user cancels the stream

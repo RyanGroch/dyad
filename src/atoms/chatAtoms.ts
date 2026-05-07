@@ -263,3 +263,15 @@ export const streamCompletedSuccessfullyByIdAtom = atom<Map<number, boolean>>(
 
 // Tracks if the queue is paused for each chat (Map<chatId, isPaused>)
 export const queuePausedByIdAtom = atom<Map<number, boolean>>(new Map());
+
+// Render-bench sample for the canned test stream. Updated on every onChunk
+// that carries a chunkSeq (test-only). The StreamRenderAck sentinel reads
+// the latest entry and logs emit→recv→commit→paint latencies.
+export interface RenderBenchSample {
+  seq: number;
+  emitTs: number;
+  recvTs: number;
+}
+export const renderBenchByChatIdAtom = atom<Map<number, RenderBenchSample>>(
+  new Map(),
+);

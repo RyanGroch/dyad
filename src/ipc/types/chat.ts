@@ -143,6 +143,10 @@ export const ChatResponseChunkSchema = z.object({
   // test streaming path. Real LLM streams omit this field; the renderer
   // only acks when chunkSeq is present.
   chunkSeq: z.number().int().nonnegative().finite().optional(),
+  // Main-process performance.now() at chunk-emit time. Test-only: used by
+  // the renderer's render-bench sentinel to log emit→recv→commit→paint
+  // latencies. Real LLM streams omit this field.
+  emitTs: z.number().finite().optional(),
   effectiveChatMode: ChatModeSchema.optional(),
   chatModeFallbackReason: z.literal("quota-exhausted").optional(),
 });

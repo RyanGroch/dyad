@@ -4,6 +4,7 @@ import { forwardRef, useState, useCallback, useMemo } from "react";
 import { Virtuoso } from "react-virtuoso";
 import ChatMessage from "./ChatMessage";
 import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
+import { StreamRenderAck } from "./StreamRenderAck";
 
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
@@ -439,6 +440,9 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
             );
           })}
           <FooterComponent context={footerContext} />
+          {isStreaming && selectedChatId != null && (
+            <StreamRenderAck chatId={selectedChatId} />
+          )}
         </div>
       );
     }
@@ -460,6 +464,9 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
           atBottomStateChange={onAtBottomChange}
           followOutput={(isAtBottom) => (isAtBottom ? "auto" : false)}
         />
+        {isStreaming && selectedChatId != null && (
+          <StreamRenderAck chatId={selectedChatId} />
+        )}
       </div>
     );
   },

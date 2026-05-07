@@ -181,7 +181,7 @@ function clearAck(chatId: number): void {
  * under a few thousand iterations so the loop yield + per-iter work stay
  * tractable.
  */
-const CHUNK_SIZE = 500;
+const CHUNK_SIZE = 50;
 
 /**
  * Streams a canned test response to the client incrementally via tail-only
@@ -240,6 +240,12 @@ export async function streamTestResponse(
             streamingMessageId: placeholderAssistantMessageId,
             streamingPatch: patch,
             chunkSeq: currentSeq,
+            // Cross-process timestamps must share an origin. timeOrigin is
+            // high-res Unix epoch ms for this process; performance.now() is
+            // ms since that origin. Sum = wall-clock ms, comparable to a
+            // matching sum on the renderer side. Bare performance.now()
+            // would be per-process monotonic and not subtractable.
+            emitTs: performance.timeOrigin + performance.now(),
           });
           lastSentContent = fullResponse;
           lastSentSeq = currentSeq;
@@ -259,6 +265,7 @@ export async function streamTestResponse(
           streamingMessageId: placeholderAssistantMessageId,
           streamingPatch: patch,
           chunkSeq: currentSeq,
+          emitTs: performance.timeOrigin + performance.now(),
         });
       }
     }
