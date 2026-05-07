@@ -7,6 +7,22 @@ import type {
 import type { ListedApp } from "@/ipc/types/app";
 import type { Getter, Setter } from "jotai";
 import { atom } from "jotai";
+import type { ReactElement } from "react";
+import type { ParserState } from "@/lib/streamingMessageParser";
+
+/**
+ * Per-message cache of pre-rendered React elements for committed (closed)
+ * blocks. Built at chunk-handle time so the renderer never re-creates them
+ * during render.
+ */
+export interface CachedClosedBlock {
+  /** Stable React key. Mirrors the parser block id. */
+  id: number;
+  /** The pre-built React element (key already set, props frozen). */
+  element: ReactElement;
+  /** Pre-extracted error message (for FixAllErrorsButton aggregation). */
+  errorMessage?: string;
+}
 
 // Per-chat atoms implemented with maps keyed by chatId
 export const chatMessagesByIdAtom = atom<Map<number, Message[]>>(new Map());
@@ -263,6 +279,35 @@ export const streamCompletedSuccessfullyByIdAtom = atom<Map<number, boolean>>(
 
 // Tracks if the queue is paused for each chat (Map<chatId, isPaused>)
 export const queuePausedByIdAtom = atom<Map<number, boolean>>(new Map());
+
+// Cache of incremental parser state per assistant message id. The renderer
+// reads from this map when present; otherwise it falls back to a one-shot
+// parse from message.content. Updated in the streaming chunk handler so
+// committed blocks keep stable refs across patches and only the open
+// trailing block changes shape per chunk.
+export const streamingBlocksByMessageIdAtom = atom<Map<number, ParserState>>(
+  new Map(),
+);
+
+// Cumulative bytes dropped from the front of the renderer-local
+// message.content for each message, while a stream is in progress. The
+// chunk handler trims old completed blocks from memory once the parser
+// commits them; the count translates server-side patch offsets (which are
+// absolute) into local-content offsets used by applyStreamingPatch.
+// Cleared on stream end (full content is re-fetched from the database).
+export const contentBytesDroppedByMessageIdAtom = atom<Map<number, number>>(
+  new Map(),
+);
+
+// Per-message cache of pre-rendered JSX for closed blocks. Each chunk
+// handler appends pre-rendered React elements for any newly-committed
+// closed blocks; the list grows for the duration of the stream and is
+// cleared on stream end so the renderer falls back to a one-shot parse of
+// the full DB content. Unlike the cap-evicting variant, no entries are
+// dropped while streaming — the entire response stays visible.
+export const messageJsxByIdAtom = atom<Map<number, CachedClosedBlock[]>>(
+  new Map(),
+);
 
 // Render-bench sample for the canned test stream. Updated on every onChunk
 // that carries a chunkSeq (test-only). The StreamRenderAck sentinel reads

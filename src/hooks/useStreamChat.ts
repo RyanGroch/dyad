@@ -9,14 +9,24 @@ import {
   chatErrorByIdAtom,
   chatMessagesByIdAtom,
   chatStreamCountByIdAtom,
+  contentBytesDroppedByMessageIdAtom,
   isStreamingByIdAtom,
+  messageJsxByIdAtom,
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   renderBenchByChatIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingBlocksByMessageIdAtom,
   queuePausedByIdAtom,
+  type CachedClosedBlock,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
+import {
+  advanceParser,
+  initialParserState,
+  trimToLastNBlocks,
+} from "@/lib/streamingMessageParser";
+import { buildClosedBlockJsx } from "@/components/chat/DyadMarkdownParser";
 import { ipc } from "@/ipc/types";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { pendingScreenshotAppIdAtom } from "@/atoms/previewAtoms";
@@ -84,6 +94,82 @@ function cancelAckTimer(chatId: number): void {
   }
 }
 
+type SetMap<V> = (
+  update: (prev: Map<number, V>) => Map<number, V>,
+) => void;
+
+function clearCachesForMessage(
+  messageId: number,
+  setBlocks: SetMap<unknown>,
+  setDropped: SetMap<number>,
+  setJsx: SetMap<CachedClosedBlock[]>,
+): void {
+  setBlocks((prev) => {
+    if (!prev.has(messageId)) return prev;
+    const next = new Map(prev);
+    next.delete(messageId);
+    return next;
+  });
+  setDropped((prev) => {
+    if (!prev.has(messageId)) return prev;
+    const next = new Map(prev);
+    next.delete(messageId);
+    return next;
+  });
+  setJsx((prev) => {
+    if (!prev.has(messageId)) return prev;
+    const next = new Map(prev);
+    next.delete(messageId);
+    return next;
+  });
+}
+
+function clearCachesNotIn(
+  validIds: Set<number>,
+  setBlocks: SetMap<unknown>,
+  setDropped: SetMap<number>,
+  setJsx: SetMap<CachedClosedBlock[]>,
+): void {
+  const prune = <V,>(prev: Map<number, V>): Map<number, V> => {
+    if (prev.size === 0) return prev;
+    let changed = false;
+    const next = new Map(prev);
+    for (const id of prev.keys()) {
+      if (!validIds.has(id)) {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    return changed ? next : prev;
+  };
+  setBlocks(prune);
+  setDropped(prune);
+  setJsx(prune);
+}
+
+function clearCachesForFinalized(
+  finalizedIds: Set<number>,
+  setBlocks: SetMap<unknown>,
+  setDropped: SetMap<number>,
+  setJsx: SetMap<CachedClosedBlock[]>,
+): void {
+  const drop = <V,>(prev: Map<number, V>): Map<number, V> => {
+    if (prev.size === 0) return prev;
+    let changed = false;
+    const next = new Map(prev);
+    for (const id of prev.keys()) {
+      if (finalizedIds.has(id)) {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    return changed ? next : prev;
+  };
+  setBlocks(drop);
+  setDropped(drop);
+  setJsx(drop);
+}
+
 export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
@@ -112,6 +198,11 @@ export function useStreamChat({
     streamCompletedSuccessfullyByIdAtom,
   );
   const setRenderBenchByChatId = useSetAtom(renderBenchByChatIdAtom);
+  const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
+  const setContentBytesDroppedById = useSetAtom(
+    contentBytesDroppedByMessageIdAtom,
+  );
+  const setMessageJsxById = useSetAtom(messageJsxByIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -307,18 +398,131 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
+                // Drop any cached parser state / dropped-byte counter / JSX
+                // cache that doesn't correspond to messages in the new
+                // payload. The renderer falls back to one-shot parsing for
+                // the replaced messages.
+                const validIds = new Set(updatedMessages.map((m) => m.id));
+                clearCachesNotIn(
+                  validIds,
+                  setStreamingBlocksById,
+                  setContentBytesDroppedById,
+                  setMessageJsxById,
+                );
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
+                // Translate server-side absolute offset to local content
+                // offset using the cumulative bytes-dropped counter, then
+                // splice the patch onto messages atom.
+                const priorDropped =
+                  store
+                    .get(contentBytesDroppedByMessageIdAtom)
+                    .get(streamingMessageId) ?? 0;
                 const applied = applyStreamingPatch(
                   setMessagesById,
                   chatId,
                   streamingMessageId,
                   streamingPatch,
+                  priorDropped,
                 );
-                if (!applied) {
+                if (applied) {
+                  // Read post-patch content, advance the incremental
+                  // parser, JSX-ify any newly-committed closed blocks, and
+                  // trim them from message.content + parser state so no
+                  // closed-block string lingers in renderer memory.
+                  const messages = store.get(chatMessagesByIdAtom).get(chatId);
+                  const msg = messages?.find(
+                    (m) => m.id === streamingMessageId,
+                  );
+                  if (msg) {
+                    const newContent = msg.content ?? "";
+                    setStreamingBlocksById((prev) => {
+                      const cur =
+                        prev.get(streamingMessageId) ?? initialParserState();
+                      if (
+                        newContent.length === cur.cursor &&
+                        cur.cursor > 0
+                      ) {
+                        return prev;
+                      }
+                      let advanced = advanceParser(cur, newContent);
+
+                      // Each chunk: advanced.blocks holds blocks committed
+                      // since the last trim (because trim drops them from
+                      // parser state). JSX-ify and append to the unbounded
+                      // per-message cache.
+                      if (advanced.blocks.length > 0) {
+                        const newEntries: CachedClosedBlock[] =
+                          advanced.blocks.map(buildClosedBlockJsx);
+                        setMessageJsxById((prevMap) => {
+                          const existing = prevMap.get(streamingMessageId);
+                          const merged = existing
+                            ? [...existing, ...newEntries]
+                            : newEntries;
+                          const out = new Map(prevMap);
+                          out.set(streamingMessageId, merged);
+                          return out;
+                        });
+                      }
+
+                      // Drop ALL closed blocks from parser state and from
+                      // message.content. Renderer pulls closed blocks from
+                      // the JSX cache; only the open block needs to live
+                      // in parser state + content.
+                      let trimmedContent: string | null = null;
+                      let dropDelta = 0;
+                      if (advanced.blocks.length > 0) {
+                        const trim = trimToLastNBlocks(
+                          advanced,
+                          newContent,
+                          0,
+                        );
+                        if (trim.bytesDropped > 0) {
+                          advanced = trim.state;
+                          trimmedContent = trim.content;
+                          dropDelta = trim.bytesDropped;
+                        }
+                      }
+                      if (trimmedContent !== null) {
+                        setMessagesById((prevMap) => {
+                          const list = prevMap.get(chatId);
+                          if (!list) return prevMap;
+                          const updated = list.map((m) =>
+                            m.id === streamingMessageId
+                              ? { ...m, content: trimmedContent! }
+                              : m,
+                          );
+                          const out = new Map(prevMap);
+                          out.set(chatId, updated);
+                          return out;
+                        });
+                        setContentBytesDroppedById((prevMap) => {
+                          const cur2 =
+                            prevMap.get(streamingMessageId) ?? 0;
+                          const out = new Map(prevMap);
+                          out.set(streamingMessageId, cur2 + dropDelta);
+                          return out;
+                        });
+                      }
+
+                      const next = new Map(prev);
+                      next.set(streamingMessageId, advanced);
+                      return next;
+                    });
+                  }
+                } else {
                   triggerResync(chatId, setMessagesById, store);
+                  // Drop parser state, dropped-byte counter, and JSX cache
+                  // for this message so the renderer re-parses from the
+                  // resynced (full DB) content.
+                  clearCachesForMessage(
+                    streamingMessageId,
+                    setStreamingBlocksById,
+                    setContentBytesDroppedById,
+                    setMessageJsxById,
+                  );
                 }
               }
 
@@ -497,6 +701,20 @@ export function useStreamChat({
                         next.set(chatId, merged);
                         return next;
                       });
+                      // Stream ended successfully — full message content
+                      // was just merged from the DB. Drop the JSX cache,
+                      // parser state, and dropped-byte counters for
+                      // finalized messages so the renderer falls back to
+                      // a one-shot parse of the full content.
+                      const finalizedIds = new Set(
+                        latestChat.messages.map((m) => m.id),
+                      );
+                      clearCachesForFinalized(
+                        finalizedIds,
+                        setStreamingBlocksById,
+                        setContentBytesDroppedById,
+                        setMessageJsxById,
+                      );
                     }
                   } catch (error) {
                     console.warn(
