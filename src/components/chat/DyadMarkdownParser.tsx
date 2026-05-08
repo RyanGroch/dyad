@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useMemo } from "react";
+import React, { useDeferredValue, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -157,10 +157,14 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
-  // Extract content pieces (markdown and custom tags)
-  const contentPieces = useMemo(() => {
-    return parseCustomTags(contentToParse);
-  }, [contentToParse]);
+  // Per-instance incremental parser. Holds frozen completed pieces by ref so
+  // historical message content is not re-walked on every streaming chunk and
+  // is not retained via SlicedString parents on memoized React props.
+  const parserRef = useRef<IncrementalParser | null>(null);
+  if (parserRef.current === null) {
+    parserRef.current = createIncrementalParser();
+  }
+  const contentPieces = parserRef.current.parse(contentToParse, isStreaming);
 
   // Extract error messages and track positions
   const { errorMessages, lastErrorIndex, errorCount } = useMemo(() => {
@@ -280,52 +284,65 @@ const MemoCustomTag = React.memo(
       prev.isStreaming === next.isStreaming),
 );
 
+// Sort tags longest-first so e.g. "dyad-read-guide" is tried before "dyad-read".
+// The (?=[\s>]) lookahead ensures a tag name like "dyad-read" won't prefix-match
+// "dyad-read-guide" (the char after must be whitespace or '>').
+const SORTED_DYAD_TAGS = [...DYAD_CUSTOM_TAGS].sort(
+  (a, b) => b.length - a.length,
+);
+const TAG_PATTERN_SOURCE = `<(${SORTED_DYAD_TAGS.join(
+  "|",
+)})(?=[\\s>])\\s*([^>]*)>(.*?)<\\/\\1>`;
+
+function makeTagPattern(): RegExp {
+  return new RegExp(TAG_PATTERN_SOURCE, "gs");
+}
+
 /**
- * Pre-process content to handle unclosed custom tags
- * Adds closing tags at the end of the content for any unclosed custom tags
- * Assumes the opening tags are complete and valid
- * Returns the processed content and a map of in-progress tags
+ * Pre-process content to handle unclosed custom tags. Adds closing tags at the
+ * end of the content for any unclosed custom tags. Optionally accepts seed
+ * open/close counts that represent tags already accounted for in some frozen
+ * prefix outside `content`, so this can be invoked on a tail slice and still
+ * compute correct in-progress accounting.
  */
-function preprocessUnclosedTags(content: string): {
+function preprocessUnclosedTags(
+  content: string,
+  seedOpens?: Map<string, number>,
+  seedCloses?: Map<string, number>,
+): {
   processedContent: string;
   inProgressTags: Map<string, Set<number>>;
 } {
   let processedContent = content;
-  // Map to track which tags are in progress and their positions
   const inProgressTags = new Map<string, Set<number>>();
 
-  // For each tag type, check if there are unclosed tags
   for (const tagName of DYAD_CUSTOM_TAGS) {
-    // Count opening and closing tags
     const openTagPattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>`, "g");
     const closeTagPattern = new RegExp(`</${tagName}>`, "g");
 
-    // Track the positions of opening tags
     const openingMatches: RegExpExecArray[] = [];
     let match;
-
-    // Reset regex lastIndex to start from the beginning
     openTagPattern.lastIndex = 0;
-
     while ((match = openTagPattern.exec(processedContent)) !== null) {
       openingMatches.push({ ...match });
     }
 
-    const openCount = openingMatches.length;
-    const closeCount = (processedContent.match(closeTagPattern) || []).length;
+    const localOpenCount = openingMatches.length;
+    const localCloseCount = (processedContent.match(closeTagPattern) || [])
+      .length;
 
-    // If we have more opening than closing tags
-    const missingCloseTags = openCount - closeCount;
+    const totalOpens = (seedOpens?.get(tagName) ?? 0) + localOpenCount;
+    const totalCloses = (seedCloses?.get(tagName) ?? 0) + localCloseCount;
+    const missingCloseTags = totalOpens - totalCloses;
+
     if (missingCloseTags > 0) {
-      // Add the required number of closing tags at the end
       processedContent += Array(missingCloseTags)
         .fill(`</${tagName}>`)
         .join("");
 
-      // Mark the last N tags as in progress where N is the number of missing closing tags
       const inProgressIndexes = new Set<number>();
-      const startIndex = openCount - missingCloseTags;
-      for (let i = startIndex; i < openCount; i++) {
+      const startIndex = localOpenCount - missingCloseTags;
+      for (let i = Math.max(0, startIndex); i < localOpenCount; i++) {
         inProgressIndexes.add(openingMatches[i].index);
       }
       inProgressTags.set(tagName, inProgressIndexes);
@@ -336,41 +353,31 @@ function preprocessUnclosedTags(content: string): {
 }
 
 /**
- * Parse the content to extract custom tags and markdown sections into a unified array
+ * Walk a preprocessed content string with the tag regex and emit pieces. All
+ * extracted strings are .normalize()'d so they don't retain a V8 SlicedString
+ * parent reference into the (potentially multi-MB) source string once the
+ * piece is held by memoized React props.
  */
-function parseCustomTags(content: string): ContentPiece[] {
-  const { processedContent, inProgressTags } = preprocessUnclosedTags(content);
-
-  // Sort tags longest-first so e.g. "dyad-read-guide" is tried before "dyad-read".
-  // The (?=[\s>]) lookahead ensures a tag name like "dyad-read" won't prefix-match
-  // "dyad-read-guide" (the char after must be whitespace or '>').
-  const sortedTags = [...DYAD_CUSTOM_TAGS].sort((a, b) => b.length - a.length);
-  const tagPattern = new RegExp(
-    `<(${sortedTags.join("|")})(?=[\\s>])\\s*([^>]*)>(.*?)<\\/\\1>`,
-    "gs",
-  );
-
-  const contentPieces: ContentPiece[] = [];
+function extractPieces(
+  processedContent: string,
+  inProgressTags: Map<string, Set<number>>,
+): ContentPiece[] {
+  const tagPattern = makeTagPattern();
+  const pieces: ContentPiece[] = [];
   let lastIndex = 0;
   let match;
 
-  // Find all custom tags
   while ((match = tagPattern.exec(processedContent)) !== null) {
     const [fullMatch, tag, attributesStr, tagContent] = match;
     const startIndex = match.index;
 
-    // Add the markdown content before this tag
     if (startIndex > lastIndex) {
-      contentPieces.push({
+      pieces.push({
         type: "markdown",
-        // .normalize() flattens V8 SlicedString so the parent (full message
-        // content, often multi-MB during streaming) is not retained via
-        // memoized React props once this tag completes.
         content: processedContent.substring(lastIndex, startIndex).normalize(),
       });
     }
 
-    // Parse attributes and unescape values
     const attributes: Record<string, string> = {};
     const attrPattern = /([\w-]+)="([^"]*)"/g;
     let attrMatch;
@@ -378,12 +385,10 @@ function parseCustomTags(content: string): ContentPiece[] {
       attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]).normalize();
     }
 
-    // Check if this tag was marked as in progress
     const tagInProgressSet = inProgressTags.get(tag);
     const isInProgress = tagInProgressSet?.has(startIndex);
 
-    // Add the tag info with unescaped content
-    contentPieces.push({
+    pieces.push({
       type: "custom-tag",
       tagInfo: {
         tag,
@@ -397,15 +402,195 @@ function parseCustomTags(content: string): ContentPiece[] {
     lastIndex = startIndex + fullMatch.length;
   }
 
-  // Add the remaining markdown content
   if (lastIndex < processedContent.length) {
-    contentPieces.push({
+    pieces.push({
       type: "markdown",
       content: processedContent.substring(lastIndex).normalize(),
     });
   }
 
-  return contentPieces;
+  return pieces;
+}
+
+function accumulateTagCounts(
+  span: string,
+  opens: Map<string, number>,
+  closes: Map<string, number>,
+): void {
+  for (const tagName of DYAD_CUSTOM_TAGS) {
+    const openRe = new RegExp(`<${tagName}(?:\\s[^>]*)?>`, "g");
+    const closeRe = new RegExp(`</${tagName}>`, "g");
+    const o = (span.match(openRe) || []).length;
+    const c = (span.match(closeRe) || []).length;
+    if (o) opens.set(tagName, (opens.get(tagName) ?? 0) + o);
+    if (c) closes.set(tagName, (closes.get(tagName) ?? 0) + c);
+  }
+}
+
+type IncrementalParser = {
+  parse(content: string, isStreaming: boolean): ContentPiece[];
+};
+
+const FINGERPRINT_LEN = 64;
+
+/**
+ * Stateful parser that processes only the unfrozen tail of the content on
+ * each call. Pieces for completed `<tag>...</tag>` pairs and the markdown
+ * between them are committed once and kept by reference forever, so memoized
+ * React subtrees skip re-render and — critically — those pieces no longer
+ * pin the multi-MB streaming message buffer in memory via SlicedString
+ * parent references.
+ *
+ * Reset is triggered when the content shrinks or its prefix fingerprint no
+ * longer matches what was previously frozen (e.g. message edit/regen). The
+ * parser does NOT retain a reference to prior full content, only short
+ * fingerprint substrings.
+ */
+function createIncrementalParser(): IncrementalParser {
+  const frozenPieces: ContentPiece[] = [];
+  const frozenOpens = new Map<string, number>();
+  const frozenCloses = new Map<string, number>();
+  let frozenEnd = 0;
+  let prevContentLength = 0;
+  let prefixFingerprint = "";
+  let frozenEndFingerprint = "";
+  let cachedResult: ContentPiece[] | null = null;
+  let cachedLength = -1;
+  let cachedStreaming = false;
+
+  function reset() {
+    frozenPieces.length = 0;
+    frozenOpens.clear();
+    frozenCloses.clear();
+    frozenEnd = 0;
+    prevContentLength = 0;
+    prefixFingerprint = "";
+    frozenEndFingerprint = "";
+    cachedResult = null;
+    cachedLength = -1;
+  }
+
+  function fingerprintEndingAt(content: string, end: number): string {
+    if (end <= 0) return "";
+    const start = Math.max(0, end - FINGERPRINT_LEN);
+    return content.substring(start, end).normalize();
+  }
+
+  function detectMismatch(content: string): boolean {
+    if (content.length < prevContentLength) return true;
+    if (prevContentLength === 0) return false;
+    const prefixLen = Math.min(FINGERPRINT_LEN, content.length);
+    const prefix = content.substring(0, prefixLen).normalize();
+    if (prefix !== prefixFingerprint) return true;
+    if (frozenEnd > 0) {
+      if (fingerprintEndingAt(content, frozenEnd) !== frozenEndFingerprint) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return {
+    parse(content: string, isStreaming: boolean): ContentPiece[] {
+      if (
+        cachedResult !== null &&
+        cachedLength === content.length &&
+        cachedStreaming === isStreaming
+      ) {
+        return cachedResult;
+      }
+
+      if (detectMismatch(content)) {
+        reset();
+      }
+
+      // Walk the tail looking for completed `<tag>...</tag>` matches we can
+      // freeze. `tail` is sliced for the regex; everything pushed into
+      // frozenPieces is .normalize()'d so V8 doesn't retain `tail`'s parent.
+      const tail = content.substring(frozenEnd);
+      const tagPattern = makeTagPattern();
+      let lastTailIdx = 0;
+      let match;
+      while ((match = tagPattern.exec(tail)) !== null) {
+        const [fullMatch, tag, attributesStr, tagContent] = match;
+        const startIdx = match.index;
+        const endIdx = startIdx + fullMatch.length;
+
+        // While streaming, hold off freezing a tag that sits at the very end
+        // of the buffer for one tick — keeps us from committing to a tag
+        // shape the model could still be appending to. Once isStreaming is
+        // false, freeze unconditionally.
+        if (isStreaming && endIdx >= tail.length) {
+          break;
+        }
+
+        if (startIdx > lastTailIdx) {
+          const md = tail.substring(lastTailIdx, startIdx).normalize();
+          frozenPieces.push({ type: "markdown", content: md });
+          accumulateTagCounts(md, frozenOpens, frozenCloses);
+        }
+
+        const attributes: Record<string, string> = {};
+        const attrPattern = /([\w-]+)="([^"]*)"/g;
+        let attrMatch;
+        while ((attrMatch = attrPattern.exec(attributesStr)) !== null) {
+          attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]).normalize();
+        }
+
+        frozenPieces.push({
+          type: "custom-tag",
+          tagInfo: {
+            tag,
+            attributes,
+            content: unescapeXmlContent(tagContent).normalize(),
+            fullMatch: fullMatch.normalize(),
+            inProgress: false,
+          },
+        });
+        frozenOpens.set(tag, (frozenOpens.get(tag) ?? 0) + 1);
+        frozenCloses.set(tag, (frozenCloses.get(tag) ?? 0) + 1);
+
+        lastTailIdx = endIdx;
+      }
+
+      if (lastTailIdx > 0) {
+        frozenEnd += lastTailIdx;
+        frozenEndFingerprint = fingerprintEndingAt(content, frozenEnd);
+      }
+
+      // Hot tail: re-run the full pipeline on whatever's left. Output is
+      // recomputed each call (these pieces are still in flux), but the work
+      // is bounded to the in-progress region — the historical message
+      // content above frozenEnd is never touched again.
+      const hot = content.substring(frozenEnd);
+      let tailPieces: ContentPiece[] = [];
+      if (hot.length > 0) {
+        const { processedContent, inProgressTags } = preprocessUnclosedTags(
+          hot,
+          frozenOpens,
+          frozenCloses,
+        );
+        tailPieces = extractPieces(processedContent, inProgressTags);
+      }
+
+      const result =
+        tailPieces.length === 0
+          ? frozenPieces.slice()
+          : frozenPieces.concat(tailPieces);
+
+      prevContentLength = content.length;
+      if (prefixFingerprint === "" && content.length > 0) {
+        prefixFingerprint = content
+          .substring(0, Math.min(FINGERPRINT_LEN, content.length))
+          .normalize();
+      }
+      cachedResult = result;
+      cachedLength = content.length;
+      cachedStreaming = isStreaming;
+
+      return result;
+    },
+  };
 }
 
 function getState({
