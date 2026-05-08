@@ -363,7 +363,10 @@ function parseCustomTags(content: string): ContentPiece[] {
     if (startIndex > lastIndex) {
       contentPieces.push({
         type: "markdown",
-        content: processedContent.substring(lastIndex, startIndex),
+        // .normalize() flattens V8 SlicedString so the parent (full message
+        // content, often multi-MB during streaming) is not retained via
+        // memoized React props once this tag completes.
+        content: processedContent.substring(lastIndex, startIndex).normalize(),
       });
     }
 
@@ -372,7 +375,7 @@ function parseCustomTags(content: string): ContentPiece[] {
     const attrPattern = /([\w-]+)="([^"]*)"/g;
     let attrMatch;
     while ((attrMatch = attrPattern.exec(attributesStr)) !== null) {
-      attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]);
+      attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]).normalize();
     }
 
     // Check if this tag was marked as in progress
@@ -385,8 +388,8 @@ function parseCustomTags(content: string): ContentPiece[] {
       tagInfo: {
         tag,
         attributes,
-        content: unescapeXmlContent(tagContent),
-        fullMatch,
+        content: unescapeXmlContent(tagContent).normalize(),
+        fullMatch: fullMatch.normalize(),
         inProgress: isInProgress || false,
       },
     });
@@ -398,7 +401,7 @@ function parseCustomTags(content: string): ContentPiece[] {
   if (lastIndex < processedContent.length) {
     contentPieces.push({
       type: "markdown",
-      content: processedContent.substring(lastIndex),
+      content: processedContent.substring(lastIndex).normalize(),
     });
   }
 
