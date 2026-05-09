@@ -71,6 +71,10 @@ import { requireMcpToolConsent } from "../utils/mcp_consent";
 import { handleLocalAgentStream } from "../../pro/main/ipc/handlers/local_agent/local_agent_handler";
 
 import { safeSend } from "../utils/safe_sender";
+import {
+  StreamingPatchDriftTracker,
+  recordAckForChat,
+} from "../utils/streaming_patch_drift";
 import { cancelOrphanedBaseStream } from "../utils/stream_text_utils";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { generateProblemReport } from "../processors/tsc";
@@ -254,8 +258,16 @@ export function registerChatStreamHandlers() {
     },
   );
 
+  createTypedHandler(
+    chatContracts.ackStreamingPatch,
+    async (_event, { chatId, seq }) => {
+      recordAckForChat(chatId, seq);
+    },
+  );
+
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    let driftTracker: StreamingPatchDriftTracker | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -1213,6 +1225,12 @@ This conversation includes one or more image attachments. When the user uploads 
         // assuming pure appends.
         let lastSentContent = "";
 
+        driftTracker = new StreamingPatchDriftTracker({
+          chatId: req.chatId,
+          logTag: "drift:stream",
+        });
+        const tracker = driftTracker;
+
         const processResponseChunkUpdate = async ({
           fullResponse,
         }: {
@@ -1239,7 +1257,7 @@ This conversation includes one or more image attachments. When the user uploads 
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
+            streamingPatch: tracker.tag(patch),
           });
           return fullResponse;
         };
@@ -1837,6 +1855,11 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Emit end-of-stream drift summary and stop the periodic logger.
+      // Idempotent if no tracker was constructed (e.g. agent paths that
+      // early-return before the stream loop is reached).
+      driftTracker?.destroy();
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 

@@ -19,6 +19,7 @@ import {
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
 import { applyStreamingChunk } from "@/lib/streamingChunk";
+import { ackStreamingPatchApplied } from "@/lib/streamingPatchAck";
 import { ipc } from "@/ipc/types";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { pendingScreenshotAppIdAtom } from "@/atoms/previewAtoms";
@@ -342,6 +343,10 @@ export function useStreamChat({
                   : ({ kind: "mismatch" } as const);
 
                 if (result.kind === "applied") {
+                  // Drift-telemetry ack: report the highest applied seq so
+                  // the main process can compute IPC backlog. Debounced
+                  // inside the helper. No-op when the patch lacks `seq`.
+                  ackStreamingPatchApplied(chatId, streamingPatch.seq);
                   const newContent = result.content;
                   setMessagesById((prev) => {
                     const list = prev.get(chatId);

@@ -124,6 +124,15 @@ export const StreamingPatchSchema = z.object({
    * Absent when offset === 0 (no agreed-upon prefix to check).
    */
   prefixHash: z.number().int().nonnegative().optional(),
+  /**
+   * Monotonic per-stream sequence number assigned by the drift tracker on
+   * the main side. The renderer echoes the highest applied seq via
+   * `chat:response:chunk:ack` so the main process can measure IPC backlog
+   * (`lastSentSeq − lastAckedSeq`). Absent on legacy callers that splice
+   * patches without going through the tracker (plan implementation,
+   * merge-conflict resolution).
+   */
+  seq: z.number().int().nonnegative().optional(),
 });
 export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 
@@ -313,6 +322,18 @@ export const chatContracts = {
     input: z.object({
       chatId: z.number().int().nonnegative().finite(),
       lastSeq: z.number().int().nonnegative().finite(),
+    }),
+    output: z.void(),
+  }),
+
+  // Renderer→main ack for streaming-patch drift telemetry. Renderer reports
+  // the highest StreamingPatch.seq it has finished applying. Used by the
+  // drift tracker to compute IPC backlog (`lastSentSeq − lastAckedSeq`).
+  ackStreamingPatch: defineContract({
+    channel: "chat:response:chunk:ack",
+    input: z.object({
+      chatId: z.number(),
+      seq: z.number().int().nonnegative(),
     }),
     output: z.void(),
   }),

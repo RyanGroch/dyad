@@ -28,6 +28,7 @@ import { getDyadAppPath } from "@/paths/paths";
 import { detectFrameworkType } from "@/ipc/utils/framework_utils";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { safeSend } from "@/ipc/utils/safe_sender";
+import { StreamingPatchDriftTracker } from "@/ipc/utils/streaming_patch_drift";
 import { cancelOrphanedBaseStream } from "@/ipc/utils/stream_text_utils";
 import { getMaxTokens, getTemperature } from "@/ipc/utils/token_utils";
 import {
@@ -348,6 +349,12 @@ export async function handleLocalAgentStream(
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
   const hiddenMessageIdsForStreaming = new Set<number>();
+  // Drift tracker measures IPC backlog (sent vs renderer-applied seq).
+  // Constructed AFTER the Pro early-return below so we don't allocate a
+  // tracker (and its periodic-log interval) only to immediately tear it
+  // down. Destroyed in the outer try/catch's finally.
+  let driftTracker: StreamingPatchDriftTracker | null = null;
+
   // Convenience wrapper that binds the stream-invariant context args so call
   // sites only pass the two things that vary: the current response content and
   // whether to send the full messages array.
@@ -364,6 +371,7 @@ export async function handleLocalAgentStream(
       hiddenMessageIdsForStreaming,
       fullMessages,
       lastSentRef,
+      driftTracker,
     );
   let postMidTurnCompactionStartStep: number | null = null;
 
@@ -404,6 +412,11 @@ export async function handleLocalAgentStream(
     });
     return false;
   }
+
+  driftTracker = new StreamingPatchDriftTracker({
+    chatId: req.chatId,
+    logTag: "drift:agent",
+  });
 
   const loadChat = async () =>
     db.query.chats.findFirst({
@@ -1461,6 +1474,9 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // Emit end-of-stream drift summary and stop the periodic logger.
+    driftTracker?.destroy();
   }
 }
 
@@ -1591,6 +1607,7 @@ function sendResponseChunk(
   sendFullMessages: boolean | undefined,
   /** Mutable ref tracking the renderer's last seen placeholder content. */
   lastSentRef: { value: string },
+  driftTracker: StreamingPatchDriftTracker | null,
 ) {
   if (sendFullMessages) {
     const currentMessages = [...chat.messages].filter(
@@ -1618,7 +1635,7 @@ function sendResponseChunk(
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,
-      streamingPatch: patch,
+      streamingPatch: driftTracker ? driftTracker.tag(patch) : patch,
     });
   }
 }
