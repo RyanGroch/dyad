@@ -13,9 +13,12 @@ import {
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingBlocksByMessageIdAtom,
+  contentBytesDroppedByMessageIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
+import { applyStreamingChunk } from "@/lib/streamingChunk";
 import { ipc } from "@/ipc/types";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { pendingScreenshotAppIdAtom } from "@/atoms/previewAtoms";
@@ -23,7 +26,6 @@ import type { ChatResponseEnd, App, Chat } from "@/ipc/types";
 import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
-import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import {
   triggerResync,
   syncChatFromDb,
@@ -109,6 +111,10 @@ export function useStreamChat({
   );
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
+  );
+  const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
+  const setContentBytesDroppedById = useSetAtom(
+    contentBytesDroppedByMessageIdAtom,
   );
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
@@ -295,19 +301,91 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
+                // Drop parser states / dropped-byte counters for messages
+                // that aren't in the new payload; the renderer reparses
+                // replaced messages one-shot.
+                const validIds = new Set(updatedMessages.map((m) => m.id));
+                const pruneByMessageId = <V>(prev: Map<number, V>) => {
+                  if (prev.size === 0) return prev;
+                  let changed = false;
+                  const next = new Map(prev);
+                  for (const id of prev.keys()) {
+                    if (!validIds.has(id)) {
+                      next.delete(id);
+                      changed = true;
+                    }
+                  }
+                  return changed ? next : prev;
+                };
+                setStreamingBlocksById(pruneByMessageId);
+                setContentBytesDroppedById(pruneByMessageId);
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                const applied = applyStreamingPatch(
-                  setMessagesById,
-                  chatId,
-                  streamingMessageId,
-                  streamingPatch,
-                );
-                if (!applied) {
+                // Read prior atom values, run the pure pipeline, write
+                // results in a single set per atom.
+                const messages = store.get(chatMessagesByIdAtom).get(chatId);
+                const msg = messages?.find((m) => m.id === streamingMessageId);
+                const result = msg
+                  ? applyStreamingChunk({
+                      prevContent: msg.content ?? "",
+                      prevParserState: store
+                        .get(streamingBlocksByMessageIdAtom)
+                        .get(streamingMessageId),
+                      prevDroppedBytes:
+                        store
+                          .get(contentBytesDroppedByMessageIdAtom)
+                          .get(streamingMessageId) ?? 0,
+                      patch: streamingPatch,
+                    })
+                  : ({ kind: "mismatch" } as const);
+
+                if (result.kind === "applied") {
+                  const newContent = result.content;
+                  setMessagesById((prev) => {
+                    const list = prev.get(chatId);
+                    if (!list) return prev;
+                    const updated = list.map((m) =>
+                      m.id === streamingMessageId
+                        ? { ...m, content: newContent }
+                        : m,
+                    );
+                    const next = new Map(prev);
+                    next.set(chatId, updated);
+                    return next;
+                  });
+                  setStreamingBlocksById((prev) => {
+                    const next = new Map(prev);
+                    next.set(streamingMessageId, result.parserState);
+                    return next;
+                  });
+                  setContentBytesDroppedById((prev) => {
+                    if (
+                      (prev.get(streamingMessageId) ?? 0) ===
+                      result.droppedBytes
+                    ) {
+                      return prev;
+                    }
+                    const next = new Map(prev);
+                    next.set(streamingMessageId, result.droppedBytes);
+                    return next;
+                  });
+                } else if (result.kind === "mismatch") {
                   triggerResync(chatId, setMessagesById, store);
+                  // Drop parser state and dropped-byte counter for this
+                  // message so the renderer re-parses from the resynced
+                  // (full DB) content.
+                  const dropForMessage = <V>(prev: Map<number, V>) => {
+                    if (!prev.has(streamingMessageId)) return prev;
+                    const next = new Map(prev);
+                    next.delete(streamingMessageId);
+                    return next;
+                  };
+                  setStreamingBlocksById(dropForMessage);
+                  setContentBytesDroppedById(dropForMessage);
                 }
+                // result.kind === "noop" → no atom writes needed.
               }
 
               // Ack-based backpressure for the canned test stream. Real
@@ -469,6 +547,27 @@ export function useStreamChat({
                         next.set(chatId, merged);
                         return next;
                       });
+                      // Stream ended successfully — drop parser states and
+                      // dropped-byte counters for finalized messages so the
+                      // renderer falls back to a one-shot parse of the
+                      // merged DB content.
+                      const finalizedIds = new Set(
+                        latestChat.messages.map((m) => m.id),
+                      );
+                      const dropFinalized = <V>(prev: Map<number, V>) => {
+                        if (prev.size === 0) return prev;
+                        let changed = false;
+                        const next = new Map(prev);
+                        for (const id of prev.keys()) {
+                          if (finalizedIds.has(id)) {
+                            next.delete(id);
+                            changed = true;
+                          }
+                        }
+                        return changed ? next : prev;
+                      };
+                      setStreamingBlocksById(dropFinalized);
+                      setContentBytesDroppedById(dropFinalized);
                     }
                   } catch (error) {
                     console.warn(

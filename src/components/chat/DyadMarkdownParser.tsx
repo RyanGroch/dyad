@@ -18,7 +18,11 @@ import { DyadCodebaseContext } from "./DyadCodebaseContext";
 import { DyadThink } from "./DyadThink";
 import { CodeHighlight } from "./CodeHighlight";
 import { useAtomValue } from "jotai";
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import {
+  isStreamingByIdAtom,
+  selectedChatIdAtom,
+  streamingBlocksByMessageIdAtom,
+} from "@/atoms/chatAtoms";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
 import { DyadProblemSummary } from "./DyadProblemSummary";
@@ -48,70 +52,22 @@ import { DyadReadGuide } from "./DyadReadGuide";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
-import { unescapeXmlAttr, unescapeXmlContent } from "../../../shared/xmlEscape";
-
-const DYAD_CUSTOM_TAGS = [
-  "dyad-write",
-  "dyad-rename",
-  "dyad-delete",
-  "dyad-add-dependency",
-  "dyad-execute-sql",
-  "dyad-read-logs",
-  "dyad-add-integration",
-  "dyad-enable-nitro",
-  "dyad-output",
-  "dyad-problem-report",
-  "dyad-chat-summary",
-  "dyad-edit",
-  "dyad-grep",
-  "dyad-search-replace",
-  "dyad-codebase-context",
-  "dyad-web-search-result",
-  "dyad-web-search",
-  "dyad-web-crawl",
-  "dyad-web-fetch",
-  "dyad-code-search-result",
-  "dyad-code-search",
-  "dyad-read",
-  "think",
-  "dyad-command",
-  "dyad-mcp-tool-call",
-  "dyad-mcp-tool-result",
-  "dyad-list-files",
-  "dyad-database-schema",
-  "dyad-db-table-schema",
-  "dyad-supabase-table-schema",
-  "dyad-supabase-project-info",
-  "dyad-neon-project-info",
-  "dyad-neon-table-schema",
-  "dyad-read-guide",
-  "dyad-status",
-  "dyad-compaction",
-  "dyad-copy",
-  "dyad-image-generation",
-  // Plan mode tags
-  "dyad-write-plan",
-  "dyad-exit-plan",
-  "dyad-questionnaire",
-  // Step limit notification
-  "dyad-step-limit",
-];
+import {
+  type Block,
+  getOpenBlock,
+  parseFullMessage,
+} from "@/lib/streamingMessageParser";
 
 interface DyadMarkdownParserProps {
   content: string;
+  /**
+   * Assistant message id. When present, the renderer reads the incremental
+   * parser state from streamingBlocksByMessageIdAtom so completed blocks
+   * keep referential identity across streaming chunks. Without it the
+   * renderer falls back to a one-shot parse of `content`.
+   */
+  messageId?: number;
 }
-
-type CustomTagInfo = {
-  tag: string;
-  attributes: Record<string, string>;
-  content: string;
-  fullMatch: string;
-  inProgress?: boolean;
-};
-
-type ContentPiece =
-  | { type: "markdown"; content: string }
-  | { type: "custom-tag"; tagInfo: CustomTagInfo };
 
 const customLink = ({
   node: _node,
@@ -147,74 +103,118 @@ export const VanillaMarkdownParser = ({ content }: { content: string }) => {
 };
 
 /**
- * Custom component to parse markdown content with Dyad-specific tags
+ * Custom component to parse markdown content with Dyad-specific tags.
+ *
+ * The block list is sourced from an incremental parser (see
+ * src/lib/streamingMessageParser.ts) so completed blocks keep referential
+ * identity across streaming chunks. That lets React.memo skip every prior
+ * block, leaving only the open trailing block to re-render per chunk.
  */
 export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   content,
+  messageId,
 }) => {
   const chatId = useAtomValue(selectedChatIdAtom);
   const isStreaming = useAtomValue(isStreamingByIdAtom).get(chatId!) ?? false;
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
-  // Extract content pieces (markdown and custom tags)
-  const contentPieces = useMemo(() => {
-    return parseCustomTags(contentToParse);
-  }, [contentToParse]);
+  const streamingStates = useAtomValue(streamingBlocksByMessageIdAtom);
+  const parserState =
+    messageId !== undefined ? streamingStates.get(messageId) : undefined;
 
-  // Extract error messages and track positions
-  const { errorMessages, lastErrorIndex, errorCount } = useMemo(() => {
+  // While streaming, closed blocks live in parserState.blocks (immutable-
+  // appended on commit) and the open block comes from getOpenBlock. The
+  // closed-blocks array ref is stable across chunks that don't close a
+  // block, so MemoClosedBlocks skips its subtree entirely on those chunks
+  // (O(1) per chunk).
+  const closedBlocks = parserState?.blocks;
+  const openBlock = parserState ? getOpenBlock(parserState) : null;
+
+  // Fallback path: no parser state (history, post-DB-restore). One-shot
+  // parse of the full content.
+  const fallbackBlocks = useMemo<Block[] | null>(() => {
+    if (parserState !== undefined) return null;
+    return parseFullMessage(contentToParse).blocks;
+  }, [parserState, contentToParse]);
+
+  // Aggregate error messages for the FixAllErrorsButton. Recomputes only
+  // when one of the input arrays gets a new ref (closed blocks: on commit;
+  // fallback: on content change).
+  const { errorMessages, errorCount } = useMemo(() => {
     const errors: string[] = [];
-    let lastIndex = -1;
-    let count = 0;
-
-    contentPieces.forEach((piece, index) => {
+    const collectFrom = (block: Block) => {
       if (
-        piece.type === "custom-tag" &&
-        piece.tagInfo.tag === "dyad-output" &&
-        piece.tagInfo.attributes.type === "error"
+        block.kind === "custom-tag" &&
+        block.tag === "dyad-output" &&
+        block.attributes.type === "error"
       ) {
-        const errorMessage = piece.tagInfo.attributes.message;
-        if (errorMessage?.trim()) {
-          errors.push(errorMessage.trim());
-          count++;
-          lastIndex = index;
-        }
+        const msg = block.attributes.message?.trim();
+        if (msg) errors.push(msg);
       }
-    });
-
-    return {
-      errorMessages: errors,
-      lastErrorIndex: lastIndex,
-      errorCount: count,
     };
-  }, [contentPieces]);
+    if (closedBlocks) {
+      for (const block of closedBlocks) collectFrom(block);
+    } else if (fallbackBlocks) {
+      for (const block of fallbackBlocks) collectFrom(block);
+    }
+    return { errorMessages: errors, errorCount: errors.length };
+  }, [closedBlocks, fallbackBlocks]);
+
+  const showFixAll =
+    errorCount > 1 && !isStreaming && chatId !== null && chatId !== undefined;
 
   return (
     <>
-      {contentPieces.map((piece, index) => (
-        <React.Fragment key={index}>
-          {piece.type === "markdown" ? (
-            piece.content && <MemoMarkdown content={piece.content} />
-          ) : (
-            <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />
-          )}
-          {index === lastErrorIndex &&
-            errorCount > 1 &&
-            !isStreaming &&
-            chatId && (
-              <div className="mt-3 w-full flex">
-                <FixAllErrorsButton
-                  errorMessages={errorMessages}
-                  chatId={chatId}
-                />
-              </div>
-            )}
+      {closedBlocks ? (
+        <MemoClosedBlocks blocks={closedBlocks} isStreaming={isStreaming} />
+      ) : fallbackBlocks ? (
+        fallbackBlocks.map((block) => (
+          <React.Fragment key={block.id}>
+            {renderBlock(block, isStreaming)}
+          </React.Fragment>
+        ))
+      ) : null}
+      {openBlock ? renderBlock(openBlock, isStreaming) : null}
+      {showFixAll && (
+        <div className="mt-3 w-full flex">
+          <FixAllErrorsButton errorMessages={errorMessages} chatId={chatId!} />
+        </div>
+      )}
+    </>
+  );
+};
+
+function renderBlock(block: Block, isStreaming: boolean): React.ReactNode {
+  if (block.kind === "markdown") {
+    return block.content ? <MemoMarkdown content={block.content} /> : null;
+  }
+  return <MemoBlockCustomTag block={block} isStreaming={isStreaming} />;
+}
+
+// Memoized wrapper for closed blocks. Memo hits when the `blocks` array ref
+// is unchanged (chunks that just extend the open block) so the entire
+// closed-block subtree is skipped — O(1) per chunk in the common case.
+// On commit chunks, the wrapper re-renders and reconciles N child fibers,
+// but each child is also memoed on `prev.block === next.block` so closed
+// children short-circuit and never re-render their subtrees.
+const MemoClosedBlocks = React.memo(function MemoClosedBlocks({
+  blocks,
+  isStreaming,
+}: {
+  blocks: Block[];
+  isStreaming: boolean;
+}) {
+  return (
+    <>
+      {blocks.map((block) => (
+        <React.Fragment key={block.id}>
+          {renderBlock(block, isStreaming)}
         </React.Fragment>
       ))}
     </>
   );
-};
+});
 
 // Module-level constants so MemoMarkdown never gets fresh refs for these
 // props, which would defeat ReactMarkdown's internal prop-equality checks.
@@ -222,9 +222,7 @@ const REMARK_PLUGINS = [remarkGfm];
 const MARKDOWN_COMPONENTS = { code: CodeHighlight, a: customLink };
 
 // Memoized markdown piece. Without this, ReactMarkdown re-parses every
-// completed segment's text into an AST on every streaming chunk —
-// the dominant per-render cost during long streams. Memoizing on
-// `content` lets completed segments skip that re-parse entirely.
+// completed segment's text into an AST on every streaming chunk.
 const MemoMarkdown = React.memo(function MemoMarkdown({
   content,
 }: {
@@ -240,170 +238,29 @@ const MemoMarkdown = React.memo(function MemoMarkdown({
   );
 });
 
-function tagInfoEqual(a: CustomTagInfo, b: CustomTagInfo): boolean {
-  if (a.tag !== b.tag) return false;
-  if (a.content !== b.content) return false;
-  if (a.inProgress !== b.inProgress) return false;
-  const aKeys = Object.keys(a.attributes);
-  const bKeys = Object.keys(b.attributes);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    if (a.attributes[k] !== b.attributes[k]) return false;
-  }
-  // fullMatch intentionally omitted: renderCustomTag never reads it, so two
-  // tagInfo objects that differ only in fullMatch produce identical output.
-  return true;
-}
+type CustomTagBlock = Extract<Block, { kind: "custom-tag" }>;
 
-// Memoized custom-tag piece. parseCustomTags rebuilds tagInfo objects on
-// every chunk (new refs), so React.memo's default referential equality
-// would never hit. The custom comparator deep-checks the fields that
-// actually affect the rendered output, so completed dyad tags skip
-// renderCustomTag and the React subtree rebuild when only later pieces
-// change.
-const MemoCustomTag = React.memo(
-  function MemoCustomTag({
-    tagInfo,
+// Memoized custom-tag block. The incremental parser preserves the Block
+// reference for any completed (closed) tag across streaming patches, so
+// referential equality on `block` is sufficient — completed blocks
+// short-circuit and skip renderCustomTag entirely.
+const MemoBlockCustomTag = React.memo(
+  function MemoBlockCustomTag({
+    block,
     isStreaming,
   }: {
-    tagInfo: CustomTagInfo;
+    block: CustomTagBlock;
     isStreaming: boolean;
   }) {
-    return <>{renderCustomTag(tagInfo, { isStreaming })}</>;
+    return <>{renderCustomTag(block, { isStreaming })}</>;
   },
   (prev, next) =>
-    tagInfoEqual(prev.tagInfo, next.tagInfo) &&
-    // Completed tags don't use isStreaming (getState returns "finished"
-    // regardless), so skip the check to avoid a one-time re-render of every
+    prev.block === next.block &&
+    // Completed tags ignore isStreaming (getState returns "finished"
+    // regardless), so skip the check to avoid one-time re-renders of every
     // completed tag when streaming ends.
-    (prev.tagInfo.inProgress === false ||
-      prev.isStreaming === next.isStreaming),
+    (prev.block.inProgress === false || prev.isStreaming === next.isStreaming),
 );
-
-/**
- * Pre-process content to handle unclosed custom tags
- * Adds closing tags at the end of the content for any unclosed custom tags
- * Assumes the opening tags are complete and valid
- * Returns the processed content and a map of in-progress tags
- */
-function preprocessUnclosedTags(content: string): {
-  processedContent: string;
-  inProgressTags: Map<string, Set<number>>;
-} {
-  let processedContent = content;
-  // Map to track which tags are in progress and their positions
-  const inProgressTags = new Map<string, Set<number>>();
-
-  // For each tag type, check if there are unclosed tags
-  for (const tagName of DYAD_CUSTOM_TAGS) {
-    // Count opening and closing tags
-    const openTagPattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>`, "g");
-    const closeTagPattern = new RegExp(`</${tagName}>`, "g");
-
-    // Track the positions of opening tags
-    const openingMatches: RegExpExecArray[] = [];
-    let match;
-
-    // Reset regex lastIndex to start from the beginning
-    openTagPattern.lastIndex = 0;
-
-    while ((match = openTagPattern.exec(processedContent)) !== null) {
-      openingMatches.push({ ...match });
-    }
-
-    const openCount = openingMatches.length;
-    const closeCount = (processedContent.match(closeTagPattern) || []).length;
-
-    // If we have more opening than closing tags
-    const missingCloseTags = openCount - closeCount;
-    if (missingCloseTags > 0) {
-      // Add the required number of closing tags at the end
-      processedContent += Array(missingCloseTags)
-        .fill(`</${tagName}>`)
-        .join("");
-
-      // Mark the last N tags as in progress where N is the number of missing closing tags
-      const inProgressIndexes = new Set<number>();
-      const startIndex = openCount - missingCloseTags;
-      for (let i = startIndex; i < openCount; i++) {
-        inProgressIndexes.add(openingMatches[i].index);
-      }
-      inProgressTags.set(tagName, inProgressIndexes);
-    }
-  }
-
-  return { processedContent, inProgressTags };
-}
-
-/**
- * Parse the content to extract custom tags and markdown sections into a unified array
- */
-function parseCustomTags(content: string): ContentPiece[] {
-  const { processedContent, inProgressTags } = preprocessUnclosedTags(content);
-
-  // Sort tags longest-first so e.g. "dyad-read-guide" is tried before "dyad-read".
-  // The (?=[\s>]) lookahead ensures a tag name like "dyad-read" won't prefix-match
-  // "dyad-read-guide" (the char after must be whitespace or '>').
-  const sortedTags = [...DYAD_CUSTOM_TAGS].sort((a, b) => b.length - a.length);
-  const tagPattern = new RegExp(
-    `<(${sortedTags.join("|")})(?=[\\s>])\\s*([^>]*)>(.*?)<\\/\\1>`,
-    "gs",
-  );
-
-  const contentPieces: ContentPiece[] = [];
-  let lastIndex = 0;
-  let match;
-
-  // Find all custom tags
-  while ((match = tagPattern.exec(processedContent)) !== null) {
-    const [fullMatch, tag, attributesStr, tagContent] = match;
-    const startIndex = match.index;
-
-    // Add the markdown content before this tag
-    if (startIndex > lastIndex) {
-      contentPieces.push({
-        type: "markdown",
-        content: processedContent.substring(lastIndex, startIndex),
-      });
-    }
-
-    // Parse attributes and unescape values
-    const attributes: Record<string, string> = {};
-    const attrPattern = /([\w-]+)="([^"]*)"/g;
-    let attrMatch;
-    while ((attrMatch = attrPattern.exec(attributesStr)) !== null) {
-      attributes[attrMatch[1]] = unescapeXmlAttr(attrMatch[2]);
-    }
-
-    // Check if this tag was marked as in progress
-    const tagInProgressSet = inProgressTags.get(tag);
-    const isInProgress = tagInProgressSet?.has(startIndex);
-
-    // Add the tag info with unescaped content
-    contentPieces.push({
-      type: "custom-tag",
-      tagInfo: {
-        tag,
-        attributes,
-        content: unescapeXmlContent(tagContent),
-        fullMatch,
-        inProgress: isInProgress || false,
-      },
-    });
-
-    lastIndex = startIndex + fullMatch.length;
-  }
-
-  // Add the remaining markdown content
-  if (lastIndex < processedContent.length) {
-    contentPieces.push({
-      type: "markdown",
-      content: processedContent.substring(lastIndex),
-    });
-  }
-
-  return contentPieces;
-}
 
 function getState({
   isStreaming,
@@ -430,10 +287,10 @@ function getState({
  * Render a custom tag based on its type
  */
 function renderCustomTag(
-  tagInfo: CustomTagInfo,
+  block: CustomTagBlock,
   { isStreaming }: { isStreaming: boolean },
 ): React.ReactNode {
-  const { tag, attributes, content, inProgress } = tagInfo;
+  const { tag, attributes, content, inProgress } = block;
 
   switch (tag) {
     case "dyad-read":
