@@ -79,8 +79,14 @@ export function createAckBackpressure(opts: {
 
     recordAck(seq) {
       if (destroyed || seq <= lastAckedSeq) return;
+      // Clamp to lastSentSeq so a delayed ack from a previous stream on the
+      // same chatId (seqs restart per instance) can't push lastAckedSeq past
+      // sent — that would make sent − acked go negative and effectively
+      // disable backpressure for many subsequent sends.
+      const clamped = seq > lastSentSeq ? lastSentSeq : seq;
+      if (clamped <= lastAckedSeq) return;
       const wasHeld = lastSentSeq - lastAckedSeq >= threshold;
-      lastAckedSeq = seq;
+      lastAckedSeq = clamped;
       const isHeldNow = lastSentSeq - lastAckedSeq >= threshold;
       if (wasHeld && !isHeldNow) {
         for (const cb of resumeCallbacks) cb();
