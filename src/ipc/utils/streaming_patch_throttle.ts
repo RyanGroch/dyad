@@ -5,12 +5,22 @@ const logger = log.scope("streaming_patch_throttle");
 
 // IPC patch send window. Newer patches arriving inside this window are
 // coalesced and emitted on the trailing edge instead of firing per-chunk.
-// Tweak to study renderer load vs perceived streaming smoothness.
-export const IPC_STREAM_THROTTLE_MS = 1;
+// 16ms ≈ 60Hz: caps renderer paint work to one apply-per-frame while
+// keeping streaming text visually smooth.
+export const IPC_STREAM_THROTTLE_MS = 16;
 
 // How often to log live backlog stats while a stream is active.
 // Set to 0 to disable mid-stream logs (end-of-stream summary still fires).
 export const IPC_STREAM_BACKLOG_LOG_INTERVAL_MS = 250;
+
+// Hold sends when in-flight (sent − acked) reaches this many patches —
+// the renderer is falling behind and adding more sends just deepens the
+// queue. New patches keep coalescing into the pending merged patch; drain
+// resumes when an ack pulls backlog under threshold (one big catch-up
+// patch instead of many small ones). No watchdog: if acks never arrive
+// the stream's end-of-stream full messages-replacement still delivers the
+// authoritative final content, so renderer can't get stuck on stale state.
+export const IPC_STREAM_BACKPRESSURE_THRESHOLD = 20;
 
 export type SendPatchFn = (patch: StreamingPatch & { seq: number }) => void;
 
@@ -122,21 +132,41 @@ export class StreamingPatchThrottle {
   queue(patch: StreamingPatch): void {
     if (this.destroyed) return;
     this.ensureBacklogTimer();
+    this.coalesce(patch);
+
+    const backlog = this.stats.lastSentSeq - this.stats.lastAckedSeq;
+    if (backlog >= IPC_STREAM_BACKPRESSURE_THRESHOLD) {
+      // Renderer behind. Cancel any armed trailing send and let new
+      // patches keep coalescing into `pending`. `recordAck` resumes the
+      // drain once an ack pulls backlog back under the threshold.
+      if (this.trailingTimer) {
+        clearTimeout(this.trailingTimer);
+        this.trailingTimer = null;
+      }
+      return;
+    }
+
+    this.scheduleFlush();
+  }
+
+  /**
+   * Sends `pending` honoring the throttle window: fires immediately if the
+   * window has elapsed, otherwise arms a trailing-edge timer. No-op when
+   * nothing is pending or a timer is already armed.
+   */
+  private scheduleFlush(): void {
+    if (!this.pending || this.trailingTimer) return;
     const now = Date.now();
     const elapsed = now - this.lastSentAt;
-    if (elapsed >= this.throttleMs && !this.trailingTimer) {
-      this.coalesce(patch);
+    if (elapsed >= this.throttleMs) {
       this.flushPending(now);
       return;
     }
-    this.coalesce(patch);
-    if (!this.trailingTimer) {
-      const wait = Math.max(0, this.throttleMs - elapsed);
-      this.trailingTimer = setTimeout(() => {
-        this.trailingTimer = null;
-        if (this.pending) this.flushPending(Date.now());
-      }, wait);
-    }
+    const wait = this.throttleMs - elapsed;
+    this.trailingTimer = setTimeout(() => {
+      this.trailingTimer = null;
+      if (this.pending) this.flushPending(Date.now());
+    }, wait);
   }
 
   /** Force-send any pending patch immediately. Idempotent. */
@@ -162,6 +192,17 @@ export class StreamingPatchThrottle {
     this.stats.lastAckedSeq = seq;
     this.stats.acked = seq;
     this.sampleBacklog();
+
+    // Backpressure release: ack just pulled in-flight count under the
+    // threshold. Drain whatever has been coalescing while we held — one
+    // larger merged patch rather than many small ones.
+    if (
+      this.pending &&
+      this.stats.lastSentSeq - this.stats.lastAckedSeq <
+        IPC_STREAM_BACKPRESSURE_THRESHOLD
+    ) {
+      this.scheduleFlush();
+    }
   }
 
   /** Stop periodic logging and emit a final summary. Call once at stream end. */
