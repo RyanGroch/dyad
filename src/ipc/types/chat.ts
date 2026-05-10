@@ -124,6 +124,13 @@ export const StreamingPatchSchema = z.object({
    * Absent when offset === 0 (no agreed-upon prefix to check).
    */
   prefixHash: z.number().int().nonnegative().optional(),
+  /**
+   * Monotonic per-stream sequence number assigned by `StreamingPatchThrottle`.
+   * The renderer echoes the last applied seq via `chat:response:chunk:ack` so
+   * the main process can compute IPC backlog (`lastSentSeq - lastAckedSeq`)
+   * and apply backpressure when the renderer falls behind.
+   */
+  seq: z.number().int().nonnegative().optional(),
 });
 export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 
@@ -313,6 +320,18 @@ export const chatContracts = {
     input: z.object({
       chatId: z.number().int().nonnegative().finite(),
       lastSeq: z.number().int().nonnegative().finite(),
+    }),
+    output: z.void(),
+  }),
+
+  // Renderer→main ack for the streaming-patch throttle. Renderer reports
+  // the highest applied `streamingPatch.seq` so the throttle can hold
+  // sends when in-flight count exceeds the backpressure threshold.
+  ackStreamingPatch: defineContract({
+    channel: "chat:response:chunk:ack",
+    input: z.object({
+      chatId: z.number(),
+      seq: z.number().int().nonnegative(),
     }),
     output: z.void(),
   }),

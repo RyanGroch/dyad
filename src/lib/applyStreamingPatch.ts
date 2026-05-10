@@ -1,5 +1,6 @@
 import type { Message, StreamingPatch } from "@/ipc/types";
 import { hashPrefix } from "@/lib/prefixHash";
+import { ackStreamingPatchApplied } from "@/lib/streamingPatchAck";
 
 /**
  * Applies a tail-only streaming patch to the messages-by-id map atom.
@@ -58,5 +59,10 @@ export function applyStreamingPatch(
     next.set(chatId, updated);
     return next;
   });
+  if (!baseMismatch) {
+    // Fire-and-forget ack so the main process can measure IPC backlog
+    // (lastSentSeq − lastAckedSeq). Debounced inside the helper.
+    ackStreamingPatchApplied(chatId, streamingPatch.seq);
+  }
   return !baseMismatch;
 }

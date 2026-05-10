@@ -102,6 +102,7 @@ import {
 } from "./retry_replay_utils";
 import { setChatSummaryTool } from "./tools/set_chat_summary";
 import { computeStreamingPatch } from "@/ipc/utils/stream_text_utils";
+import { StreamingPatchThrottle } from "@/ipc/utils/streaming_patch_throttle";
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
@@ -348,23 +349,6 @@ export async function handleLocalAgentStream(
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
   const hiddenMessageIdsForStreaming = new Set<number>();
-  // Convenience wrapper that binds the stream-invariant context args so call
-  // sites only pass the two things that vary: the current response content and
-  // whether to send the full messages array.
-  const sendChunk = (
-    response: string,
-    { fullMessages = false }: { fullMessages?: boolean } = {},
-  ) =>
-    sendResponseChunk(
-      event,
-      req.chatId,
-      chat,
-      response,
-      placeholderMessageId,
-      hiddenMessageIdsForStreaming,
-      fullMessages,
-      lastSentRef,
-    );
   let postMidTurnCompactionStartStep: number | null = null;
 
   const appendInlineCompactionToTurn = async (
@@ -405,6 +389,22 @@ export async function handleLocalAgentStream(
     return false;
   }
 
+  // Throttle outbound tail-patch IPC so the renderer isn't deluged on fast
+  // streams. Constructed AFTER the Pro early-return so we don't allocate a
+  // throttle only to immediately tear it down. Destroyed in the outer
+  // finally below.
+  const chunkThrottle = new StreamingPatchThrottle({
+    chatId: req.chatId,
+    logTag: "ipc-throttle:agent",
+    send: (patch) => {
+      safeSend(event.sender, "chat:response:chunk", {
+        chatId: req.chatId,
+        streamingMessageId: placeholderMessageId,
+        streamingPatch: patch,
+      });
+    },
+  });
+
   const loadChat = async () =>
     db.query.chats.findFirst({
       where: eq(chats.id, req.chatId),
@@ -427,6 +427,25 @@ export async function handleLocalAgentStream(
   }
 
   let chat = initialChat;
+
+  // Convenience wrapper that binds the stream-invariant context args so call
+  // sites only pass the two things that vary: the current response content and
+  // whether to send the full messages array.
+  const sendChunk = (
+    response: string,
+    { fullMessages = false }: { fullMessages?: boolean } = {},
+  ) =>
+    sendResponseChunk(
+      event,
+      req.chatId,
+      chat,
+      response,
+      placeholderMessageId,
+      hiddenMessageIdsForStreaming,
+      fullMessages,
+      lastSentRef,
+      chunkThrottle,
+    );
 
   for (const id of getMidTurnCompactionSummaryIds(chat.messages)) {
     hiddenMessageIdsForStreaming.add(id);
@@ -1461,6 +1480,10 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // Cancel any pending throttled tail patch and emit the throttle's
+    // end-of-stream backlog summary log.
+    chunkThrottle.destroy();
   }
 }
 
@@ -1591,6 +1614,7 @@ function sendResponseChunk(
   sendFullMessages: boolean | undefined,
   /** Mutable ref tracking the renderer's last seen placeholder content. */
   lastSentRef: { value: string },
+  throttle: StreamingPatchThrottle,
 ) {
   if (sendFullMessages) {
     const currentMessages = [...chat.messages].filter(
@@ -1602,6 +1626,10 @@ function sendResponseChunk(
     if (placeholderMsg) {
       placeholderMsg.content = fullResponse;
     }
+    // Drop any pending throttled tail patch — sending it after this full
+    // messages-replacement would re-apply against the wrong base and
+    // truncate the renderer's content.
+    throttle.cancel();
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       messages: currentMessages,
@@ -1615,11 +1643,7 @@ function sendResponseChunk(
     if (!patch) {
       return;
     }
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId,
-      streamingMessageId: placeholderMessageId,
-      streamingPatch: patch,
-    });
+    throttle.queue(patch);
   }
 }
 

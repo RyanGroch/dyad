@@ -71,6 +71,10 @@ import { requireMcpToolConsent } from "../utils/mcp_consent";
 import { handleLocalAgentStream } from "../../pro/main/ipc/handlers/local_agent/local_agent_handler";
 
 import { safeSend } from "../utils/safe_sender";
+import {
+  StreamingPatchThrottle,
+  recordAckForChat,
+} from "../utils/streaming_patch_throttle";
 import { cancelOrphanedBaseStream } from "../utils/stream_text_utils";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { generateProblemReport } from "../processors/tsc";
@@ -256,6 +260,7 @@ export function registerChatStreamHandlers() {
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    let chunkThrottle: StreamingPatchThrottle | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -1213,6 +1218,19 @@ This conversation includes one or more image attachments. When the user uploads 
         // assuming pure appends.
         let lastSentContent = "";
 
+        chunkThrottle = new StreamingPatchThrottle({
+          chatId: req.chatId,
+          logTag: "ipc-throttle:stream",
+          send: (patch) => {
+            safeSend(event.sender, "chat:response:chunk", {
+              chatId: req.chatId,
+              streamingMessageId: placeholderAssistantMessage.id,
+              streamingPatch: patch,
+            });
+          },
+        });
+        const throttle = chunkThrottle;
+
         const processResponseChunkUpdate = async ({
           fullResponse,
         }: {
@@ -1236,11 +1254,7 @@ This conversation includes one or more image attachments. When the user uploads 
           if (!patch) {
             return fullResponse;
           }
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
-          });
+          throttle.queue(patch);
           return fullResponse;
         };
 
@@ -1795,6 +1809,10 @@ ${problemReport.problems
             },
           });
 
+          // Drop any pending throttled tail patch — sending it after this
+          // full messages-replacement would re-apply against the wrong base
+          // and truncate the renderer's content.
+          chunkThrottle?.cancel();
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             messages: chat!.messages,
@@ -1837,12 +1855,23 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Cancel any pending throttled tail patch and emit the throttle's
+      // end-of-stream backlog summary log. Idempotent if no throttle was
+      // ever created (agent paths early-return before construction).
+      chunkThrottle?.destroy();
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 
       // Notify renderer that stream has ended
       safeSend(event.sender, "chat:stream:end", { chatId: req.chatId });
     }
+  });
+
+  // Renderer reports the highest streamingPatch.seq it has applied. Used by
+  // StreamingPatchThrottle to compute IPC backlog (sent − acked).
+  createTypedHandler(chatContracts.ackStreamingPatch, async (_event, input) => {
+    recordAckForChat(input.chatId, input.seq);
   });
 
   // Handler to cancel an ongoing stream
