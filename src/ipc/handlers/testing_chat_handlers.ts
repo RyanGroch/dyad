@@ -1,14 +1,16 @@
 import { safeSend } from "../utils/safe_sender";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { computeStreamingPatch } from "../utils/stream_text_utils";
+import { createAckBackpressure } from "../utils/ack_backpressure";
 
 /**
  * Maximum number of unacked chunks the canned test stream is allowed to
- * keep in flight. The sender skips a send while
- * `lastSentSeq - lastAcked > MAX_IN_FLIGHT`, which lets the renderer's ack
- * cadence pace the stream when the renderer falls behind.
+ * keep in flight. The sender holds when in-flight reaches this count,
+ * letting the renderer's ack cadence pace the stream when it falls behind.
+ * Tighter than the production throttle's threshold because the test fixture
+ * stress-tests the backpressure machinery itself.
  */
-const MAX_IN_FLIGHT = 1;
+const MAX_IN_FLIGHT = 2;
 
 type ResponseEntry = string | (() => string);
 
@@ -157,26 +159,6 @@ export function getTestResponse(prompt: string): string | null {
 }
 
 /**
- * Per-stream ack state for the canned test stream backpressure path. Real
- * LLM streams do not register entries here, so `noteAck` is a no-op for
- * them.
- */
-type AckEntry = { lastAcked: number };
-const ackState = new Map<number, AckEntry>();
-
-export function noteAck(chatId: number, lastSeq: number): void {
-  const entry = ackState.get(chatId);
-  if (!entry) return;
-  if (lastSeq > entry.lastAcked) {
-    entry.lastAcked = lastSeq;
-  }
-}
-
-function clearAck(chatId: number): void {
-  ackState.delete(chatId);
-}
-
-/**
  * Byte size of each streamed chunk. Sized to keep the 24 MB stress fixture
  * under a few thousand iterations so the loop yield + per-iter work stay
  * tractable.
@@ -188,14 +170,12 @@ const CHUNK_SIZE = 500;
  * streaming patches, mirroring the real LLM path. The renderer applies each
  * patch to its local copy of the placeholder assistant message.
  *
- * Ack-based backpressure: each iteration appends to fullResponse and
- * increments currentSeq. The IPC send fires only while in-flight chunks
- * (`lastSentSeq - lastAcked`) are at or below MAX_IN_FLIGHT, so a slow
- * renderer naturally throttles the sender via its ack cadence.
+ * Ack-based backpressure (via {@link createAckBackpressure}): the IPC send
+ * skips while the backpressure handle is held, so a slow renderer naturally
+ * paces the sender via its ack cadence.
  *
- * The 10ms loop yield lets the noteAck IPC handler run; without it, the
- * synchronous loop monopolizes the main process and acks are never
- * observed.
+ * The 10ms loop yield lets the ipcMain ack handler run; without it, the
+ * synchronous loop monopolizes the main process and acks are never observed.
  *
  * `cleanFullResponse` runs once on the canned input up front. Its rewrite
  * is local to fully-formed `<dyad-*>` tags and idempotent, so the cleaned
@@ -214,11 +194,12 @@ export async function streamTestResponse(
   const cleanedResponse = cleanFullResponse(testResponse);
   let fullResponse = "";
   let lastSentContent = "";
-  let currentSeq = 0;
-  let lastSentSeq = 0;
   let offset = 0;
 
-  ackState.set(chatId, { lastAcked: 0 });
+  const backpressure = createAckBackpressure({
+    chatId,
+    threshold: MAX_IN_FLIGHT,
+  });
 
   try {
     while (offset < cleanedResponse.length) {
@@ -227,22 +208,18 @@ export async function streamTestResponse(
       const end = Math.min(offset + CHUNK_SIZE, cleanedResponse.length);
       fullResponse += cleanedResponse.slice(offset, end);
       offset = end;
-      currentSeq++;
 
-      const lastAcked = ackState.get(chatId)?.lastAcked ?? 0;
-      const inFlight = lastSentSeq - lastAcked;
-
-      if (inFlight <= MAX_IN_FLIGHT) {
+      if (!backpressure.isHeld()) {
         const patch = computeStreamingPatch(fullResponse, lastSentContent);
         if (patch) {
+          const chunkSeq = backpressure.markSent();
           safeSend(event.sender, "chat:response:chunk", {
             chatId,
             streamingMessageId: placeholderAssistantMessageId,
             streamingPatch: patch,
-            chunkSeq: currentSeq,
+            chunkSeq,
           });
           lastSentContent = fullResponse;
-          lastSentSeq = currentSeq;
         }
       }
 
@@ -251,19 +228,20 @@ export async function streamTestResponse(
 
     // Final flush: guarantee the renderer ends with the complete response,
     // even if the last iterations were skipped due to backpressure.
-    if (!abortController.signal.aborted && lastSentSeq < currentSeq) {
+    if (!abortController.signal.aborted && lastSentContent !== fullResponse) {
       const patch = computeStreamingPatch(fullResponse, lastSentContent);
       if (patch) {
+        const chunkSeq = backpressure.markSent();
         safeSend(event.sender, "chat:response:chunk", {
           chatId,
           streamingMessageId: placeholderAssistantMessageId,
           streamingPatch: patch,
-          chunkSeq: currentSeq,
+          chunkSeq,
         });
       }
     }
   } finally {
-    clearAck(chatId);
+    backpressure.destroy();
   }
 
   return fullResponse;

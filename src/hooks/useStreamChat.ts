@@ -24,6 +24,7 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { recordChunkApplied, cancelChunkAcks } from "@/lib/chunkAckScheduler";
 import {
   triggerResync,
   syncChatFromDb,
@@ -51,37 +52,6 @@ export function getRandomNumberId() {
 // Module-level set to track chatIds with active/pending streams
 // This prevents race conditions when clicking rapidly before state updates
 const pendingStreamChatIds = new Set<number>();
-
-// Throttled ack scheduler for the canned test stream's ack-based
-// backpressure. Stores the highest chunkSeq received per chatId; at most
-// one ack per ACK_THROTTLE_MS is sent per chatId, carrying the latest
-// received seq. Real LLM streams omit chunkSeq, so the scheduler is never
-// armed for them.
-const ACK_THROTTLE_MS = 250;
-const latestChunkByChatId = new Map<number, number>();
-const ackTimerByChatId = new Map<number, ReturnType<typeof setTimeout>>();
-
-function scheduleThrottledAck(chatId: number): void {
-  if (ackTimerByChatId.has(chatId)) return;
-  const timer = setTimeout(() => {
-    ackTimerByChatId.delete(chatId);
-    const seq = latestChunkByChatId.get(chatId);
-    if (seq === undefined) return;
-    void ipc.chat.responseAck({ chatId, lastSeq: seq }).catch(() => {
-      // Ignore ack failures; main has no retry path and acks are
-      // advisory under throttling.
-    });
-  }, ACK_THROTTLE_MS);
-  ackTimerByChatId.set(chatId, timer);
-}
-
-function cancelAckTimer(chatId: number): void {
-  const timer = ackTimerByChatId.get(chatId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    ackTimerByChatId.delete(chatId);
-  }
-}
 
 export function useStreamChat({
   hasChatId = true,
@@ -310,22 +280,14 @@ export function useStreamChat({
                 }
               }
 
-              // Ack-based backpressure for the canned test stream. Real
-              // LLM streams omit chunkSeq, so this is a no-op for them.
-              // Coalesce many incoming chunks into a single ack fired on a
-              // fixed throttle interval (ACK_THROTTLE_MS).
-              if (chunkSeq !== undefined) {
-                const prev = latestChunkByChatId.get(chatId) ?? 0;
-                if (chunkSeq > prev) {
-                  latestChunkByChatId.set(chatId, chunkSeq);
-                }
-                scheduleThrottledAck(chatId);
-              }
+              // Ack-based backpressure: chunks carrying chunkSeq are acked
+              // on a throttled cadence. Both the canned test stream and the
+              // production throttle path use this.
+              recordChunkApplied(chatId, chunkSeq);
             },
             onEnd: (response: ChatResponseEnd) => {
               pendingStreamChatIds.delete(chatId);
-              latestChunkByChatId.delete(chatId);
-              cancelAckTimer(chatId);
+              cancelChunkAcks(chatId);
               void (async () => {
                 // Only mark as successful if NOT cancelled - wasCancelled flag is set
                 // by the backend when user cancels the stream
@@ -501,8 +463,7 @@ export function useStreamChat({
             onError: ({ error: errorMessage, warningMessages }) => {
               // Remove from pending set now that stream ended with error
               pendingStreamChatIds.delete(chatId);
-              latestChunkByChatId.delete(chatId);
-              cancelAckTimer(chatId);
+              cancelChunkAcks(chatId);
 
               for (const warningMessage of warningMessages ?? []) {
                 showWarning(warningMessage);
@@ -538,8 +499,7 @@ export function useStreamChat({
       } catch (error) {
         // Remove from pending set on exception
         pendingStreamChatIds.delete(chatId);
-        latestChunkByChatId.delete(chatId);
-        cancelAckTimer(chatId);
+        cancelChunkAcks(chatId);
 
         console.error("[CHAT] Exception during streaming setup:", error);
         setIsStreamingById((prev) => {
