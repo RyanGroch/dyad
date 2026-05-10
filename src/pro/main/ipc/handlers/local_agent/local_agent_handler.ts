@@ -105,6 +105,10 @@ import {
 } from "./retry_replay_utils";
 import { setChatSummaryTool } from "./tools/set_chat_summary";
 import { computeStreamingPatch } from "@/ipc/utils/stream_text_utils";
+import {
+  createStreamingPatchThrottle,
+  type StreamingPatchThrottle,
+} from "@/ipc/utils/streaming_patch_throttle";
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
@@ -414,6 +418,7 @@ export async function handleLocalAgentStream(
       hiddenMessageIdsForStreaming,
       fullMessages,
       lastSentRef,
+      chunkThrottle,
     );
   // Sidecar preview send — independent of the patch protocol. The renderer
   // overlays this string after the message's parsed blocks and clears the
@@ -466,6 +471,23 @@ export async function handleLocalAgentStream(
     });
     return false;
   }
+
+  // Throttle outbound tail-patch IPC so the renderer isn't deluged on fast
+  // streams. Constructed AFTER the Pro early-return so we don't allocate a
+  // throttle only to immediately tear it down. Destroyed in the outer
+  // finally below.
+  const chunkThrottle = createStreamingPatchThrottle({
+    chatId: req.chatId,
+    logTag: "ipc-throttle:agent",
+    send: (patch, chunkSeq) => {
+      safeSend(event.sender, "chat:response:chunk", {
+        chatId: req.chatId,
+        streamingMessageId: placeholderMessageId,
+        streamingPatch: patch,
+        chunkSeq,
+      });
+    },
+  });
 
   const loadChat = async () =>
     db.query.chats.findFirst({
@@ -1603,6 +1625,9 @@ export async function handleLocalAgentStream(
       clearTimeout(pendingXmlEmitTimer);
       pendingXmlEmitTimer = null;
     }
+    // Drop any pending throttled tail patch and emit the throttle's
+    // end-of-stream summary log.
+    chunkThrottle.destroy();
   }
 }
 
@@ -1733,6 +1758,7 @@ function sendResponseChunk(
   sendFullMessages: boolean | undefined,
   /** Mutable ref tracking the renderer's last seen placeholder content. */
   lastSentRef: { value: string },
+  throttle: StreamingPatchThrottle,
 ) {
   if (sendFullMessages) {
     const currentMessages = [...chat.messages].filter(
@@ -1744,6 +1770,10 @@ function sendResponseChunk(
     if (placeholderMsg) {
       placeholderMsg.content = fullResponse;
     }
+    // Drop any pending throttled tail patch — sending it after this full
+    // messages-replacement would re-apply against the wrong base and
+    // truncate the renderer's content.
+    throttle.cancel();
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       messages: currentMessages,
@@ -1783,15 +1813,12 @@ function sendResponseChunk(
         hiddenMessageIds,
         true,
         lastSentRef,
+        throttle,
       );
       return;
     }
     lastSentRef.value = fullResponse;
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId,
-      streamingMessageId: placeholderMessageId,
-      streamingPatch: patch,
-    });
+    throttle.queue(patch);
   }
 }
 

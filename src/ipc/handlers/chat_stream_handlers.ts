@@ -47,11 +47,10 @@ import {
   dryRunSearchReplace,
   processFullResponseActions,
 } from "../processors/response_processor";
-import {
-  streamTestResponse,
-  getTestResponse,
-  noteAck,
-} from "./testing_chat_handlers";
+import { streamTestResponse, getTestResponse } from "./testing_chat_handlers";
+import { recordAckForChat } from "../utils/ack_backpressure";
+import { createStreamingPatchThrottle } from "../utils/streaming_patch_throttle";
+import type { StreamingPatchThrottle } from "../utils/streaming_patch_throttle";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
@@ -424,12 +423,13 @@ export function registerChatStreamHandlers() {
   createTypedHandler(
     chatContracts.responseAck,
     async (_event, { chatId, lastSeq }) => {
-      noteAck(chatId, lastSeq);
+      recordAckForChat(chatId, lastSeq);
     },
   );
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    let chunkThrottle: StreamingPatchThrottle | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -1445,6 +1445,20 @@ This conversation includes one or more image attachments. When the user uploads 
         // assuming pure appends.
         let lastSentContent = "";
 
+        chunkThrottle = createStreamingPatchThrottle({
+          chatId: req.chatId,
+          logTag: "ipc-throttle:stream",
+          send: (patch, chunkSeq) => {
+            safeSend(event.sender, "chat:response:chunk", {
+              chatId: req.chatId,
+              streamingMessageId: placeholderAssistantMessage.id,
+              streamingPatch: patch,
+              chunkSeq,
+            });
+          },
+        });
+        const throttle = chunkThrottle;
+
         const processResponseChunkUpdate = async ({
           fullResponse,
         }: {
@@ -1468,11 +1482,7 @@ This conversation includes one or more image attachments. When the user uploads 
           if (!patch) {
             return fullResponse;
           }
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
-          });
+          throttle.queue(patch);
           return fullResponse;
         };
 
@@ -2032,6 +2042,10 @@ ${problemReport.problems
             },
           });
 
+          // Drop any pending throttled tail patch — sending it after this
+          // full messages-replacement would re-apply against the wrong base
+          // and truncate the renderer's content.
+          chunkThrottle?.cancel();
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             messages: chat!.messages,
@@ -2075,6 +2089,11 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Drop any pending throttled tail patch and emit the throttle's
+      // end-of-stream summary log. Idempotent — agent paths early-return
+      // before the throttle is ever constructed.
+      chunkThrottle?.destroy();
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 
