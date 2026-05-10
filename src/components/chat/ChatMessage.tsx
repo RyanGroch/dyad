@@ -21,6 +21,7 @@ import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
 import { useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
+import { streamingBlocksByMessageIdAtom } from "@/atoms/chatAtoms";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
@@ -96,8 +97,19 @@ const ChatMessage = ({
     message.role === "assistant"
       ? stripCancelledResponseNotice(message.content)
       : "";
+  // The streaming parser trims message.content past the open-block
+  // boundary on every chunk, so right after a custom tag closes (parser
+  // in prose mode, no open block) content can transiently be empty even
+  // though the renderer still has committed closed blocks to show. Count
+  // those committed blocks as text so we don't flicker to the
+  // StreamingLoadingAnimation between iterations.
+  const streamingParserState = useAtomValue(streamingBlocksByMessageIdAtom).get(
+    message.id,
+  );
   const hasAssistantText =
-    message.role === "assistant" && assistantTextContent.length > 0;
+    message.role === "assistant" &&
+    (assistantTextContent.length > 0 ||
+      (streamingParserState?.blocks.length ?? 0) > 0);
   //handle copy chat
   const { copyMessageContent, copied } = useCopyToClipboard();
   const handleCopyFormatted = async () => {
