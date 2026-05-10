@@ -1454,6 +1454,14 @@ export async function handleLocalAgentStream(
       }
     }
 
+    // Authoritative final-state replacement before chat:response:end.
+    // Mirrors the chat_stream_handlers success path: sends the full messages
+    // array and cancels any pending throttled tail patch, so a patch still
+    // buffered in the 16ms window can't be dropped by the upcoming
+    // throttle.destroy() and leave the renderer's last assistant message
+    // truncated relative to the persisted DB content.
+    sendChunk(fullResponse, { fullMessages: true });
+
     // Send completion
     safeSend(event.sender, "chat:response:end", {
       chatId: req.chatId,

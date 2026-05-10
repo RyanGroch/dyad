@@ -85,11 +85,19 @@ export function createStreamingPatchThrottle(opts: {
   function flushPending(now: number): void {
     const patch = coalescer.drain();
     if (!patch) return;
-    lastSentAt = now;
     const seq = backpressure.markSent();
     try {
       send(patch, seq);
+      // Only commit lastSentAt after a successful send so a throw (rare
+      // with safeSend, possible with a custom callback) doesn't widen the
+      // throttle window's effective starting point.
+      lastSentAt = now;
     } catch (err) {
+      // Roll back the reservation: the renderer never received this seq
+      // and so will never ack it. Without this rollback, lastSentSeq stays
+      // ahead of what's actually in flight and backpressure (sent − acked)
+      // is permanently inflated for the rest of the stream.
+      backpressure.unmarkSent(seq);
       logger.warn(`[${logTag}] send failed chat=${chatId} seq=${seq}`, err);
     }
   }
@@ -142,6 +150,19 @@ export function createStreamingPatchThrottle(opts: {
       if (destroyed) return;
       destroyed = true;
       clearTrailing();
+      // Flush any final coalesced patch synchronously before tearing down so
+      // a slow renderer doesn't lose the last bytes that landed inside the
+      // throttle window or the backpressure buffer. This matters for the
+      // cancel path (the cancelStream IPC handler emits chat:response:end
+      // immediately, racing the trailing-edge timer) and as a safety net
+      // for the success path (callers should send a fullMessages-replacement
+      // first, but if they don't, we don't want to truncate). Callers that
+      // explicitly need to drop pending state — e.g. before a
+      // fullMessages-replacement, where a stale tail patch would re-apply
+      // against the wrong base — must call cancel() first.
+      if (coalescer.hasPending()) {
+        flushPending(Date.now());
+      }
       coalescer.reset();
       const { sent, acked, maxBacklog } = backpressure.stats();
       backpressure.destroy();
