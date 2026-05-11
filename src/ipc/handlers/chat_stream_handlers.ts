@@ -45,7 +45,10 @@ import {
 } from "../processors/response_processor";
 import { streamTestResponse, getTestResponse } from "./testing_chat_handlers";
 import { recordAckForChat } from "../utils/ack_backpressure";
-import { createStreamingPatchThrottle } from "../utils/streaming_patch_throttle";
+import {
+  createStreamingPatchThrottle,
+  destroyChunkThrottleForChat,
+} from "../utils/streaming_patch_throttle";
 import type { StreamingPatchThrottle } from "../utils/streaming_patch_throttle";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
@@ -1896,6 +1899,17 @@ ${problemReport.problems
     } else {
       logger.warn(`No active stream found for chat ${chatId}`);
     }
+
+    // Drain + tear down the active stream's chunk throttle BEFORE emitting
+    // chat:response:end. The renderer unregisters onChunk on end
+    // (createStreamClient in core.ts) and skips the DB resync when
+    // wasCancelled (useStreamChat.ts), so any tail patch still buffered in
+    // the 16ms throttle window or backpressure buffer would otherwise be
+    // silently lost — leaving the UI truncated relative to persisted DB
+    // content. Routed through the per-chatId registry so this works
+    // without the cancelStream handler holding a direct throttle ref.
+    // Idempotent — no-op if no active throttle is registered for the chat.
+    destroyChunkThrottleForChat(chatId);
 
     // Send the end event to the renderer with wasCancelled flag
     safeSend(event.sender, "chat:response:end", {
