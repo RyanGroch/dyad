@@ -1822,6 +1822,15 @@ ${problemReport.problems
             });
           }
 
+          // Drain + tear down the throttle BEFORE chat:response:end. The
+          // renderer unregisters its onChunk handler the moment it receives
+          // end (createStreamClient in core.ts), so any patch flushed after
+          // end is silently dropped. Idempotent — the finally below is just
+          // a safety net for paths that didn't reach this point. Here the
+          // earlier cancel() + fullMessages-replacement already emptied the
+          // coalescer, so destroy's flush is a no-op.
+          chunkThrottle?.destroy();
+
           // Signal that the stream has completed
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
@@ -1832,6 +1841,13 @@ ${problemReport.problems
             chatSummary,
           } satisfies ChatResponseEnd);
         } else {
+          // Drain + tear down the throttle BEFORE chat:response:end so the
+          // renderer (which unregisters onChunk on end) still applies any
+          // tail patch buffered in the 16ms throttle window. Without this,
+          // fast completions that finished inside the window lose their
+          // last bytes until a later DB resync.
+          chunkThrottle?.destroy();
+
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
             updatedFiles: false,
@@ -1844,6 +1860,10 @@ ${problemReport.problems
       return req.chatId;
     } catch (error) {
       logger.error("Error calling LLM:", error);
+      // Drain + tear down BEFORE chat:response:error: the renderer
+      // unregisters onChunk on error too, so a tail patch flushed
+      // afterwards by the finally would be dropped.
+      chunkThrottle?.destroy();
       safeSend(event.sender, "chat:response:error", {
         chatId: req.chatId,
         error: `Sorry, there was an error processing your request: ${error}`,

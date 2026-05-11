@@ -1462,6 +1462,12 @@ export async function handleLocalAgentStream(
     // truncated relative to the persisted DB content.
     sendChunk(fullResponse, { fullMessages: true });
 
+    // Drain + tear down the throttle BEFORE chat:response:end. The renderer
+    // unregisters onChunk on end (createStreamClient in core.ts), so a
+    // patch flushed afterwards is silently dropped. Idempotent — the
+    // finally below is just a safety net.
+    chunkThrottle?.destroy();
+
     // Send completion
     safeSend(event.sender, "chat:response:end", {
       chatId: req.chatId,
@@ -1491,6 +1497,10 @@ export async function handleLocalAgentStream(
     }
 
     logger.error("Local agent error:", error);
+    // Drain + tear down BEFORE chat:response:error so a tail patch buffered
+    // in the throttle window still reaches the renderer (which unregisters
+    // onChunk on error).
+    chunkThrottle?.destroy();
     safeSend(event.sender, "chat:response:error", {
       chatId: req.chatId,
       error: `Error: ${getErrorMessage(error)}`,
