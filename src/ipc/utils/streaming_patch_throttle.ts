@@ -36,6 +36,24 @@ export interface StreamingPatchThrottle {
   destroy(emitSummary?: boolean): void;
 }
 
+// Per-chat registry so out-of-band callers (currently `cancelStream`) can
+// flush+tear down whichever active throttle owns a given chatId. Without
+// this, `cancelStream` would emit `chat:response:end` while the main
+// stream's throttle still has a buffered tail patch — and the renderer
+// (which unregisters `onChunk` on end and skips DB resync when
+// `wasCancelled`) would never see those final bytes.
+const chunkThrottlesByChatId = new Map<number, StreamingPatchThrottle>();
+
+/**
+ * Flush + tear down the active throttle for `chatId`, if any. Safe to call
+ * when no throttle is registered (no-op). Used by the cancelStream IPC
+ * handler to drain pending patches synchronously *before* it emits
+ * `chat:response:end`.
+ */
+export function destroyChunkThrottleForChat(chatId: number): void {
+  chunkThrottlesByChatId.get(chatId)?.destroy();
+}
+
 /**
  * Throttled, backpressured sender for `chat:response:chunk` tail patches.
  *
@@ -127,7 +145,13 @@ export function createStreamingPatchThrottle(opts: {
     if (coalescer.hasPending()) scheduleFlush();
   });
 
-  return {
+  // Replace any pre-existing instance for this chat — two streams shouldn't
+  // overlap, but if one leaks (test teardown, crash before destroy) the
+  // new one should own the registry slot so cancelStream routes correctly.
+  const prior = chunkThrottlesByChatId.get(chatId);
+  if (prior) prior.destroy();
+
+  const handle: StreamingPatchThrottle = {
     queue(patch) {
       if (destroyed) return;
       coalescer.add(patch);
@@ -171,6 +195,12 @@ export function createStreamingPatchThrottle(opts: {
           `[${logTag}] summary chat=${chatId} sent=${sent} acked=${acked} maxBacklog=${maxBacklog} throttleMs=${throttleMs} threshold=${threshold}`,
         );
       }
+      if (chunkThrottlesByChatId.get(chatId) === handle) {
+        chunkThrottlesByChatId.delete(chatId);
+      }
     },
   };
+
+  chunkThrottlesByChatId.set(chatId, handle);
+  return handle;
 }
