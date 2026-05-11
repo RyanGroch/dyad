@@ -16,6 +16,7 @@ import {
   Info,
   Bot,
   Ban,
+  Bug,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
@@ -131,6 +132,10 @@ const ChatMessage = ({
     return null;
   }, [messageVersion, liveVersions]);
 
+  // Debug-only: doubles the rendered assistant content tree on every click.
+  // Used to deliberately blow up the renderer for crash-telemetry testing.
+  const [duplicationFactor, setDuplicationFactor] = useState(1);
+
   // handle copy request id
   const [copiedRequestId, setCopiedRequestId] = useState(false);
   const copiedRequestIdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -197,7 +202,12 @@ const ChatMessage = ({
               >
                 {message.role === "assistant" ? (
                   <>
-                    <DyadMarkdownParser content={assistantTextContent} />
+                    {Array.from({ length: duplicationFactor }).map((_, i) => (
+                      <DyadMarkdownParser
+                        key={i}
+                        content={assistantTextContent}
+                      />
+                    ))}
                     {isLastMessage && isStreaming && (
                       <StreamingLoadingAnimation variant="streaming" />
                     )}
@@ -214,28 +224,52 @@ const ChatMessage = ({
                 } text-xs`}
               >
                 {hasAssistantText && !isStreaming && (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          data-testid="copy-message-button"
-                          onClick={handleCopyFormatted}
-                          aria-label="Copy"
-                          className="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors duration-200 cursor-pointer"
-                        />
-                      }
-                    >
-                      {copied ? (
-                        <Check className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <Copy className="h-4 w-4" />
-                      )}
-                      <span className="hidden sm:inline"></span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {copied ? "Copied!" : "Copy"}
-                    </TooltipContent>
-                  </Tooltip>
+                  <div className="flex items-center">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            data-testid="copy-message-button"
+                            onClick={handleCopyFormatted}
+                            aria-label="Copy"
+                            className="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors duration-200 cursor-pointer"
+                          />
+                        }
+                      >
+                        {copied ? (
+                          <Check className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <Copy className="h-4 w-4" />
+                        )}
+                        <span className="hidden sm:inline"></span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {copied ? "Copied!" : "Copy"}
+                      </TooltipContent>
+                    </Tooltip>
+                    {/* Debug: double the rendered response tree each click. */}
+                    {/* Used to crash the renderer for testing crash telemetry. */}
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            data-testid="double-response-button"
+                            onClick={() => setDuplicationFactor((n) => n * 2)}
+                            aria-label="Double response (debug)"
+                            className="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors duration-200 cursor-pointer"
+                          />
+                        }
+                      >
+                        <Bug className="h-4 w-4" />
+                        <span className="hidden sm:inline">
+                          ×{duplicationFactor}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Double response (debug — crashes renderer)
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
                 )}
                 <div className="flex flex-wrap gap-2">
                   {message.approvalState && (
