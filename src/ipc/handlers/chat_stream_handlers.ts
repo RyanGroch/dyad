@@ -619,6 +619,7 @@ ${componentSnippet}
       safeSend(event.sender, "chat:response:chunk", {
         chatId: req.chatId,
         messages: updatedChat.messages,
+        streamingMessageId: placeholderAssistantMessage.id,
       });
 
       let fullResponse = "";
@@ -1815,6 +1816,7 @@ ${problemReport.problems
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             messages: chat!.messages,
+            streamingMessageId: placeholderAssistantMessage.id,
           });
 
           if (status.error) {
