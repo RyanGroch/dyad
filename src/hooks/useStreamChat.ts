@@ -301,24 +301,19 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
-                // Drop parser states / dropped-byte counters for messages
-                // that aren't in the new payload; the renderer reparses
-                // replaced messages one-shot.
-                const validIds = new Set(updatedMessages.map((m) => m.id));
-                const pruneByMessageId = <V>(prev: Map<number, V>) => {
-                  if (prev.size === 0) return prev;
-                  let changed = false;
-                  const next = new Map(prev);
-                  for (const id of prev.keys()) {
-                    if (!validIds.has(id)) {
-                      next.delete(id);
-                      changed = true;
-                    }
-                  }
-                  return changed ? next : prev;
-                };
-                setStreamingBlocksById(pruneByMessageId);
-                setContentBytesDroppedById(pruneByMessageId);
+                // A fullMessages payload is authoritative: it can REPLACE the
+                // content of messages that are still in the payload (mid-stream
+                // compaction in local_agent_handler does this). Cached parser
+                // state / dropped-byte counters keyed by those ids are now
+                // stale and would mis-splice the next streaming patch. Clear
+                // both maps wholesale — the renderer falls back to one-shot
+                // parseFullMessage until the next patch rebuilds state from
+                // cursor 0 / dropped 0, which lines up with the server's
+                // post-send lastSentRef = fullResponse baseline.
+                const clearAll = <V>(prev: Map<number, V>) =>
+                  prev.size === 0 ? prev : new Map<number, V>();
+                setStreamingBlocksById(clearAll);
+                setContentBytesDroppedById(clearAll);
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
