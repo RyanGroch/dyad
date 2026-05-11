@@ -26,7 +26,10 @@ testSkipIfWindows(
     const acceptButton = po.page.getByRole("button", { name: "Accept Plan" });
     await expect(acceptButton).toBeVisible({ timeout: Timeout.MEDIUM });
 
-    // Accept the plan (plans are now always saved to .dyad/plans/)
+    // The "We've switched you to a new chat" sonner toast at the bottom-right
+    // can overlap the Accept Plan button. Dismiss it so a normal click works
+    // and Playwright's actionability checks are honored.
+    await po.toastNotifications.dismissAllToasts();
     await acceptButton.click();
 
     // Wait for navigation to a different chat
