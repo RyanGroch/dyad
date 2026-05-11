@@ -43,11 +43,13 @@ import {
   dryRunSearchReplace,
   processFullResponseActions,
 } from "../processors/response_processor";
+import { streamTestResponse, getTestResponse } from "./testing_chat_handlers";
+import { recordAckForChat } from "../utils/ack_backpressure";
 import {
-  streamTestResponse,
-  getTestResponse,
-  noteAck,
-} from "./testing_chat_handlers";
+  createStreamingPatchThrottle,
+  destroyChunkThrottleForChat,
+} from "../utils/streaming_patch_throttle";
+import type { StreamingPatchThrottle } from "../utils/streaming_patch_throttle";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
@@ -250,12 +252,13 @@ export function registerChatStreamHandlers() {
   createTypedHandler(
     chatContracts.responseAck,
     async (_event, { chatId, lastSeq }) => {
-      noteAck(chatId, lastSeq);
+      recordAckForChat(chatId, lastSeq);
     },
   );
 
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
     let attachmentPaths: string[] = [];
+    let chunkThrottle: StreamingPatchThrottle | null = null;
     try {
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
@@ -1213,6 +1216,20 @@ This conversation includes one or more image attachments. When the user uploads 
         // assuming pure appends.
         let lastSentContent = "";
 
+        chunkThrottle = createStreamingPatchThrottle({
+          chatId: req.chatId,
+          logTag: "ipc-throttle:stream",
+          send: (patch, chunkSeq) => {
+            safeSend(event.sender, "chat:response:chunk", {
+              chatId: req.chatId,
+              streamingMessageId: placeholderAssistantMessage.id,
+              streamingPatch: patch,
+              chunkSeq,
+            });
+          },
+        });
+        const throttle = chunkThrottle;
+
         const processResponseChunkUpdate = async ({
           fullResponse,
         }: {
@@ -1236,11 +1253,7 @@ This conversation includes one or more image attachments. When the user uploads 
           if (!patch) {
             return fullResponse;
           }
-          safeSend(event.sender, "chat:response:chunk", {
-            chatId: req.chatId,
-            streamingMessageId: placeholderAssistantMessage.id,
-            streamingPatch: patch,
-          });
+          throttle.queue(patch);
           return fullResponse;
         };
 
@@ -1795,6 +1808,10 @@ ${problemReport.problems
             },
           });
 
+          // Drop any pending throttled tail patch — sending it after this
+          // full messages-replacement would re-apply against the wrong base
+          // and truncate the renderer's content.
+          chunkThrottle?.cancel();
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             messages: chat!.messages,
@@ -1808,6 +1825,15 @@ ${problemReport.problems
             });
           }
 
+          // Drain + tear down the throttle BEFORE chat:response:end. The
+          // renderer unregisters its onChunk handler the moment it receives
+          // end (createStreamClient in core.ts), so any patch flushed after
+          // end is silently dropped. Idempotent — the finally below is just
+          // a safety net for paths that didn't reach this point. Here the
+          // earlier cancel() + fullMessages-replacement already emptied the
+          // coalescer, so destroy's flush is a no-op.
+          chunkThrottle?.destroy();
+
           // Signal that the stream has completed
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
@@ -1818,6 +1844,13 @@ ${problemReport.problems
             chatSummary,
           } satisfies ChatResponseEnd);
         } else {
+          // Drain + tear down the throttle BEFORE chat:response:end so the
+          // renderer (which unregisters onChunk on end) still applies any
+          // tail patch buffered in the 16ms throttle window. Without this,
+          // fast completions that finished inside the window lose their
+          // last bytes until a later DB resync.
+          chunkThrottle?.destroy();
+
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
             updatedFiles: false,
@@ -1830,6 +1863,10 @@ ${problemReport.problems
       return req.chatId;
     } catch (error) {
       logger.error("Error calling LLM:", error);
+      // Drain + tear down BEFORE chat:response:error: the renderer
+      // unregisters onChunk on error too, so a tail patch flushed
+      // afterwards by the finally would be dropped.
+      chunkThrottle?.destroy();
       safeSend(event.sender, "chat:response:error", {
         chatId: req.chatId,
         error: `Sorry, there was an error processing your request: ${error}`,
@@ -1837,6 +1874,11 @@ ${problemReport.problems
 
       return "error";
     } finally {
+      // Drop any pending throttled tail patch and emit the throttle's
+      // end-of-stream summary log. Idempotent — agent paths early-return
+      // before the throttle is ever constructed.
+      chunkThrottle?.destroy();
+
       // Clean up the abort controller
       activeStreams.delete(req.chatId);
 
@@ -1857,6 +1899,17 @@ ${problemReport.problems
     } else {
       logger.warn(`No active stream found for chat ${chatId}`);
     }
+
+    // Drain + tear down the active stream's chunk throttle BEFORE emitting
+    // chat:response:end. The renderer unregisters onChunk on end
+    // (createStreamClient in core.ts) and skips the DB resync when
+    // wasCancelled (useStreamChat.ts), so any tail patch still buffered in
+    // the 16ms throttle window or backpressure buffer would otherwise be
+    // silently lost — leaving the UI truncated relative to persisted DB
+    // content. Routed through the per-chatId registry so this works
+    // without the cancelStream handler holding a direct throttle ref.
+    // Idempotent — no-op if no active throttle is registered for the chat.
+    destroyChunkThrottleForChat(chatId);
 
     // Send the end event to the renderer with wasCancelled flag
     safeSend(event.sender, "chat:response:end", {

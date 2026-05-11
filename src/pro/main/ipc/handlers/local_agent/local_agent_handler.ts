@@ -102,6 +102,10 @@ import {
 } from "./retry_replay_utils";
 import { setChatSummaryTool } from "./tools/set_chat_summary";
 import { computeStreamingPatch } from "@/ipc/utils/stream_text_utils";
+import {
+  createStreamingPatchThrottle,
+  type StreamingPatchThrottle,
+} from "@/ipc/utils/streaming_patch_throttle";
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
@@ -364,6 +368,7 @@ export async function handleLocalAgentStream(
       hiddenMessageIdsForStreaming,
       fullMessages,
       lastSentRef,
+      chunkThrottle,
     );
   let postMidTurnCompactionStartStep: number | null = null;
 
@@ -404,6 +409,14 @@ export async function handleLocalAgentStream(
     });
     return false;
   }
+
+  // Throttle outbound tail-patch IPC so the renderer isn't deluged on fast
+  // streams. Declared null here and constructed inside the main try/finally
+  // below so a throw in the pre-stream setup (loadChat, "Chat not found",
+  // pending compaction) can't leak the registry entry / pending setTimeout.
+  // sendResponseChunk tolerates a null throttle for the pre-creation
+  // full-messages sends (initial empty placeholder, mid-compaction preview).
+  let chunkThrottle: StreamingPatchThrottle | null = null;
 
   const loadChat = async () =>
     db.query.chats.findFirst({
@@ -526,6 +539,22 @@ export async function handleLocalAgentStream(
   const warningMessages: string[] = [];
 
   try {
+    // Allocate the chunk throttle inside the try so the matching finally
+    // below always destroys it. Pre-stream setup (loadChat, compaction) ran
+    // above without a throttle to keep the leak window at zero.
+    chunkThrottle = createStreamingPatchThrottle({
+      chatId: req.chatId,
+      logTag: "ipc-throttle:agent",
+      send: (patch, chunkSeq) => {
+        safeSend(event.sender, "chat:response:chunk", {
+          chatId: req.chatId,
+          streamingMessageId: placeholderMessageId,
+          streamingPatch: patch,
+          chunkSeq,
+        });
+      },
+    });
+
     // Get model client
     const { modelClient } = await getModelClient(
       settings.selectedModel,
@@ -1425,6 +1454,20 @@ export async function handleLocalAgentStream(
       }
     }
 
+    // Authoritative final-state replacement before chat:response:end.
+    // Mirrors the chat_stream_handlers success path: sends the full messages
+    // array and cancels any pending throttled tail patch, so a patch still
+    // buffered in the 16ms window can't be dropped by the upcoming
+    // throttle.destroy() and leave the renderer's last assistant message
+    // truncated relative to the persisted DB content.
+    sendChunk(fullResponse, { fullMessages: true });
+
+    // Drain + tear down the throttle BEFORE chat:response:end. The renderer
+    // unregisters onChunk on end (createStreamClient in core.ts), so a
+    // patch flushed afterwards is silently dropped. Idempotent — the
+    // finally below is just a safety net.
+    chunkThrottle?.destroy();
+
     // Send completion
     safeSend(event.sender, "chat:response:end", {
       chatId: req.chatId,
@@ -1454,6 +1497,10 @@ export async function handleLocalAgentStream(
     }
 
     logger.error("Local agent error:", error);
+    // Drain + tear down BEFORE chat:response:error so a tail patch buffered
+    // in the throttle window still reaches the renderer (which unregisters
+    // onChunk on error).
+    chunkThrottle?.destroy();
     safeSend(event.sender, "chat:response:error", {
       chatId: req.chatId,
       error: `Error: ${getErrorMessage(error)}`,
@@ -1461,6 +1508,10 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // Drop any pending throttled tail patch and emit the throttle's
+    // end-of-stream summary log.
+    chunkThrottle?.destroy();
   }
 }
 
@@ -1591,6 +1642,12 @@ function sendResponseChunk(
   sendFullMessages: boolean | undefined,
   /** Mutable ref tracking the renderer's last seen placeholder content. */
   lastSentRef: { value: string },
+  /**
+   * Null when called before the throttle is constructed (initial placeholder
+   * send and pre-stream compaction preview). Both pre-construction sites
+   * use sendFullMessages, so there's no pending tail patch to cancel.
+   */
+  throttle: StreamingPatchThrottle | null,
 ) {
   if (sendFullMessages) {
     const currentMessages = [...chat.messages].filter(
@@ -1602,6 +1659,10 @@ function sendResponseChunk(
     if (placeholderMsg) {
       placeholderMsg.content = fullResponse;
     }
+    // Drop any pending throttled tail patch — sending it after this full
+    // messages-replacement would re-apply against the wrong base and
+    // truncate the renderer's content.
+    throttle?.cancel();
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       messages: currentMessages,
@@ -1615,11 +1676,7 @@ function sendResponseChunk(
     if (!patch) {
       return;
     }
-    safeSend(event.sender, "chat:response:chunk", {
-      chatId,
-      streamingMessageId: placeholderMessageId,
-      streamingPatch: patch,
-    });
+    throttle?.queue(patch);
   }
 }
 
