@@ -619,9 +619,12 @@
       "connectedToProject": "This app is connected to the {{provider}} project:",
       "continue": "Continue",
       "continuing": "Continuing...",
+      "completePrompt": "Complete the {{provider}} connection above to continue.",
+      "next": "Next",
+      "back": "Back",
       "chooseProvider": "Choose a database provider",
-      "setUpProvider": "Set up {{provider}}",
-      "setUpDatabase": "Set up database",
+      "configureInPanelTitle": "Finish setup in the Configure panel",
+      "configureInPanelDescription": "Complete the {{provider}} setup in the panel on the right, then come back here.",
       "experimental": "Experimental",
       "providers": {
         "supabase": {

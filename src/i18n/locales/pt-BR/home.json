@@ -616,9 +616,12 @@
       "connectedToProject": "Este app está conectado ao projeto {{provider}}:",
       "continue": "Continuar",
       "continuing": "Continuando...",
+      "completePrompt": "Conclua a conexão com o {{provider}} acima para continuar.",
+      "next": "Próximo",
+      "back": "Voltar",
       "chooseProvider": "Escolha um provedor de banco de dados",
-      "setUpProvider": "Configurar {{provider}}",
-      "setUpDatabase": "Configurar banco de dados",
+      "configureInPanelTitle": "Conclua a configuração no painel Configurar",
+      "configureInPanelDescription": "Conclua a configuração do {{provider}} no painel à direita e depois volte aqui.",
       "experimental": "Experimental",
       "providers": {
         "supabase": {

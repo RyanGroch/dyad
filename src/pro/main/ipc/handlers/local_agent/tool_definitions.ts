@@ -153,69 +153,6 @@ export function clearPendingConsentsForChat(chatId: number): void {
   }
 }
 
-// ============================================================================
-// Questionnaire Response Management
-// ============================================================================
-
-interface PendingQuestionnaireEntry {
-  chatId: number;
-  resolve: (answers: Record<string, string> | null) => void;
-}
-
-const pendingQuestionnaireResolvers = new Map<
-  string,
-  PendingQuestionnaireEntry
->();
-
-const QUESTIONNAIRE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
-export function waitForQuestionnaireResponse(
-  requestId: string,
-  chatId: number,
-): Promise<Record<string, string> | null> {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      const entry = pendingQuestionnaireResolvers.get(requestId);
-      if (entry) {
-        pendingQuestionnaireResolvers.delete(requestId);
-        entry.resolve(null);
-      }
-    }, QUESTIONNAIRE_TIMEOUT_MS);
-
-    pendingQuestionnaireResolvers.set(requestId, {
-      chatId,
-      resolve: (answers) => {
-        clearTimeout(timeout);
-        resolve(answers);
-      },
-    });
-  });
-}
-
-export function resolveQuestionnaireResponse(
-  requestId: string,
-  answers: Record<string, string> | null,
-) {
-  const entry = pendingQuestionnaireResolvers.get(requestId);
-  if (entry) {
-    pendingQuestionnaireResolvers.delete(requestId);
-    entry.resolve(answers);
-  }
-}
-
-/**
- * Clean up all pending questionnaire requests for a given chat.
- * Called when a stream is cancelled/aborted to prevent orphaned promises.
- */
-export function clearPendingQuestionnairesForChat(chatId: number): void {
-  for (const [requestId, entry] of pendingQuestionnaireResolvers) {
-    if (entry.chatId === chatId) {
-      pendingQuestionnaireResolvers.delete(requestId);
-      entry.resolve(null);
-    }
-  }
-}
-
 export function getDefaultConsent(toolName: AgentToolName): AgentToolConsent {
   const tool = TOOL_DEFINITIONS.find((t) => t.name === toolName);
   return tool?.defaultConsent ?? "ask";
