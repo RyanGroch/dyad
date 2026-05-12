@@ -128,17 +128,42 @@ export const StreamingPatchSchema = z.object({
 export type StreamingPatch = z.infer<typeof StreamingPatchSchema>;
 
 /**
+ * Schema for a transient tool-input XML preview.
+ *
+ * Pro/Agent v2 tools stream their args as JSON deltas; the handler rebuilds
+ * a complete XML representation per delta (see `buildXml`). That output is
+ * not append-only — closing quotes and brackets shift as attribute values
+ * grow — so it cannot be expressed as a tail-only `StreamingPatch` against
+ * `message.content`. Routing it through the patch protocol forces non-tail
+ * escalations to `fullMessages` sends, which are expensive on long turns.
+ *
+ * Instead, previews ride a dedicated field. The renderer overlays the
+ * preview after the message's parsed blocks and clears it when the field
+ * is absent / empty (e.g. `onXmlComplete` commits the finalized XML into
+ * `fullResponse` and emits an empty preview).
+ */
+export const StreamingPreviewSchema = z.object({
+  messageId: z.number(),
+  content: z.string(),
+});
+export type StreamingPreview = z.infer<typeof StreamingPreviewSchema>;
+
+/**
  * Schema for chat response chunk event.
  *
- * Supports two modes:
- * 1. Full update: `messages` is set with the complete messages array
- * 2. Incremental tail patch: `streamingMessageId` + `streamingPatch`
+ * Three independent update modes that may appear separately or alongside
+ * each other:
+ * 1. Full update: `messages` set with the complete messages array.
+ * 2. Incremental tail patch: `streamingMessageId` + `streamingPatch`.
+ * 3. Tool-input XML preview overlay: `streamingPreview`. Doesn't touch
+ *    `message.content`; rendered as a sidecar block on the frontend.
  */
 export const ChatResponseChunkSchema = z.object({
   chatId: z.number(),
   messages: z.array(MessageSchema).optional(),
   streamingMessageId: z.number().optional(),
   streamingPatch: StreamingPatchSchema.optional(),
+  streamingPreview: StreamingPreviewSchema.optional(),
   // Monotonic chunk sequence used for ack-based backpressure on the canned
   // test streaming path. Real LLM streams omit this field; the renderer
   // only acks when chunkSeq is present.
