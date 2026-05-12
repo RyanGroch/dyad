@@ -290,6 +290,11 @@ export function useStreamChat({
                 });
               }
 
+              // Ack-based backpressure: only ack chunks the renderer
+              // actually integrated. Acking a chunk whose patch failed would
+              // release main-process backpressure while the renderer base is
+              // still stale (resync in flight), letting the producer drain
+              // further patches against a base that can't accept them.
               if (updatedMessages) {
                 // Full messages update (initial load, post-compaction, etc.)
                 setMessagesById((prev) => {
@@ -331,6 +336,7 @@ export function useStreamChat({
                         >(),
                   );
                 }
+                recordChunkApplied(chatId, chunkSeq);
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
@@ -361,6 +367,7 @@ export function useStreamChat({
                     next.set(streamingMessageId, nextState);
                     return next;
                   });
+                  recordChunkApplied(chatId, chunkSeq);
                 } else {
                   triggerResync(chatId, setMessagesById, store);
                   // Drop parser state for this message so the renderer
@@ -373,11 +380,6 @@ export function useStreamChat({
                   });
                 }
               }
-
-              // Ack-based backpressure: chunks carrying chunkSeq are acked
-              // on a throttled cadence. Both the canned test stream and the
-              // production throttle path use this.
-              recordChunkApplied(chatId, chunkSeq);
             },
             onEnd: (response: ChatResponseEnd) => {
               pendingStreamChatIds.delete(chatId);
