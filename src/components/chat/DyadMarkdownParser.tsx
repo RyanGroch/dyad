@@ -22,6 +22,7 @@ import {
   isStreamingByIdAtom,
   selectedChatIdAtom,
   streamingBlocksByMessageIdAtom,
+  streamingPreviewByMessageIdAtom,
 } from "@/atoms/chatAtoms";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
@@ -123,6 +124,18 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const parserState =
     messageId !== undefined ? streamingStates.get(messageId) : undefined;
 
+  // Sidecar tool-input XML preview (Pro/Agent v2). Lives outside the
+  // message's parsed-block tree so the patch protocol can stay strictly
+  // append-only — buildXml output rewrites its prefix per JSON delta and
+  // would otherwise force escalation to fullMessages.
+  const previewStates = useAtomValue(streamingPreviewByMessageIdAtom);
+  const previewXml =
+    messageId !== undefined ? previewStates.get(messageId) : undefined;
+  const previewBlocks = useMemo<Block[] | null>(() => {
+    if (!previewXml) return null;
+    return parseFullMessage(previewXml).blocks;
+  }, [previewXml]);
+
   // While streaming, closed blocks live in parserState.blocks (immutable-
   // appended on commit) and the open block comes from getOpenBlock. The
   // closed-blocks array ref is stable across chunks that don't close a
@@ -176,6 +189,13 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
         ))
       ) : null}
       {openBlock ? renderBlock(openBlock, isStreaming) : null}
+      {previewBlocks
+        ? previewBlocks.map((block) => (
+            <React.Fragment key={`preview-${block.id}`}>
+              {renderBlock(block, isStreaming)}
+            </React.Fragment>
+          ))
+        : null}
       {showFixAll && (
         <div className="mt-3 w-full flex">
           <FixAllErrorsButton errorMessages={errorMessages} chatId={chatId!} />

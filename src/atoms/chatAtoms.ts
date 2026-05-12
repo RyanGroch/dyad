@@ -284,3 +284,13 @@ export const streamingBlocksByMessageIdAtom = atom<Map<number, ParserState>>(
 export const contentBytesDroppedByMessageIdAtom = atom<Map<number, number>>(
   new Map(),
 );
+
+// Sidecar overlay for tool-input XML preview during Pro/Agent v2 streaming.
+// Lives outside message.content so the patch protocol stays strictly
+// append-only — buildXml output rewrites its prefix each JSON delta, which
+// would otherwise force non-tail patch escalation to fullMessages. Cleared
+// when the server sends an empty preview (onXmlComplete commits the
+// finalized XML into fullResponse) or on stream end.
+export const streamingPreviewByMessageIdAtom = atom<Map<number, string>>(
+  new Map(),
+);

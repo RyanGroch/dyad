@@ -34,6 +34,9 @@ export function mergeResyncMessages(
     ) {
       return live;
     }
+    console.warn(
+      `[stream-debug] merge-resync DB-wins msg=${dbMsg.id} dbLen=${dbContent.length} liveLen=${liveContent.length} liveStartsWithDb=${liveContent.startsWith(dbContent)}`,
+    );
     return dbMsg;
   });
 }
