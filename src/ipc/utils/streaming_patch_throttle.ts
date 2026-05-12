@@ -33,7 +33,7 @@ export interface StreamingPatchThrottle {
   cancel(): void;
 
   /** Tear down and emit a one-shot end-of-stream summary. Idempotent. */
-  destroy(emitSummary?: boolean): void;
+  destroy(): void;
 }
 
 // Per-chat registry so out-of-band callers (currently `cancelStream`) can
@@ -103,21 +103,8 @@ export function createStreamingPatchThrottle(opts: {
   function flushPending(now: number): void {
     const patch = coalescer.drain();
     if (!patch) return;
-    const seq = backpressure.markSent();
-    try {
-      send(patch, seq);
-      // Only commit lastSentAt after a successful send so a throw (rare
-      // with safeSend, possible with a custom callback) doesn't widen the
-      // throttle window's effective starting point.
-      lastSentAt = now;
-    } catch (err) {
-      // Roll back the reservation: the renderer never received this seq
-      // and so will never ack it. Without this rollback, lastSentSeq stays
-      // ahead of what's actually in flight and backpressure (sent − acked)
-      // is permanently inflated for the rest of the stream.
-      backpressure.unmarkSent(seq);
-      logger.warn(`[${logTag}] send failed chat=${chatId} seq=${seq}`, err);
-    }
+    send(patch, backpressure.markSent());
+    lastSentAt = now;
   }
 
   /**
@@ -170,7 +157,7 @@ export function createStreamingPatchThrottle(opts: {
       coalescer.reset();
     },
 
-    destroy(emitSummary = true) {
+    destroy() {
       if (destroyed) return;
       destroyed = true;
       clearTrailing();
@@ -190,7 +177,7 @@ export function createStreamingPatchThrottle(opts: {
       coalescer.reset();
       const { sent, acked, maxBacklog } = backpressure.stats();
       backpressure.destroy();
-      if (emitSummary && sent > 0) {
+      if (sent > 0) {
         logger.log(
           `[${logTag}] summary chat=${chatId} sent=${sent} acked=${acked} maxBacklog=${maxBacklog} throttleMs=${throttleMs} threshold=${threshold}`,
         );

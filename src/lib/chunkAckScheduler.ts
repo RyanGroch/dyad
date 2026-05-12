@@ -32,8 +32,10 @@ export function recordChunkApplied(
     timerByChatId.delete(chatId);
     const lastSeq = latestSeqByChatId.get(chatId);
     if (lastSeq === undefined) return;
-    void ipc.chat.responseAck({ chatId, lastSeq }).catch(() => {
-      // Acks are advisory; main has no retry path, swallow errors.
+    void ipc.chat.responseAck({ chatId, lastSeq }).catch((err) => {
+      // Acks are advisory; main has no retry path. Log so a misbehaving
+      // IPC channel is visible in devtools instead of failing silently.
+      console.error("chat.responseAck failed", { chatId, lastSeq, err });
     });
   }, ACK_THROTTLE_MS);
   timerByChatId.set(chatId, timer);

@@ -25,17 +25,6 @@ export interface AckBackpressure {
   /** Update the highest acked seq. Called by the IPC ack handler. */
   recordAck(seq: number): void;
 
-  /**
-   * Roll back a `markSent()` whose subsequent `send` threw. Only undoes the
-   * most recent reservation, and only if no later `markSent` followed and
-   * the seq has not been acked. No-op otherwise — this is opportunistic
-   * cleanup, not a generic undo. Without it a synchronous send failure
-   * leaves `lastSentSeq` ahead of what the renderer ever received, so the
-   * renderer can never ack that seq and backpressure stays inflated for
-   * the rest of the stream.
-   */
-  unmarkSent(seq: number): void;
-
   /** True when in-flight count (sent − acked) is at or above threshold. */
   isHeld(): boolean;
 
@@ -101,18 +90,6 @@ export function createAckBackpressure(opts: {
       const isHeldNow = lastSentSeq - lastAckedSeq >= threshold;
       if (wasHeld && !isHeldNow) {
         for (const cb of resumeCallbacks) cb();
-      }
-    },
-
-    unmarkSent(seq) {
-      if (destroyed) return;
-      // Only roll back the most recent reservation, and only when nothing
-      // has acked it. If another markSent has already followed, the
-      // monotonic seq invariant we'd need to repair is non-local — leave
-      // it alone.
-      if (lastSentSeq === seq && lastAckedSeq < seq) {
-        lastSentSeq = seq - 1;
-        nextSeq = seq;
       }
     },
 
