@@ -110,6 +110,10 @@ const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
 const MAX_TERMINATED_STREAM_RETRIES = 3;
 const STREAM_RETRY_BASE_DELAY_MS = 400;
+// IPC send rate cap for in-progress tool XML preview overlays. Each call
+// to onXmlStream rewrites the buffered XML prefix; without throttling the
+// renderer receives one IPC per JSON delta.
+const XML_STREAM_THROTTLE_MS = 50;
 const STREAM_CONTINUE_MESSAGE =
   "[System] Your previous response stream was interrupted by a transient network error. Continue from exactly where you left off and do not repeat text that has already been sent.";
 
@@ -382,6 +386,9 @@ export async function handleLocalAgentStream(
     settings.maxToolCallSteps ?? DEFAULT_MAX_TOOL_CALL_STEPS;
   let fullResponse = "";
   let streamingPreview = ""; // Temporary preview for current tool, not persisted
+  // Throttle state for onXmlStream. Resets per-stream.
+  let lastXmlEmittedAt = 0;
+  let pendingXmlEmitTimer: NodeJS.Timeout | null = null;
   // Tracks what was last sent to the renderer for the placeholder
   // assistant message so we can emit only the tail diff. Updated by both
   // streaming-patch sends and full-messages-replacement sends so that the
@@ -409,6 +416,18 @@ export async function handleLocalAgentStream(
       fullMessages,
       lastSentRef,
     );
+  // Sidecar preview send — independent of the patch protocol. The renderer
+  // overlays this string after the message's parsed blocks and clears the
+  // overlay when content is empty. Used for tool-input XML preview.
+  const sendPreview = (content: string) => {
+    safeSend(event.sender, "chat:response:chunk", {
+      chatId: req.chatId,
+      streamingPreview: {
+        messageId: placeholderMessageId,
+        content,
+      },
+    });
+  };
   let postMidTurnCompactionStartStep: number | null = null;
 
   const appendInlineCompactionToTurn = async (
@@ -503,9 +522,12 @@ export async function handleLocalAgentStream(
       (accumulatedSummary: string) => {
         // Stream compaction summary to the frontend in real-time.
         // During mid-turn compaction, keep already streamed content visible.
+        // streamingPreview rides a separate overlay channel — do NOT mix it
+        // into message.content here; the renderer continues to show its
+        // preview overlay alongside this compaction-progress block.
         const compactionPreview = `<dyad-compaction title="Compacting conversation">\n${escapeXmlContent(accumulatedSummary)}\n</dyad-compaction>`;
         const previewContent = options?.showOnTopOfCurrentResponse
-          ? `${fullResponse}${streamingPreview ? streamingPreview : ""}\n${compactionPreview}`
+          ? `${fullResponse}\n${compactionPreview}`
           : compactionPreview;
         sendChunk(previewContent, { fullMessages: true });
       },
@@ -550,7 +572,9 @@ export async function handleLocalAgentStream(
     }
 
     if (options?.showOnTopOfCurrentResponse) {
-      sendChunk(fullResponse + streamingPreview, { fullMessages: true });
+      // streamingPreview rides the overlay channel; don't double-render it
+      // by mixing into message.content here.
+      sendChunk(fullResponse, { fullMessages: true });
     }
 
     return compactionResult.success;
@@ -617,17 +641,49 @@ export async function handleLocalAgentStream(
       fileEditTracker,
       isDyadPro: isDyadProEnabled(settings),
       onXmlStream: (accumulatedXml: string) => {
-        // Stream accumulated XML to UI without persisting
+        // Stream the in-progress tool XML as a sidecar preview overlay.
+        // Does NOT enter `message.content` or `fullResponse` — the patch
+        // protocol stays strictly append-only. buildXml output (which
+        // rewrites the prefix every JSON delta as attribute values grow)
+        // therefore can't perturb the streaming-patch base. Preview chunks
+        // are throttled because each one is a renderer state write.
         streamingPreview = accumulatedXml;
-        sendChunk(fullResponse + streamingPreview);
+        const now = Date.now();
+        const elapsed = now - lastXmlEmittedAt;
+        if (elapsed >= XML_STREAM_THROTTLE_MS) {
+          if (pendingXmlEmitTimer !== null) {
+            clearTimeout(pendingXmlEmitTimer);
+            pendingXmlEmitTimer = null;
+          }
+          sendPreview(streamingPreview);
+          lastXmlEmittedAt = now;
+        } else if (pendingXmlEmitTimer === null) {
+          const wait = XML_STREAM_THROTTLE_MS - elapsed;
+          pendingXmlEmitTimer = setTimeout(() => {
+            pendingXmlEmitTimer = null;
+            sendPreview(streamingPreview);
+            lastXmlEmittedAt = Date.now();
+          }, wait);
+        }
+        // else: timer already armed; it will emit the latest streamingPreview
+        // (captured via closure) when it fires.
       },
       onXmlComplete: (finalXml: string) => {
-        // Write final XML to DB and UI
+        // Commit final XML to fullResponse and clear the preview overlay.
         const xmlChunk = `${finalXml}\n`;
         fullResponse += xmlChunk;
-        streamingPreview = ""; // Clear preview
+        streamingPreview = "";
+        // Cancel any deferred preview emit — clearing the preview below
+        // supersedes any in-flight throttled fire.
+        if (pendingXmlEmitTimer !== null) {
+          clearTimeout(pendingXmlEmitTimer);
+          pendingXmlEmitTimer = null;
+        }
         updateResponseInDb(placeholderMessageId, fullResponse);
         sendChunk(fullResponse);
+        // Empty preview = renderer clears its overlay atom for this message.
+        sendPreview("");
+        lastXmlEmittedAt = Date.now();
       },
       requireConsent: async (params: {
         toolName: string;
@@ -1540,6 +1596,14 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // Drop any deferred onXmlStream emit — stream is done; trailing fires
+    // would race the chat:response:end and either get dropped by the
+    // renderer or land on a torn-down placeholder.
+    if (pendingXmlEmitTimer !== null) {
+      clearTimeout(pendingXmlEmitTimer);
+      pendingXmlEmitTimer = null;
+    }
   }
 }
 
@@ -1684,16 +1748,40 @@ function sendResponseChunk(
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       messages: currentMessages,
+      // Identify the active streaming placeholder so the renderer can
+      // recompute parser state fresh for that message and keep its
+      // parser-backed render path stable across the replacement.
+      streamingMessageId: placeholderMessageId,
     });
     // Renderer's placeholder content now matches fullResponse — keep the
     // tail-diff baseline in sync so the next streaming patch is correct.
     lastSentRef.value = fullResponse;
   } else {
+    const oldLen = lastSentRef.value.length;
     const patch = computeStreamingPatch(fullResponse, lastSentRef.value);
-    lastSentRef.value = fullResponse;
     if (!patch) {
       return;
     }
+    // Streaming patches are reserved for true append-only tail growth
+    // (offset === oldLen). When offset < oldLen the new content diverges
+    // inside the prior tail; applying the patch on the renderer would
+    // cleanly shrink visible content with no mismatch, briefly vanishing
+    // the response. Escalate to a fullMessages send so the renderer
+    // authoritatively replaces content and recomputes parser state.
+    if (patch.offset < oldLen) {
+      sendResponseChunk(
+        event,
+        chatId,
+        chat,
+        fullResponse,
+        placeholderMessageId,
+        hiddenMessageIds,
+        true,
+        lastSentRef,
+      );
+      return;
+    }
+    lastSentRef.value = fullResponse;
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,

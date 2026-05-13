@@ -13,6 +13,8 @@ import {
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingBlocksByMessageIdAtom,
+  streamingPreviewByMessageIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
@@ -24,6 +26,10 @@ import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import {
+  advanceParser,
+  initialParserState,
+} from "@/lib/streamingMessageParser";
 import {
   triggerResync,
   syncChatFromDb,
@@ -110,6 +116,8 @@ export function useStreamChat({
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
   );
+  const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
+  const setStreamingPreviewById = useSetAtom(streamingPreviewByMessageIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -260,6 +268,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              streamingPreview,
               chunkSeq,
               effectiveChatMode,
               chatModeFallbackReason,
@@ -288,6 +297,29 @@ export function useStreamChat({
                 hasIncrementedStreamCount = true;
               }
 
+              if (streamingPreview) {
+                // Sidecar tool-input XML overlay. Doesn't touch
+                // message.content or parser state — just updates the
+                // preview atom keyed by message id. Empty content clears
+                // the overlay (server sends empty preview when the tool's
+                // finalized XML is committed into fullResponse via
+                // onXmlComplete).
+                const { messageId, content } = streamingPreview;
+                setStreamingPreviewById((prev) => {
+                  const existing = prev.get(messageId);
+                  if (content === "") {
+                    if (existing === undefined) return prev;
+                    const next = new Map(prev);
+                    next.delete(messageId);
+                    return next;
+                  }
+                  if (existing === content) return prev;
+                  const next = new Map(prev);
+                  next.set(messageId, content);
+                  return next;
+                });
+              }
+
               if (updatedMessages) {
                 // Full messages update (initial load, post-compaction, etc.)
                 setMessagesById((prev) => {
@@ -295,6 +327,36 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
+                // A fullMessages payload is authoritative: it can replace
+                // the content of messages still in the payload (mid-turn
+                // compaction in local_agent_handler does this, as does the
+                // non-tail-patch escalation in sendResponseChunk). Any
+                // cached parser state keyed by those ids is stale.
+                //
+                // When the payload identifies the active streaming
+                // message, recompute its parser state fresh. Keeping
+                // parserState defined across the replacement holds
+                // DyadMarkdownParser on the parser-backed render path so
+                // the response doesn't briefly swap to a fallback parse.
+                //
+                // For any other ids we still hold state for, clear them.
+                const clearAll = <V>(prev: Map<number, V>) =>
+                  prev.size === 0 ? prev : new Map<number, V>();
+                const streamingMsg =
+                  streamingMessageId !== undefined
+                    ? updatedMessages.find((m) => m.id === streamingMessageId)
+                    : undefined;
+                if (streamingMessageId !== undefined && streamingMsg) {
+                  const freshState = advanceParser(
+                    initialParserState(),
+                    streamingMsg.content ?? "",
+                  );
+                  setStreamingBlocksById(
+                    () => new Map([[streamingMessageId, freshState]]),
+                  );
+                } else {
+                  setStreamingBlocksById(clearAll);
+                }
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
@@ -305,8 +367,36 @@ export function useStreamChat({
                   streamingMessageId,
                   streamingPatch,
                 );
-                if (!applied) {
+                if (applied) {
+                  // Advance cached parser state to match the new content.
+                  // advanceParser preserves refs for already-committed
+                  // blocks, so only the open trailing block changes shape
+                  // per chunk. On shrink (offset < prev cursor), the parser
+                  // resets internally and re-runs from scratch.
+                  const messages = store.get(chatMessagesByIdAtom).get(chatId);
+                  const msg = messages?.find(
+                    (m) => m.id === streamingMessageId,
+                  );
+                  const newContent = msg?.content ?? "";
+                  setStreamingBlocksById((prev) => {
+                    const prevState =
+                      prev.get(streamingMessageId) ?? initialParserState();
+                    const nextState = advanceParser(prevState, newContent);
+                    if (nextState === prevState) return prev;
+                    const next = new Map(prev);
+                    next.set(streamingMessageId, nextState);
+                    return next;
+                  });
+                } else {
                   triggerResync(chatId, setMessagesById, store);
+                  // Drop parser state for this message so the renderer
+                  // re-parses from the resynced (full DB) content.
+                  setStreamingBlocksById((prev) => {
+                    if (!prev.has(streamingMessageId)) return prev;
+                    const next = new Map(prev);
+                    next.delete(streamingMessageId);
+                    return next;
+                  });
                 }
               }
 
@@ -469,6 +559,27 @@ export function useStreamChat({
                         next.set(chatId, merged);
                         return next;
                       });
+                      // Stream ended successfully — drop parser states and
+                      // preview overlays for finalized messages so the
+                      // renderer falls back to a one-shot parse of the
+                      // merged DB content.
+                      const finalizedIds = new Set(
+                        latestChat.messages.map((m) => m.id),
+                      );
+                      const dropFinalized = <V>(prev: Map<number, V>) => {
+                        if (prev.size === 0) return prev;
+                        let changed = false;
+                        const next = new Map(prev);
+                        for (const id of prev.keys()) {
+                          if (finalizedIds.has(id)) {
+                            next.delete(id);
+                            changed = true;
+                          }
+                        }
+                        return changed ? next : prev;
+                      };
+                      setStreamingBlocksById(dropFinalized);
+                      setStreamingPreviewById(dropFinalized);
                     }
                   } catch (error) {
                     console.warn(
