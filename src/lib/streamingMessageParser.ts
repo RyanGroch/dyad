@@ -448,29 +448,45 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
  * opening '>' arrives).
  */
 export function getOpenBlock(state: ParserState): Block | null {
-  let synthesized = "";
+  let synthesizedMarkdown = "";
+  let synthesizedTagContent = "";
   if (state.mode === "tag-open") {
-    synthesized = state.pending;
+    synthesizedMarkdown = state.pending;
   } else if (state.mode === "tag-attrs") {
-    synthesized = "<" + state.pendingTagName + state.pendingAttrs;
+    synthesizedMarkdown = "<" + state.pendingTagName + state.pendingAttrs;
+  } else if (
+    state.mode === "tag-close-start" ||
+    state.mode === "tag-close-name"
+  ) {
+    // Bytes buffered mid-closing-tag ("<", "</", "</NAME") — surface them in
+    // the open custom-tag's visible content so they stream and aren't lost
+    // if the stream stops before the closing tag completes.
+    synthesizedTagContent = state.pending;
   }
 
   if (state.openBlock) {
-    if (synthesized && state.openBlock.kind === "markdown") {
+    if (synthesizedMarkdown && state.openBlock.kind === "markdown") {
       return {
         kind: "markdown",
         id: state.openBlock.id,
-        content: state.openBlock.content + synthesized,
+        content: state.openBlock.content + synthesizedMarkdown,
         complete: false,
+      };
+    }
+    if (synthesizedTagContent && state.openBlock.kind === "custom-tag") {
+      return {
+        ...state.openBlock,
+        content:
+          state.openBlock.content + unescapeXmlContent(synthesizedTagContent),
       };
     }
     return state.openBlock;
   }
-  if (synthesized) {
+  if (synthesizedMarkdown) {
     return {
       kind: "markdown",
       id: state.nextBlockId,
-      content: synthesized,
+      content: synthesizedMarkdown,
       complete: false,
     };
   }

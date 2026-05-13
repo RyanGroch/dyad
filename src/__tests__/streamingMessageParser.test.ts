@@ -89,6 +89,28 @@ describe("streamingMessageParser", () => {
     });
   });
 
+  it("surfaces partial closing-tag bytes in the open block content", () => {
+    // Stream stops mid-closing-tag. The buffered "</dyad-wri" bytes must
+    // appear in the visible content so they stream and aren't lost.
+    const cases = [
+      { suffix: "<", expected: "content<" },
+      { suffix: "</", expected: "content</" },
+      { suffix: "</dyad-wri", expected: "content</dyad-wri" },
+    ];
+    for (const { suffix, expected } of cases) {
+      const content = `<dyad-write path="x.ts">content${suffix}`;
+      const { blocks } = parseFullMessage(content);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        kind: "custom-tag",
+        tag: "dyad-write",
+        content: expected,
+        complete: false,
+        inProgress: true,
+      });
+    }
+  });
+
   it("treats non-dyad < as text", () => {
     const content = "use <html>tag</html> in markdown";
     const { blocks } = parseFullMessage(content);
