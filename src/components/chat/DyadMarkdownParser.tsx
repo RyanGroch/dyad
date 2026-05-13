@@ -95,8 +95,6 @@ export const VanillaMarkdownParser = ({ content }: { content: string }) => {
  *
  * Block list is produced by an incremental dyad-tag parser
  * (src/lib/streamingMessageParser.ts) called one-shot per render.
- * Follow-up PRs cache the parser state so completed blocks keep
- * referential identity across streaming chunks.
  */
 export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   content,
@@ -206,8 +204,7 @@ function customTagBlockEqual(a: CustomTagBlock, b: CustomTagBlock): boolean {
 // would never hit. The custom comparator deep-checks the fields that
 // actually affect the rendered output, so completed dyad tags skip
 // renderCustomTag and the React subtree rebuild when only later blocks
-// change. Follow-up PRs cache the parser state so closed Blocks keep
-// stable refs across chunks; this comparator continues to work then.
+// change.
 const MemoCustomTag = React.memo(
   function MemoCustomTag({
     block,
