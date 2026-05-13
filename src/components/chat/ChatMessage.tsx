@@ -21,6 +21,7 @@ import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
 import { useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
+import { streamingBlocksByMessageIdAtom } from "@/atoms/chatAtoms";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
@@ -96,8 +97,19 @@ const ChatMessage = ({
     message.role === "assistant"
       ? stripCancelledResponseNotice(message.content)
       : "";
+  // The chunk handler trims message.content past the open-block boundary,
+  // so it can be "" while parser state still holds committed blocks
+  // representing the visible response. Treat such a message as "has text"
+  // so the streaming loading animation doesn't flash in over already-
+  // rendered content between the last trim and isStreaming=false.
+  const parserState = useAtomValue(streamingBlocksByMessageIdAtom).get(
+    message.id,
+  );
   const hasAssistantText =
-    message.role === "assistant" && assistantTextContent.length > 0;
+    message.role === "assistant" &&
+    (assistantTextContent.length > 0 ||
+      (parserState !== undefined &&
+        (parserState.blocks.length > 0 || parserState.openBlock !== null)));
   //handle copy chat
   const { copyMessageContent, copied } = useCopyToClipboard();
   const handleCopyFormatted = async () => {
@@ -197,7 +209,10 @@ const ChatMessage = ({
               >
                 {message.role === "assistant" ? (
                   <>
-                    <DyadMarkdownParser content={assistantTextContent} />
+                    <DyadMarkdownParser
+                      content={assistantTextContent}
+                      messageId={message.id}
+                    />
                     {isLastMessage && isStreaming && (
                       <StreamingLoadingAnimation variant="streaming" />
                     )}

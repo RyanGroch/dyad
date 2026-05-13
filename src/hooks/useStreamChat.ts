@@ -13,6 +13,9 @@ import {
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingBlocksByMessageIdAtom,
+  contentBytesDroppedByMessageIdAtom,
+  streamingPreviewByMessageIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
@@ -23,7 +26,11 @@ import type { ChatResponseEnd, App, Chat } from "@/ipc/types";
 import type { ChatSummary } from "@/lib/schemas";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
-import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { applyStreamingChunk } from "@/lib/streamingChunk";
+import {
+  advanceParser,
+  initialParserState,
+} from "@/lib/streamingMessageParser";
 import {
   triggerResync,
   syncChatFromDb,
@@ -110,6 +117,11 @@ export function useStreamChat({
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
   );
+  const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
+  const setContentBytesDroppedById = useSetAtom(
+    contentBytesDroppedByMessageIdAtom,
+  );
+  const setStreamingPreviewById = useSetAtom(streamingPreviewByMessageIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -260,6 +272,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              streamingPreview,
               chunkSeq,
               effectiveChatMode,
               chatModeFallbackReason,
@@ -288,6 +301,29 @@ export function useStreamChat({
                 hasIncrementedStreamCount = true;
               }
 
+              if (streamingPreview) {
+                // Sidecar tool-input XML overlay. Doesn't touch
+                // message.content or parser state — just updates the
+                // preview atom keyed by message id. Empty content clears
+                // the overlay (server sends empty preview when the tool's
+                // finalized XML is committed into fullResponse via
+                // onXmlComplete).
+                const { messageId, content } = streamingPreview;
+                setStreamingPreviewById((prev) => {
+                  const existing = prev.get(messageId);
+                  if (content === "") {
+                    if (existing === undefined) return prev;
+                    const next = new Map(prev);
+                    next.delete(messageId);
+                    return next;
+                  }
+                  if (existing === content) return prev;
+                  const next = new Map(prev);
+                  next.set(messageId, content);
+                  return next;
+                });
+              }
+
               if (updatedMessages) {
                 // Full messages update (initial load, post-compaction, etc.)
                 setMessagesById((prev) => {
@@ -295,19 +331,114 @@ export function useStreamChat({
                   next.set(chatId, updatedMessages);
                   return next;
                 });
+                // A fullMessages payload is authoritative: it can replace
+                // the content of messages still in the payload (mid-turn
+                // compaction in local_agent_handler does this, as does the
+                // non-tail-patch escalation in sendResponseChunk). Any
+                // cached parser state / dropped-byte counters keyed by
+                // those ids are stale and would mis-splice subsequent
+                // patches.
+                //
+                // When the payload identifies the active streaming
+                // message, recompute its parser state fresh and reset its
+                // bytes-dropped counter to 0 (the new content is the
+                // authoritative server-side prefix). Keeping parserState
+                // defined across the replacement holds DyadMarkdownParser
+                // on the parser-backed render path so the response doesn't
+                // briefly swap to a fallback parse.
+                //
+                // For any other ids we still hold state for, clear them.
+                const clearAll = <V>(prev: Map<number, V>) =>
+                  prev.size === 0 ? prev : new Map<number, V>();
+                const streamingMsg =
+                  streamingMessageId !== undefined
+                    ? updatedMessages.find((m) => m.id === streamingMessageId)
+                    : undefined;
+                if (streamingMessageId !== undefined && streamingMsg) {
+                  const freshState = advanceParser(
+                    initialParserState(),
+                    streamingMsg.content ?? "",
+                  );
+                  setStreamingBlocksById(
+                    () => new Map([[streamingMessageId, freshState]]),
+                  );
+                  setContentBytesDroppedById(
+                    () => new Map([[streamingMessageId, 0]]),
+                  );
+                } else {
+                  setStreamingBlocksById(clearAll);
+                  setContentBytesDroppedById(clearAll);
+                }
               } else if (
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                const applied = applyStreamingPatch(
-                  setMessagesById,
-                  chatId,
-                  streamingMessageId,
-                  streamingPatch,
-                );
-                if (!applied) {
+                // Read prior atom values, run the pure pipeline, write
+                // results in a single set per atom. The pipeline splices
+                // the patch, advances the parser, and trims content past
+                // the open-block boundary so memory stays bounded across
+                // long streams.
+                const messages = store.get(chatMessagesByIdAtom).get(chatId);
+                const msg = messages?.find((m) => m.id === streamingMessageId);
+                const result = msg
+                  ? applyStreamingChunk({
+                      prevContent: msg.content ?? "",
+                      prevParserState: store
+                        .get(streamingBlocksByMessageIdAtom)
+                        .get(streamingMessageId),
+                      prevDroppedBytes:
+                        store
+                          .get(contentBytesDroppedByMessageIdAtom)
+                          .get(streamingMessageId) ?? 0,
+                      patch: streamingPatch,
+                    })
+                  : ({ kind: "mismatch" } as const);
+
+                if (result.kind === "applied") {
+                  const newContent = result.content;
+                  setMessagesById((prev) => {
+                    const list = prev.get(chatId);
+                    if (!list) return prev;
+                    const updated = list.map((m) =>
+                      m.id === streamingMessageId
+                        ? { ...m, content: newContent }
+                        : m,
+                    );
+                    const next = new Map(prev);
+                    next.set(chatId, updated);
+                    return next;
+                  });
+                  setStreamingBlocksById((prev) => {
+                    const next = new Map(prev);
+                    next.set(streamingMessageId, result.parserState);
+                    return next;
+                  });
+                  setContentBytesDroppedById((prev) => {
+                    if (
+                      (prev.get(streamingMessageId) ?? 0) ===
+                      result.droppedBytes
+                    ) {
+                      return prev;
+                    }
+                    const next = new Map(prev);
+                    next.set(streamingMessageId, result.droppedBytes);
+                    return next;
+                  });
+                } else if (result.kind === "mismatch") {
                   triggerResync(chatId, setMessagesById, store);
+                  // Drop parser state and dropped-byte counter for this
+                  // message so the renderer re-parses from the resynced
+                  // (full DB) content.
+                  const dropForMessage = <V>(prev: Map<number, V>) => {
+                    if (!prev.has(streamingMessageId)) return prev;
+                    const next = new Map(prev);
+                    next.delete(streamingMessageId);
+                    return next;
+                  };
+                  setStreamingBlocksById(dropForMessage);
+                  setContentBytesDroppedById(dropForMessage);
                 }
+                // result.kind === "noop" → no atom writes needed.
               }
 
               // Ack-based backpressure for the canned test stream. Real
@@ -469,6 +600,28 @@ export function useStreamChat({
                         next.set(chatId, merged);
                         return next;
                       });
+                      // Stream ended successfully — drop parser states,
+                      // dropped-byte counters and preview overlays for
+                      // finalized messages so the renderer falls back to a
+                      // one-shot parse of the merged DB content.
+                      const finalizedIds = new Set(
+                        latestChat.messages.map((m) => m.id),
+                      );
+                      const dropFinalized = <V>(prev: Map<number, V>) => {
+                        if (prev.size === 0) return prev;
+                        let changed = false;
+                        const next = new Map(prev);
+                        for (const id of prev.keys()) {
+                          if (finalizedIds.has(id)) {
+                            next.delete(id);
+                            changed = true;
+                          }
+                        }
+                        return changed ? next : prev;
+                      };
+                      setStreamingBlocksById(dropFinalized);
+                      setContentBytesDroppedById(dropFinalized);
+                      setStreamingPreviewById(dropFinalized);
                     }
                   } catch (error) {
                     console.warn(

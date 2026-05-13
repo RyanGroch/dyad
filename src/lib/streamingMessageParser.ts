@@ -6,8 +6,10 @@ import { unescapeXmlAttr, unescapeXmlContent } from "../../shared/xmlEscape";
  * Feed the message content as it grows; emit a list of stable Block
  * objects for the renderer. Committed Block objects keep referential
  * identity across calls so React.memo can skip them; the blocks array
- * ref changes only when a block closes during a given advance. The open
- * (trailing) block is rebuilt only when its content changes.
+ * ref changes only when a block closes during a given advance, so a
+ * wrapper memo over the closed-block list short-circuits on chunks
+ * that just extend the open block. The open (trailing) block is rebuilt
+ * only when its content changes.
  *
  * Streaming-only quirk: pending bytes between an unrecognized "<" /
  * partial opening tag and its disambiguating character are temporarily
@@ -125,6 +127,12 @@ export interface ParserState {
    * tag-attrs commit can record the new custom-tag block's start offset.
    */
   tagStartOffset: number;
+  /**
+   * Byte offset (in the parser's local content) where the current open
+   * block starts. Used by trimContent to cut the content string at the
+   * open block boundary. Stale when openBlock is null.
+   */
+  openBlockStartOffset: number;
   /** Open trailing block — markdown while in prose modes, custom-tag while in tag-content/close. */
   openBlock: Block | null;
   /** Committed (closed) blocks. Refs stable across updates. */
@@ -142,6 +150,7 @@ export function initialParserState(): ParserState {
     pendingCloseName: "",
     currentTag: null,
     tagStartOffset: 0,
+    openBlockStartOffset: 0,
     openBlock: null,
     blocks: [],
     nextBlockId: 0,
@@ -160,7 +169,11 @@ function parseAttributes(attrsStr: string): Record<string, string> {
   return out;
 }
 
-function appendToMarkdownOpen(state: ParserState, text: string): void {
+function appendToMarkdownOpen(
+  state: ParserState,
+  text: string,
+  startOffset: number,
+): void {
   if (!text) return;
   if (state.openBlock && state.openBlock.kind === "markdown") {
     state.openBlock = {
@@ -176,15 +189,16 @@ function appendToMarkdownOpen(state: ParserState, text: string): void {
       content: text,
       complete: false,
     };
+    state.openBlockStartOffset = startOffset;
   }
 }
 
 function commitOpenMarkdown(state: ParserState): void {
   if (state.openBlock && state.openBlock.kind === "markdown") {
     if (state.openBlock.content.length > 0) {
-      // Immutable append: new array ref on commit so closed-block memo
-      // wrappers can invalidate exactly when a block closes and stay
-      // stable across "open block extends" chunks (used in follow-up PRs).
+      // Immutable append: new array ref on commit so the renderer's
+      // closed-block memo wrapper invalidates exactly when a block closes
+      // and stays stable across "open block extends" chunks.
       state.blocks = [
         ...state.blocks,
         {
@@ -204,8 +218,10 @@ function commitOpenMarkdown(state: ParserState): void {
  *
  * Returns a NEW state object. Individual committed Block objects share refs
  * with the previous state (so per-block React.memo hits); the blocks array
- * gets a new ref only when a block closes during this advance. The open
- * block is rebuilt only when its content changes.
+ * gets a new ref only when a block closes during this advance, so the
+ * renderer's closed-block wrapper memo can short-circuit on chunks that
+ * just extend the open block. The open block is rebuilt only when its
+ * content changes.
  */
 export function advanceParser(prev: ParserState, content: string): ParserState {
   let state: ParserState;
@@ -224,6 +240,7 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
       pendingCloseName: prev.pendingCloseName,
       currentTag: prev.currentTag,
       tagStartOffset: prev.tagStartOffset,
+      openBlockStartOffset: prev.openBlockStartOffset,
       openBlock: prev.openBlock,
       blocks: prev.blocks,
       nextBlockId: prev.nextBlockId,
@@ -246,7 +263,7 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
         // Fast-forward over a run of non-'<' chars; cheaper than per-char append.
         let j = i + 1;
         while (j < len && content[j] !== "<") j++;
-        appendToMarkdownOpen(state, content.slice(i, j));
+        appendToMarkdownOpen(state, content.slice(i, j), i);
         i = j;
       }
       continue;
@@ -273,7 +290,7 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
         continue;
       }
       // Not a custom tag. Flush the buffered "<NAME" to markdown and resume.
-      appendToMarkdownOpen(state, state.pending);
+      appendToMarkdownOpen(state, state.pending, state.tagStartOffset);
       state.pending = "";
       state.mode = "prose";
       // Re-process current char in prose mode.
@@ -301,6 +318,8 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
           complete: false,
           inProgress: true,
         };
+        // Custom-tag block starts at the '<' that opened it.
+        state.openBlockStartOffset = state.tagStartOffset;
         state.pendingTagName = "";
         state.pendingAttrs = "";
         state.mode = "tag-content";
@@ -448,45 +467,29 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
  * opening '>' arrives).
  */
 export function getOpenBlock(state: ParserState): Block | null {
-  let synthesizedMarkdown = "";
-  let synthesizedTagContent = "";
+  let synthesized = "";
   if (state.mode === "tag-open") {
-    synthesizedMarkdown = state.pending;
+    synthesized = state.pending;
   } else if (state.mode === "tag-attrs") {
-    synthesizedMarkdown = "<" + state.pendingTagName + state.pendingAttrs;
-  } else if (
-    state.mode === "tag-close-start" ||
-    state.mode === "tag-close-name"
-  ) {
-    // Bytes buffered mid-closing-tag ("<", "</", "</NAME") — surface them in
-    // the open custom-tag's visible content so they stream and aren't lost
-    // if the stream stops before the closing tag completes.
-    synthesizedTagContent = state.pending;
+    synthesized = "<" + state.pendingTagName + state.pendingAttrs;
   }
 
   if (state.openBlock) {
-    if (synthesizedMarkdown && state.openBlock.kind === "markdown") {
+    if (synthesized && state.openBlock.kind === "markdown") {
       return {
         kind: "markdown",
         id: state.openBlock.id,
-        content: state.openBlock.content + synthesizedMarkdown,
+        content: state.openBlock.content + synthesized,
         complete: false,
-      };
-    }
-    if (synthesizedTagContent && state.openBlock.kind === "custom-tag") {
-      return {
-        ...state.openBlock,
-        content:
-          state.openBlock.content + unescapeXmlContent(synthesizedTagContent),
       };
     }
     return state.openBlock;
   }
-  if (synthesizedMarkdown) {
+  if (synthesized) {
     return {
       kind: "markdown",
       id: state.nextBlockId,
-      content: synthesizedMarkdown,
+      content: synthesized,
       complete: false,
     };
   }
@@ -495,7 +498,9 @@ export function getOpenBlock(state: ParserState): Block | null {
 
 /**
  * Materialize the full current block list (closed + open). Used for
- * one-shot parses (parseFullMessage) and tests.
+ * one-shot parses (parseFullMessage) and tests; the streaming renderer
+ * reads state.blocks and getOpenBlock(state) directly so the closed-block
+ * array ref stays stable across non-commit chunks.
  */
 export function getParserBlocks(state: ParserState): Block[] {
   const open = getOpenBlock(state);
@@ -512,4 +517,43 @@ export function parseFullMessage(content: string): {
 } {
   const state = advanceParser(initialParserState(), content);
   return { state, blocks: getParserBlocks(state) };
+}
+
+/**
+ * Trim the front of the local content string up to the open block's start
+ * (or up to cursor when there is no open block and the parser is in clean
+ * prose). Closed blocks remain in state.blocks for the renderer; only the
+ * raw content string and the parser's scan offsets shift to a new origin.
+ *
+ * Skipped (no-op) when the parser is mid-disambiguation (tag-open /
+ * tag-attrs / tag-close-*) with no open block — the next chunk usually
+ * resolves the disambiguation, after which trim works again.
+ *
+ * Caller is responsible for tracking the cumulative `bytesDropped` so
+ * incoming streaming patches (which carry server-side offsets) can be
+ * translated to local coordinates.
+ */
+export function trimContent(
+  state: ParserState,
+  content: string,
+): { state: ParserState; content: string; bytesDropped: number } {
+  let cutAt: number;
+  if (state.openBlock !== null) {
+    cutAt = state.openBlockStartOffset;
+  } else if (state.mode === "prose") {
+    cutAt = state.cursor;
+  } else {
+    return { state, content, bytesDropped: 0 };
+  }
+  if (cutAt <= 0) {
+    return { state, content, bytesDropped: 0 };
+  }
+  const newContent = content.slice(cutAt);
+  const newState: ParserState = {
+    ...state,
+    cursor: state.cursor - cutAt,
+    tagStartOffset: 0,
+    openBlockStartOffset: 0,
+  };
+  return { state: newState, content: newContent, bytesDropped: cutAt };
 }

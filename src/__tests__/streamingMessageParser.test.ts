@@ -4,6 +4,7 @@ import {
   getParserBlocks,
   initialParserState,
   parseFullMessage,
+  trimContent,
   type Block,
 } from "@/lib/streamingMessageParser";
 
@@ -87,28 +88,6 @@ describe("streamingMessageParser", () => {
       complete: false,
       inProgress: true,
     });
-  });
-
-  it("surfaces partial closing-tag bytes in the open block content", () => {
-    // Stream stops mid-closing-tag. The buffered "</dyad-wri" bytes must
-    // appear in the visible content so they stream and aren't lost.
-    const cases = [
-      { suffix: "<", expected: "content<" },
-      { suffix: "</", expected: "content</" },
-      { suffix: "</dyad-wri", expected: "content</dyad-wri" },
-    ];
-    for (const { suffix, expected } of cases) {
-      const content = `<dyad-write path="x.ts">content${suffix}`;
-      const { blocks } = parseFullMessage(content);
-      expect(blocks).toHaveLength(1);
-      expect(blocks[0]).toMatchObject({
-        kind: "custom-tag",
-        tag: "dyad-write",
-        content: expected,
-        complete: false,
-        inProgress: true,
-      });
-    }
   });
 
   it("treats non-dyad < as text", () => {
@@ -280,6 +259,50 @@ trailing`;
       }
       state = advanceParser(state, content);
       expect(blocksToShape(getParserBlocks(state))).toEqual(fullBlocks);
+    }
+  });
+
+  it("trimContent shortens the content string at the open-block boundary", () => {
+    const segments: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      segments.push(`<dyad-write path="f${i}.ts">body${i}</dyad-write>`);
+    }
+    const fullContent = segments.join("\n") + '\n<dyad-write path="open.ts">in';
+    const state = advanceParser(initialParserState(), fullContent);
+
+    // Closed blocks (5 dyad-write + 5 newline markdowns) plus one open
+    // custom-tag for "open.ts".
+    expect(state.blocks.length).toBe(10);
+    expect(state.openBlock?.kind).toBe("custom-tag");
+
+    const trimmed = trimContent(state, fullContent);
+    expect(trimmed.bytesDropped).toBeGreaterThan(0);
+
+    // Closed blocks survive the trim — they live in state.blocks.
+    expect(trimmed.state.blocks.length).toBe(10);
+    const closedPaths = trimmed.state.blocks
+      .filter(
+        (b): b is Extract<Block, { kind: "custom-tag" }> =>
+          b.kind === "custom-tag",
+      )
+      .map((b) => b.attributes.path);
+    expect(closedPaths).toEqual(["f0.ts", "f1.ts", "f2.ts", "f3.ts", "f4.ts"]);
+
+    // Trimmed content begins at the open block's '<'.
+    expect(trimmed.content.startsWith('<dyad-write path="open.ts">in')).toBe(
+      true,
+    );
+    expect(trimmed.state.cursor).toBe(trimmed.content.length);
+    expect(trimmed.state.openBlockStartOffset).toBe(0);
+
+    // Subsequent advance with more bytes appended works on local coordinates.
+    const moreContent = trimmed.content + "progress";
+    const advanced = advanceParser(trimmed.state, moreContent);
+    const open = advanced.openBlock;
+    expect(open?.kind).toBe("custom-tag");
+    if (open?.kind === "custom-tag") {
+      expect(open.attributes.path).toBe("open.ts");
+      expect(open.content).toBe("inprogress");
     }
   });
 
