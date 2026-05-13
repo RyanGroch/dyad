@@ -18,7 +18,12 @@ import { DyadCodebaseContext } from "./DyadCodebaseContext";
 import { DyadThink } from "./DyadThink";
 import { CodeHighlight } from "./CodeHighlight";
 import { useAtomValue } from "jotai";
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import {
+  isStreamingByIdAtom,
+  selectedChatIdAtom,
+  streamingBlocksByMessageIdAtom,
+  streamingPreviewByMessageIdAtom,
+} from "@/atoms/chatAtoms";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
 import { DyadProblemSummary } from "./DyadProblemSummary";
@@ -49,13 +54,22 @@ import { DyadScript } from "./DyadScript";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
-import { type Block, parseFullMessage } from "@/lib/streamingMessageParser";
+import {
+  type Block,
+  getOpenBlock,
+  parseFullMessage,
+} from "@/lib/streamingMessageParser";
 
 interface DyadMarkdownParserProps {
   content: string;
+  /**
+   * Assistant message id. When present, the renderer reads the incremental
+   * parser state from streamingBlocksByMessageIdAtom so completed blocks
+   * keep referential identity across streaming chunks. Without it the
+   * renderer falls back to a one-shot parse of `content`.
+   */
+  messageId?: number;
 }
-
-type CustomTagBlock = Extract<Block, { kind: "custom-tag" }>;
 
 const customLink = ({
   node: _node,
@@ -93,74 +107,135 @@ export const VanillaMarkdownParser = ({ content }: { content: string }) => {
 /**
  * Custom component to parse markdown content with Dyad-specific tags.
  *
- * Block list is produced by an incremental dyad-tag parser
- * (src/lib/streamingMessageParser.ts) called one-shot per render.
+ * The block list is sourced from an incremental parser (see
+ * src/lib/streamingMessageParser.ts) so completed blocks keep referential
+ * identity across streaming chunks. That lets React.memo skip every prior
+ * block, leaving only the open trailing block to re-render per chunk.
  */
 export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   content,
+  messageId,
 }) => {
   const chatId = useAtomValue(selectedChatIdAtom);
   const isStreaming = useAtomValue(isStreamingByIdAtom).get(chatId!) ?? false;
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
-  const blocks = useMemo(
-    () => parseFullMessage(contentToParse).blocks,
-    [contentToParse],
-  );
+  const streamingStates = useAtomValue(streamingBlocksByMessageIdAtom);
+  const parserState =
+    messageId !== undefined ? streamingStates.get(messageId) : undefined;
 
-  const { errorMessages, lastErrorIndex, errorCount } = useMemo(() => {
+  // Sidecar tool-input XML preview (Pro/Agent v2). Lives outside the
+  // message's parsed-block tree so the patch protocol can stay strictly
+  // append-only — buildXml output rewrites its prefix per JSON delta and
+  // would otherwise force escalation to fullMessages.
+  const previewStates = useAtomValue(streamingPreviewByMessageIdAtom);
+  const previewXml =
+    messageId !== undefined ? previewStates.get(messageId) : undefined;
+  const previewBlocks = useMemo<Block[] | null>(() => {
+    if (!previewXml) return null;
+    return parseFullMessage(previewXml).blocks;
+  }, [previewXml]);
+
+  // While streaming, closed blocks live in parserState.blocks (immutable-
+  // appended on commit) and the open block comes from getOpenBlock. The
+  // closed-blocks array ref is stable across chunks that don't close a
+  // block, so MemoClosedBlocks skips its subtree entirely on those chunks
+  // (O(1) per chunk).
+  const closedBlocks = parserState?.blocks;
+  const openBlock = parserState ? getOpenBlock(parserState) : null;
+
+  // Fallback path: no parser state (history, post-DB-restore). One-shot
+  // parse of the full content.
+  const fallbackBlocks = useMemo<Block[] | null>(() => {
+    if (parserState !== undefined) return null;
+    return parseFullMessage(contentToParse).blocks;
+  }, [parserState, contentToParse]);
+
+  // Aggregate error messages for the FixAllErrorsButton. Recomputes only
+  // when one of the input arrays gets a new ref (closed blocks: on commit;
+  // fallback: on content change).
+  const { errorMessages, errorCount } = useMemo(() => {
     const errors: string[] = [];
-    let lastIndex = -1;
-    let count = 0;
-
-    blocks.forEach((block, index) => {
+    const collectFrom = (block: Block) => {
       if (
         block.kind === "custom-tag" &&
         block.tag === "dyad-output" &&
         block.attributes.type === "error"
       ) {
-        const errorMessage = block.attributes.message;
-        if (errorMessage?.trim()) {
-          errors.push(errorMessage.trim());
-          count++;
-          lastIndex = index;
-        }
+        const msg = block.attributes.message?.trim();
+        if (msg) errors.push(msg);
       }
-    });
-
-    return {
-      errorMessages: errors,
-      lastErrorIndex: lastIndex,
-      errorCount: count,
     };
-  }, [blocks]);
+    if (closedBlocks) {
+      for (const block of closedBlocks) collectFrom(block);
+    } else if (fallbackBlocks) {
+      for (const block of fallbackBlocks) collectFrom(block);
+    }
+    return { errorMessages: errors, errorCount: errors.length };
+  }, [closedBlocks, fallbackBlocks]);
+
+  const showFixAll =
+    errorCount > 1 && !isStreaming && chatId !== null && chatId !== undefined;
 
   return (
     <>
-      {blocks.map((block, index) => (
+      {closedBlocks ? (
+        <MemoClosedBlocks blocks={closedBlocks} isStreaming={isStreaming} />
+      ) : fallbackBlocks ? (
+        fallbackBlocks.map((block) => (
+          <React.Fragment key={block.id}>
+            {renderBlock(block, isStreaming)}
+          </React.Fragment>
+        ))
+      ) : null}
+      {openBlock ? renderBlock(openBlock, isStreaming) : null}
+      {previewBlocks
+        ? previewBlocks.map((block) => (
+            <React.Fragment key={`preview-${block.id}`}>
+              {renderBlock(block, isStreaming)}
+            </React.Fragment>
+          ))
+        : null}
+      {showFixAll && (
+        <div className="mt-3 w-full flex">
+          <FixAllErrorsButton errorMessages={errorMessages} chatId={chatId!} />
+        </div>
+      )}
+    </>
+  );
+};
+
+function renderBlock(block: Block, isStreaming: boolean): React.ReactNode {
+  if (block.kind === "markdown") {
+    return block.content ? <MemoMarkdown content={block.content} /> : null;
+  }
+  return <MemoBlockCustomTag block={block} isStreaming={isStreaming} />;
+}
+
+// Memoized wrapper for closed blocks. Memo hits when the `blocks` array ref
+// is unchanged (chunks that just extend the open block) so the entire
+// closed-block subtree is skipped — O(1) per chunk in the common case.
+// On commit chunks, the wrapper re-renders and reconciles N child fibers,
+// but each child is also memoed on `prev.block === next.block` so closed
+// children short-circuit and never re-render their subtrees.
+const MemoClosedBlocks = React.memo(function MemoClosedBlocks({
+  blocks,
+  isStreaming,
+}: {
+  blocks: Block[];
+  isStreaming: boolean;
+}) {
+  return (
+    <>
+      {blocks.map((block) => (
         <React.Fragment key={block.id}>
-          {block.kind === "markdown" ? (
-            block.content && <MemoMarkdown content={block.content} />
-          ) : (
-            <MemoCustomTag block={block} isStreaming={isStreaming} />
-          )}
-          {index === lastErrorIndex &&
-            errorCount > 1 &&
-            !isStreaming &&
-            chatId && (
-              <div className="mt-3 w-full flex">
-                <FixAllErrorsButton
-                  errorMessages={errorMessages}
-                  chatId={chatId}
-                />
-              </div>
-            )}
+          {renderBlock(block, isStreaming)}
         </React.Fragment>
       ))}
     </>
   );
-};
+});
 
 // Module-level constants so MemoMarkdown never gets fresh refs for these
 // props, which would defeat ReactMarkdown's internal prop-equality checks.
@@ -168,9 +243,7 @@ const REMARK_PLUGINS = [remarkGfm];
 const MARKDOWN_COMPONENTS = { code: CodeHighlight, a: customLink };
 
 // Memoized markdown piece. Without this, ReactMarkdown re-parses every
-// completed segment's text into an AST on every streaming chunk —
-// the dominant per-render cost during long streams. Memoizing on
-// `content` lets completed segments skip that re-parse entirely.
+// completed segment's text into an AST on every streaming chunk.
 const MemoMarkdown = React.memo(function MemoMarkdown({
   content,
 }: {
@@ -186,27 +259,14 @@ const MemoMarkdown = React.memo(function MemoMarkdown({
   );
 });
 
-function customTagBlockEqual(a: CustomTagBlock, b: CustomTagBlock): boolean {
-  if (a.tag !== b.tag) return false;
-  if (a.content !== b.content) return false;
-  if (a.inProgress !== b.inProgress) return false;
-  const aKeys = Object.keys(a.attributes);
-  const bKeys = Object.keys(b.attributes);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    if (a.attributes[k] !== b.attributes[k]) return false;
-  }
-  return true;
-}
+type CustomTagBlock = Extract<Block, { kind: "custom-tag" }>;
 
-// Memoized custom-tag piece. parseFullMessage rebuilds Block objects on
-// every chunk (new refs), so React.memo's default referential equality
-// would never hit. The custom comparator deep-checks the fields that
-// actually affect the rendered output, so completed dyad tags skip
-// renderCustomTag and the React subtree rebuild when only later blocks
-// change.
-const MemoCustomTag = React.memo(
-  function MemoCustomTag({
+// Memoized custom-tag block. The incremental parser preserves the Block
+// reference for any completed (closed) tag across streaming patches, so
+// referential equality on `block` is sufficient — completed blocks
+// short-circuit and skip renderCustomTag entirely.
+const MemoBlockCustomTag = React.memo(
+  function MemoBlockCustomTag({
     block,
     isStreaming,
   }: {
@@ -216,9 +276,9 @@ const MemoCustomTag = React.memo(
     return <>{renderCustomTag(block, { isStreaming })}</>;
   },
   (prev, next) =>
-    customTagBlockEqual(prev.block, next.block) &&
-    // Completed tags don't use isStreaming (getState returns "finished"
-    // regardless), so skip the check to avoid a one-time re-render of every
+    prev.block === next.block &&
+    // Completed tags ignore isStreaming (getState returns "finished"
+    // regardless), so skip the check to avoid one-time re-renders of every
     // completed tag when streaming ends.
     (prev.block.inProgress === false || prev.isStreaming === next.isStreaming),
 );
