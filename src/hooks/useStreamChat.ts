@@ -14,6 +14,7 @@ import {
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
   streamingBlocksByMessageIdAtom,
+  streamingPreviewByMessageIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
@@ -117,6 +118,7 @@ export function useStreamChat({
     streamCompletedSuccessfullyByIdAtom,
   );
   const setStreamingBlocksById = useSetAtom(streamingBlocksByMessageIdAtom);
+  const setStreamingPreviewById = useSetAtom(streamingPreviewByMessageIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -267,6 +269,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              streamingPreview,
               chunkSeq,
               effectiveChatMode,
               chatModeFallbackReason,
@@ -293,6 +296,31 @@ export function useStreamChat({
                   return next;
                 });
                 hasIncrementedStreamCount = true;
+              }
+
+              if (streamingPreview) {
+                // Sidecar tool-input XML overlay. Doesn't touch
+                // message.content or parser state — just updates the
+                // preview atom keyed by message id. Empty content clears
+                // the overlay (server sends empty preview when the tool's
+                // finalized XML is committed into fullResponse via
+                // onXmlComplete).
+                const { messageId, content } = streamingPreview;
+                setStreamingPreviewById((prev) => {
+                  const existing = prev.get(messageId);
+                  if (content === "") {
+                    if (existing === undefined) return prev;
+                    const next = new Map(prev);
+                    next.delete(messageId);
+                    return next;
+                  }
+                  if (existing === content) return prev;
+                  const next = new Map(prev);
+                  next.set(messageId, content);
+                  return next;
+                });
+                // Preview-only chunks carry no other fields worth acting on;
+                // fall through to ack/end-of-handler for chunkSeq if present.
               }
 
               if (updatedMessages) {
@@ -549,7 +577,7 @@ export function useStreamChat({
                       const finalizedIds = new Set(
                         latestChat.messages.map((m) => m.id),
                       );
-                      setStreamingBlocksById((prev) => {
+                      const dropFinalized = <V>(prev: Map<number, V>) => {
                         if (prev.size === 0) return prev;
                         let changed = false;
                         const next = new Map(prev);
@@ -560,7 +588,9 @@ export function useStreamChat({
                           }
                         }
                         return changed ? next : prev;
-                      });
+                      };
+                      setStreamingBlocksById(dropFinalized);
+                      setStreamingPreviewById(dropFinalized);
                     }
                   } catch (error) {
                     console.warn(
@@ -658,6 +688,7 @@ export function useStreamChat({
       setStreamCompletedSuccessfullyById,
       setQueuePausedById,
       setStreamingBlocksById,
+      setStreamingPreviewById,
       selectedAppId,
       refetchUserBudget,
       settings,
