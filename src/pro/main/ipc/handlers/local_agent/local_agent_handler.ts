@@ -1604,6 +1604,15 @@ export async function handleLocalAgentStream(
       clearTimeout(pendingXmlEmitTimer);
       pendingXmlEmitTimer = null;
     }
+    // If an in-progress tool's XML preview was overlaid in the renderer
+    // and the stream tore down before onXmlComplete could commit and
+    // clear it (cancel, error, abort), explicitly clear the overlay so
+    // a stale XML preview doesn't persist past stream end. Idempotent
+    // when the overlay is already empty.
+    if (streamingPreview.length > 0) {
+      sendPreview("");
+      streamingPreview = "";
+    }
   }
 }
 
