@@ -1,4 +1,5 @@
 import {
+  type LucideIcon,
   Home,
   Inbox,
   Settings,
@@ -8,7 +9,7 @@ import {
 } from "lucide-react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useSidebar } from "@/components/ui/sidebar"; // import useSidebar hook
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { dropdownOpenAtom } from "@/atoms/uiAtoms";
 
@@ -19,11 +20,10 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
 import { ChatList } from "./ChatList";
 import { AppList } from "./AppList";
 import { HelpDialog } from "./HelpDialog"; // Import the new dialog
@@ -59,6 +59,80 @@ const items = [
   },
 ];
 
+type AppSidebarItemTo = (typeof items)[number]["to"];
+
+function AppSidebarRailButton({
+  icon: Icon,
+  label,
+  isExpanded,
+  isActive = false,
+  to,
+  onClick,
+  onMouseEnter,
+}: {
+  icon: LucideIcon;
+  label: string;
+  isExpanded: boolean;
+  isActive?: boolean;
+  to?: AppSidebarItemTo;
+  onClick?: () => void;
+  onMouseEnter?: () => void;
+}) {
+  const className = cn(
+    "group/rail-button relative mb-1 flex h-10 items-center justify-center rounded-xl outline-none transition-[width,background-color] duration-200 ease-linear focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+    isExpanded ? "w-14" : "w-10",
+    isActive
+      ? "bg-primary/15"
+      : "hover:bg-sidebar-accent active:bg-sidebar-accent",
+  );
+  const content = (
+    <>
+      <span
+        className={cn(
+          "absolute left-1/2 -translate-x-1/2 -translate-y-1/2 transition-[top] duration-200 ease-linear",
+          isExpanded ? "top-[42%]" : "top-1/2",
+        )}
+      >
+        <Icon className={cn("size-5", isActive && "text-primary")} />
+      </span>
+      <span
+        className={cn(
+          "pointer-events-none absolute bottom-0.5 left-1/2 max-w-[calc(100%-0.5rem)] -translate-x-1/2 truncate text-[10px] leading-3 transition-[opacity,transform] duration-200 ease-linear",
+          isExpanded ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
+          isActive ? "font-medium text-primary" : "text-sidebar-foreground/80",
+        )}
+      >
+        {label}
+      </span>
+    </>
+  );
+
+  if (to) {
+    return (
+      <Link
+        to={to}
+        aria-label={label}
+        className={className}
+        onMouseEnter={onMouseEnter}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      className={className}
+      onClick={onClick}
+      onMouseEnter={onMouseEnter}
+    >
+      {content}
+    </button>
+  );
+}
+
 // Hover state types
 type HoverState =
   | "start-hover:app"
@@ -69,10 +143,10 @@ type HoverState =
   | "no-hover";
 
 export function AppSidebar() {
-  const { state, toggleSidebar } = useSidebar(); // retrieve current sidebar state
+  const { state, toggleSidebar } = useSidebar();
   const [hoverState, setHoverState] = useState<HoverState>("no-hover");
   const expandedByHover = useRef(false);
-  const [isHelpDialogOpen, setIsHelpDialogOpen] = useState(false); // State for dialog
+  const [isHelpDialogOpen, setIsHelpDialogOpen] = useState(false);
   const [isDropdownOpen] = useAtom(dropdownOpenAtom);
 
   useEffect(() => {
@@ -124,6 +198,7 @@ export function AppSidebar() {
   return (
     <Sidebar
       collapsible="icon"
+      className="shadow-lg"
       onMouseLeave={() => {
         if (!isDropdownOpen) {
           setHoverState("clear-hover");
@@ -132,17 +207,24 @@ export function AppSidebar() {
     >
       <SidebarContent className="overflow-hidden">
         <div className="flex mt-8">
-          {/* Left Column: Menu items */}
-          <div className="">
+          {/* Left Column: Icon rail */}
+          <div
+            className={`px-1 transition-[width] duration-200 ease-linear ${
+              state === "expanded" ? "w-16" : "w-12"
+            }`}
+          >
             <SidebarTrigger
               onMouseEnter={() => {
                 setHoverState("clear-hover");
               }}
             />
-            <AppIcons onHoverChange={setHoverState} />
+            <AppIcons
+              onHoverChange={setHoverState}
+              isExpanded={state === "expanded"}
+            />
           </div>
-          {/* Right Column: Chat List Section */}
-          <div className="w-[272px]">
+          {/* Right Column: Contextual sub-list (only visible when expanded) */}
+          <div className="w-[224px] border-l border-sidebar-border">
             <AppList show={selectedItem === "Apps"} />
             <ChatList show={selectedItem === "Chat"} />
             <SettingsList show={selectedItem === "Settings"} />
@@ -151,18 +233,15 @@ export function AppSidebar() {
         </div>
       </SidebarContent>
 
-      <SidebarFooter>
+      <SidebarFooter className="px-1 items-start">
         <SidebarMenu>
           <SidebarMenuItem>
-            {/* Change button to open dialog instead of linking */}
-            <SidebarMenuButton
-              size="sm"
-              className="font-medium w-14 flex flex-col items-center gap-1 h-14 mb-2 rounded-2xl"
-              onClick={() => setIsHelpDialogOpen(true)} // Open dialog on click
-            >
-              <HelpCircle className="h-5 w-5" />
-              <span className={"text-xs"}>Help</span>
-            </SidebarMenuButton>
+            <AppSidebarRailButton
+              icon={HelpCircle}
+              label="Help"
+              isExpanded={state === "expanded"}
+              onClick={() => setIsHelpDialogOpen(true)}
+            />
             <HelpDialog
               isOpen={isHelpDialogOpen}
               onClose={() => setIsHelpDialogOpen(false)}
@@ -170,25 +249,39 @@ export function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
-
-      <SidebarRail />
     </Sidebar>
   );
 }
 
 function AppIcons({
   onHoverChange,
+  isExpanded,
 }: {
   onHoverChange: (state: HoverState) => void;
+  isExpanded: boolean;
 }) {
   const routerState = useRouterState();
   const pathname = routerState.location.pathname;
 
-  return (
-    // When collapsed: only show the main menu
-    <SidebarGroup className="pr-0">
-      {/* <SidebarGroupLabel>Dyad</SidebarGroupLabel> */}
+  const hoverForTitle = (title: string): HoverState => {
+    switch (title) {
+      case "Apps":
+        return "start-hover:app";
+      case "Chat":
+        return "start-hover:chat";
+      case "Settings":
+        return "start-hover:settings";
+      case "Library":
+        return "start-hover:library";
+      default:
+        // Items without a sub-list (e.g. Hub) dismiss any open preview so a
+        // stale list doesn't linger while hovering an unrelated icon.
+        return "clear-hover";
+    }
+  };
 
+  return (
+    <SidebarGroup className="p-0 py-2">
       <SidebarGroupContent>
         <SidebarMenu>
           {items.map((item) => {
@@ -198,30 +291,14 @@ function AppIcons({
 
             return (
               <SidebarMenuItem key={item.title}>
-                <SidebarMenuButton
-                  as={Link}
+                <AppSidebarRailButton
+                  icon={item.icon}
+                  label={item.title}
                   to={item.to}
-                  size="sm"
-                  className={`font-medium w-14 flex flex-col items-center gap-1 h-14 mb-2 rounded-2xl ${
-                    isActive ? "bg-sidebar-accent" : ""
-                  }`}
-                  onMouseEnter={() => {
-                    if (item.title === "Apps") {
-                      onHoverChange("start-hover:app");
-                    } else if (item.title === "Chat") {
-                      onHoverChange("start-hover:chat");
-                    } else if (item.title === "Settings") {
-                      onHoverChange("start-hover:settings");
-                    } else if (item.title === "Library") {
-                      onHoverChange("start-hover:library");
-                    }
-                  }}
-                >
-                  <div className="flex flex-col items-center gap-1">
-                    <item.icon className="h-5 w-5" />
-                    <span className={"text-xs"}>{item.title}</span>
-                  </div>
-                </SidebarMenuButton>
+                  isActive={isActive}
+                  isExpanded={isExpanded}
+                  onMouseEnter={() => onHoverChange(hoverForTitle(item.title))}
+                />
               </SidebarMenuItem>
             );
           })}

@@ -528,13 +528,10 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
 
   return (
     <TooltipProvider delay={500}>
-      <div ref={containerRef} className="flex min-w-0 items-center gap-1 px-2">
+      <div ref={containerRef} className="flex min-w-0 items-end gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-          {visibleTabs.map((chat, index) => {
+          {visibleTabs.map((chat) => {
             const isActive = selectedChatId === chat.id;
-            const isNextActive =
-              index < visibleTabs.length - 1 &&
-              selectedChatId === visibleTabs[index + 1].id;
             const title = chat.title?.trim() || t("newChat");
             const appName = appNameById.get(chat.appId) ?? `App ${chat.appId}`;
             const titleExcerpt = getChatTitleExcerpt(title);
@@ -601,16 +598,11 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                             setDraggingChatId(null);
                           }}
                           className={cn(
-                            "group relative flex h-10 min-w-[160px] max-w-52 items-center gap-1 rounded-md px-2.5 transition-all active:scale-[0.97]",
+                            "no-app-region-drag group relative flex h-8 min-w-[160px] max-w-52 items-center gap-1 px-2 py-0.5",
                             isActive
-                              ? "bg-background text-foreground shadow-sm"
-                              : "bg-muted/50 text-muted-foreground hover:bg-muted",
+                              ? "z-10 rounded-t-md rounded-b-none border border-b-0 border-border bg-background text-foreground"
+                              : "rounded-md bg-transparent text-muted-foreground hover:bg-muted/70",
                             isDragging && "opacity-60",
-                            // Chrome-style divider on right edge
-                            !isActive &&
-                              !isNextActive &&
-                              index < visibleTabs.length - 1 &&
-                              "after:absolute after:right-0 after:top-1/4 after:h-1/2 after:w-px after:bg-border",
                           )}
                         />
                       }
@@ -635,17 +627,38 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                       )}
                       <button
                         type="button"
-                        onClick={() => handleTabClick(chat)}
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return;
+                          handleTabClick(chat);
+                        }}
+                        onClick={(event) => {
+                          if (event.detail !== 0) return;
+                          handleTabClick(chat);
+                        }}
                         className="min-w-0 flex-1 text-left rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-current={isActive ? "page" : undefined}
                       >
-                        <div className="min-w-0">
-                          <div className="truncate text-xs leading-3.5 font-bold">
+                        <div className="flex min-w-0 flex-col justify-center text-xs">
+                          <span
+                            className={cn(
+                              "truncate leading-3",
+                              isActive
+                                ? "font-semibold text-foreground"
+                                : "font-medium text-foreground/60",
+                            )}
+                          >
                             {appName}
-                          </div>
-                          <div className="truncate text-xs leading-4">
+                          </span>
+                          <span
+                            className={cn(
+                              "truncate text-[11px] leading-3.5",
+                              isActive
+                                ? "text-muted-foreground"
+                                : "text-muted-foreground/70",
+                            )}
+                          >
                             {title}
-                          </div>
+                          </span>
                         </div>
                       </button>
                       <button
@@ -655,10 +668,10 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                           handleCloseTab(chat.id);
                         }}
                         className={cn(
-                          "flex h-6 w-6 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                           isActive
-                            ? "opacity-80 hover:bg-muted"
-                            : "opacity-0 group-hover:opacity-80 hover:bg-background/50 focus-visible:opacity-80",
+                            ? "text-muted-foreground hover:bg-muted hover:text-foreground"
+                            : "opacity-0 group-hover:opacity-100 hover:bg-background/60 focus-visible:opacity-100",
                         )}
                         aria-label={t("closeChatTab", { title })}
                       >
@@ -715,7 +728,7 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
         {overflowTabs.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger
-              className="flex h-7 w-8 items-center justify-center rounded-md border border-transparent bg-muted/50 text-muted-foreground hover:bg-muted"
+              className="no-app-region-drag flex h-7 w-8 items-center justify-center rounded-md border border-transparent bg-muted/50 text-muted-foreground hover:bg-muted"
               aria-label={t("openOverflowTabs", {
                 count: overflowTabs.length,
               })}
