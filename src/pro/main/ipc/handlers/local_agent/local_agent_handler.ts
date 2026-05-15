@@ -409,6 +409,15 @@ export async function handleLocalAgentStream(
       fullMessages,
       lastSentRef,
     );
+  // Sidecar preview send — independent of the patch protocol. The renderer
+  // overlays this string after the message's parsed blocks and clears the
+  // overlay when content is empty. Used for tool-input XML preview.
+  const sendPreview = (content: string) => {
+    safeSend(event.sender, "chat:response:chunk", {
+      chatId: req.chatId,
+      streamingPreview: { content },
+    });
+  };
   let postMidTurnCompactionStartStep: number | null = null;
 
   const appendInlineCompactionToTurn = async (
@@ -503,9 +512,12 @@ export async function handleLocalAgentStream(
       (accumulatedSummary: string) => {
         // Stream compaction summary to the frontend in real-time.
         // During mid-turn compaction, keep already streamed content visible.
+        // streamingPreview rides a separate overlay channel — do NOT mix it
+        // into message.content here; the renderer continues to show its
+        // preview overlay alongside this compaction-progress block.
         const compactionPreview = `<dyad-compaction title="Compacting conversation">\n${escapeXmlContent(accumulatedSummary)}\n</dyad-compaction>`;
         const previewContent = options?.showOnTopOfCurrentResponse
-          ? `${fullResponse}${streamingPreview ? streamingPreview : ""}\n${compactionPreview}`
+          ? `${fullResponse}\n${compactionPreview}`
           : compactionPreview;
         sendChunk(previewContent, { fullMessages: true });
       },
@@ -550,7 +562,9 @@ export async function handleLocalAgentStream(
     }
 
     if (options?.showOnTopOfCurrentResponse) {
-      sendChunk(fullResponse + streamingPreview, { fullMessages: true });
+      // streamingPreview rides the overlay channel; don't double-render it
+      // by mixing into message.content here.
+      sendChunk(fullResponse, { fullMessages: true });
     }
 
     return compactionResult.success;
@@ -617,17 +631,23 @@ export async function handleLocalAgentStream(
       fileEditTracker,
       isDyadPro: isDyadProEnabled(settings),
       onXmlStream: (accumulatedXml: string) => {
-        // Stream accumulated XML to UI without persisting
+        // Stream the in-progress tool XML as a sidecar preview overlay.
+        // Does NOT enter `message.content` or `fullResponse` — the patch
+        // protocol stays strictly append-only. buildXml output (which
+        // rewrites the prefix every JSON delta as attribute values grow)
+        // therefore can't perturb the streaming-patch base.
         streamingPreview = accumulatedXml;
-        sendChunk(fullResponse + streamingPreview);
+        sendPreview(streamingPreview);
       },
       onXmlComplete: (finalXml: string) => {
-        // Write final XML to DB and UI
+        // Commit final XML to fullResponse and clear the preview overlay.
         const xmlChunk = `${finalXml}\n`;
         fullResponse += xmlChunk;
-        streamingPreview = ""; // Clear preview
+        streamingPreview = "";
         updateResponseInDb(placeholderMessageId, fullResponse);
         sendChunk(fullResponse);
+        // Empty preview = renderer clears its overlay atom for this chat.
+        sendPreview("");
       },
       requireConsent: async (params: {
         toolName: string;
@@ -1540,6 +1560,16 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
     return false; // Error - don't consume quota
+  } finally {
+    // If an in-progress tool's XML preview was overlaid in the renderer
+    // and the stream tore down before onXmlComplete could commit and
+    // clear it (cancel, error, abort), explicitly clear the overlay so
+    // a stale XML preview doesn't persist past stream end. Idempotent
+    // when the overlay is already empty.
+    if (streamingPreview.length > 0) {
+      sendPreview("");
+      streamingPreview = "";
+    }
   }
 }
 
@@ -1689,11 +1719,31 @@ function sendResponseChunk(
     // tail-diff baseline in sync so the next streaming patch is correct.
     lastSentRef.value = fullResponse;
   } else {
+    const oldLen = lastSentRef.value.length;
     const patch = computeStreamingPatch(fullResponse, lastSentRef.value);
-    lastSentRef.value = fullResponse;
     if (!patch) {
       return;
     }
+    // Streaming patches are reserved for true append-only tail growth
+    // (offset === oldLen). When offset < oldLen the new content diverges
+    // inside the prior tail; applying the patch on the renderer would
+    // cleanly shrink visible content with no mismatch, briefly vanishing
+    // the response. Escalate to a fullMessages send so the renderer
+    // authoritatively replaces content.
+    if (patch.offset < oldLen) {
+      sendResponseChunk(
+        event,
+        chatId,
+        chat,
+        fullResponse,
+        placeholderMessageId,
+        hiddenMessageIds,
+        true,
+        lastSentRef,
+      );
+      return;
+    }
+    lastSentRef.value = fullResponse;
     safeSend(event.sender, "chat:response:chunk", {
       chatId,
       streamingMessageId: placeholderMessageId,

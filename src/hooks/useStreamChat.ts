@@ -13,6 +13,7 @@ import {
   recentStreamChatIdsAtom,
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
+  streamingPreviewByChatIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
@@ -110,6 +111,7 @@ export function useStreamChat({
   const setStreamCompletedSuccessfullyById = useSetAtom(
     streamCompletedSuccessfullyByIdAtom,
   );
+  const setStreamingPreviewByChatId = useSetAtom(streamingPreviewByChatIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -235,6 +237,16 @@ export function useStreamChat({
       }
       const targetAppId =
         appId ?? resolvedAppIdFromChat ?? selectedAppId ?? null;
+
+      const clearStreamingPreviewForChat = (chatId: number) => {
+        setStreamingPreviewByChatId((prev) => {
+          if (!prev.has(chatId)) return prev;
+          const next = new Map(prev);
+          next.delete(chatId);
+          return next;
+        });
+      };
+
       try {
         const cachedChat =
           requestedChatMode === null
@@ -260,6 +272,7 @@ export function useStreamChat({
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              streamingPreview,
               chunkSeq,
               effectiveChatMode,
               chatModeFallbackReason,
@@ -286,6 +299,27 @@ export function useStreamChat({
                   return next;
                 });
                 hasIncrementedStreamCount = true;
+              }
+
+              if (streamingPreview) {
+                // Sidecar tool-input XML overlay. Doesn't touch
+                // message.content. Empty content clears the overlay (server
+                // sends an empty preview when the tool's finalized XML is
+                // committed into fullResponse via onXmlComplete).
+                const { content } = streamingPreview;
+                setStreamingPreviewByChatId((prev) => {
+                  const existing = prev.get(chatId);
+                  if (content === "") {
+                    if (existing === undefined) return prev;
+                    const next = new Map(prev);
+                    next.delete(chatId);
+                    return next;
+                  }
+                  if (existing === content) return prev;
+                  const next = new Map(prev);
+                  next.set(chatId, content);
+                  return next;
+                });
               }
 
               if (updatedMessages) {
@@ -326,6 +360,7 @@ export function useStreamChat({
               pendingStreamChatIds.delete(chatId);
               latestChunkByChatId.delete(chatId);
               cancelAckTimer(chatId);
+              clearStreamingPreviewForChat(chatId);
               void (async () => {
                 // Only mark as successful if NOT cancelled - wasCancelled flag is set
                 // by the backend when user cancels the stream
@@ -503,6 +538,7 @@ export function useStreamChat({
               pendingStreamChatIds.delete(chatId);
               latestChunkByChatId.delete(chatId);
               cancelAckTimer(chatId);
+              clearStreamingPreviewForChat(chatId);
 
               for (const warningMessage of warningMessages ?? []) {
                 showWarning(warningMessage);
@@ -540,6 +576,7 @@ export function useStreamChat({
         pendingStreamChatIds.delete(chatId);
         latestChunkByChatId.delete(chatId);
         cancelAckTimer(chatId);
+        clearStreamingPreviewForChat(chatId);
 
         console.error("[CHAT] Exception during streaming setup:", error);
         setIsStreamingById((prev) => {
@@ -565,6 +602,7 @@ export function useStreamChat({
       setIsPreviewOpen,
       setStreamCompletedSuccessfullyById,
       setQueuePausedById,
+      setStreamingPreviewByChatId,
       selectedAppId,
       refetchUserBudget,
       settings,
