@@ -157,44 +157,59 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
 
   // The button is hidden while streaming, so avoid scanning the block list on
   // every chunk. Do the full scan only for settled content.
-  const { errorMessages, errorCount } = useMemo(() => {
+  const { errorMessages, errorCount, lastErrorIndex } = useMemo(() => {
     if (isStreaming) {
-      return { errorMessages: [], errorCount: 0 };
+      return EMPTY_ERROR_SCAN;
     }
     const errors: string[] = [];
-    const collectFrom = (block: Block) => {
+    let lastIndex = -1;
+    closedBlocks.forEach((block, index) => {
       if (
         block.kind === "custom-tag" &&
         block.tag === "dyad-output" &&
         block.attributes.type === "error"
       ) {
         const msg = block.attributes.message?.trim();
-        if (msg) errors.push(msg);
+        if (msg) {
+          errors.push(msg);
+          lastIndex = index;
+        }
       }
+    });
+    return {
+      errorMessages: errors,
+      errorCount: errors.length,
+      lastErrorIndex: lastIndex,
     };
-    for (const block of closedBlocks) collectFrom(block);
-    if (openBlock) collectFrom(openBlock);
-    return { errorMessages: errors, errorCount: errors.length };
-  }, [closedBlocks, openBlock, isStreaming]);
+  }, [closedBlocks, isStreaming]);
 
   const showFixAll =
     errorCount > 1 && !isStreaming && chatId !== null && chatId !== undefined;
 
   return (
     <>
-      <MemoClosedBlocks blocks={closedBlocks} />
+      <MemoClosedBlocks
+        blocks={closedBlocks}
+        lastErrorIndex={lastErrorIndex}
+        errorMessages={errorMessages}
+        showFixAll={showFixAll}
+        chatId={chatId ?? null}
+      />
       {openBlock ? renderBlock(openBlock, isStreaming) : null}
       {showStreamingPreview && chatId !== null && chatId !== undefined && (
         <StreamingPreviewBlocks chatId={chatId} isStreaming={isStreaming} />
       )}
-      {showFixAll && (
-        <div className="mt-3 w-full flex">
-          <FixAllErrorsButton errorMessages={errorMessages} chatId={chatId!} />
-        </div>
-      )}
     </>
   );
 };
+
+// Stable ref for the "nothing to scan" return path so MemoClosedBlocks's
+// memo doesn't invalidate every render during streaming.
+const EMPTY_ERROR_SCAN: {
+  errorMessages: string[];
+  errorCount: number;
+  lastErrorIndex: number;
+} = { errorMessages: [], errorCount: 0, lastErrorIndex: -1 };
 
 function StreamingPreviewBlocks({
   chatId,
@@ -231,27 +246,52 @@ function renderBlock(block: Block, isStreaming: boolean): React.ReactNode {
 }
 
 // Memoized wrapper for closed blocks. Memo hits when the `blocks` array ref
-// is unchanged (chunks that just extend the open block) so the entire
-// closed-block subtree is skipped — O(1) per chunk in the common case.
-// On commit chunks, the wrapper re-renders and reconciles N child fibers,
-// but each child is also memoed on `prev.block === next.block` so closed
-// children short-circuit and never re-render their subtrees.
+// and error-related props are unchanged (chunks that just extend the open
+// block) so the entire closed-block subtree is skipped — O(1) per chunk in
+// the common case. On commit chunks, the wrapper re-renders and reconciles
+// N child fibers, but each child is also memoed on `prev.block === next.block`
+// so closed children short-circuit and never re-render their subtrees.
 //
 // Closed blocks are by definition not in progress, so renderBlock can pass
 // isStreaming: false here unconditionally — the inner MemoBlockCustomTag
 // comparator already short-circuits on inProgress === false. Dropping the
 // prop also avoids unnecessary re-renders when isStreaming flips while
 // this component is still mounted.
+//
+// FixAllErrorsButton is rendered inline immediately after the last closed
+// dyad-output error block (when there are multiple errors). Placing it
+// adjacent to the relevant errors makes the connection obvious and matches
+// the pre-PR behavior. The `errorMessages` reference is stabilized in the
+// parent's useMemo so streaming-time renders don't churn this memo.
 const MemoClosedBlocks = React.memo(function MemoClosedBlocks({
   blocks,
+  lastErrorIndex,
+  errorMessages,
+  showFixAll,
+  chatId,
 }: {
   blocks: Block[];
+  lastErrorIndex: number;
+  errorMessages: string[];
+  showFixAll: boolean;
+  chatId: number | null;
 }) {
   return (
     <>
-      {blocks.map((block) => (
+      {blocks.map((block, index) => (
         <React.Fragment key={block.id}>
           {renderBlock(block, false)}
+          {showFixAll &&
+            index === lastErrorIndex &&
+            chatId !== null &&
+            chatId !== undefined && (
+              <div className="mt-3 w-full flex">
+                <FixAllErrorsButton
+                  errorMessages={errorMessages}
+                  chatId={chatId}
+                />
+              </div>
+            )}
         </React.Fragment>
       ))}
     </>

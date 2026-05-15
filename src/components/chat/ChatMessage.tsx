@@ -21,6 +21,10 @@ import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
 import { useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
+import {
+  selectedChatIdAtom,
+  streamingPreviewByChatIdAtom,
+} from "@/atoms/chatAtoms";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
@@ -96,8 +100,21 @@ const ChatMessage = ({
     message.role === "assistant"
       ? stripCancelledResponseNotice(message.content)
       : "";
+  // Sidecar tool-input XML preview lives outside message.content, so a turn
+  // that starts with a tool call (empty content + active preview) must still
+  // mount DyadMarkdownParser to surface the preview overlay. Without this,
+  // the loading-animation branch fires and the preview is hidden until final
+  // content is committed.
+  const selectedChatId = useAtomValue(selectedChatIdAtom);
+  const previewByChatId = useAtomValue(streamingPreviewByChatIdAtom);
+  const hasStreamingPreview =
+    message.role === "assistant" &&
+    selectedChatId !== null &&
+    selectedChatId !== undefined &&
+    (previewByChatId.get(selectedChatId)?.length ?? 0) > 0;
   const hasAssistantText =
-    message.role === "assistant" && assistantTextContent.length > 0;
+    message.role === "assistant" &&
+    (assistantTextContent.length > 0 || hasStreamingPreview);
   //handle copy chat
   const { copyMessageContent, copied } = useCopyToClipboard();
   const handleCopyFormatted = async () => {
