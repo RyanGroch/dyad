@@ -246,6 +246,18 @@ export const chatContracts = {
     ),
   }),
 
+  getChatMetadata: defineContract({
+    channel: "get-chat-metadata",
+    input: z.number(),
+    output: z.object({
+      id: z.number(),
+      appId: z.number(),
+      title: z.string().nullable(),
+      createdAt: z.date(),
+      chatMode: NullableChatModeSchema,
+    }),
+  }),
+
   createChat: defineContract({
     channel: "create-chat",
     input: z.union([
