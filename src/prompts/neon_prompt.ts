@@ -1,6 +1,7 @@
 import addAuthenticationGuide from "./guides/add-authentication.md?raw";
 import addEmailVerificationGuide from "./guides/add-email-verification.md?raw";
 import addPasswordResetGuide from "./guides/add-password-reset.md?raw";
+import { filterGuideByFramework } from "./guides/filter_guide_by_framework";
 import type { AppFrameworkType } from "@/lib/framework_constants";
 
 export function getNeonAvailableSystemPrompt(
@@ -19,6 +20,7 @@ export function getNeonAvailableSystemPrompt(
     neonClientCode,
     emailVerification,
     isLocalAgentMode,
+    frameworkType,
   );
 
   if (frameworkType === "nextjs") {
@@ -29,7 +31,19 @@ export function getNeonAvailableSystemPrompt(
         nextjsMajorVersion,
         isLocalAgentMode,
       ) +
-      (emailVerification ? getEmailVerificationNote(isLocalAgentMode) : "")
+      (emailVerification
+        ? getEmailVerificationNote(isLocalAgentMode, frameworkType)
+        : "")
+    );
+  }
+
+  if (frameworkType === "vite-nitro") {
+    return (
+      sharedPrompt +
+      getViteNitroNeonPrompt(isLocalAgentMode) +
+      (emailVerification
+        ? getEmailVerificationNote(isLocalAgentMode, frameworkType)
+        : "")
     );
   }
 
@@ -40,6 +54,7 @@ function getSharedNeonPrompt(
   neonClientCode: string,
   emailVerificationEnabled: boolean,
   isLocalAgentMode: boolean,
+  frameworkType: AppFrameworkType | null,
 ): string {
   const authSection = isLocalAgentMode
     ? `## Auth (detailed guide available)
@@ -50,9 +65,9 @@ ${emailVerificationEnabled ? `\n**IMPORTANT:** Email verification is enabled. Af
 **IMPORTANT:** If the task involves password reset, forgot-password, or "reset my password" flows, you MUST call \`read_guide\` with guide="add-password-reset" BEFORE writing any password-reset code. Do NOT hand-roll a reset-token flow.`
     : `## Auth
 
-${addAuthenticationGuide}
-${emailVerificationEnabled ? `\n${addEmailVerificationGuide}` : ""}
-${addPasswordResetGuide}`;
+${filterGuideByFramework(addAuthenticationGuide, frameworkType)}
+${emailVerificationEnabled ? `\n${filterGuideByFramework(addEmailVerificationGuide, frameworkType)}` : ""}
+${filterGuideByFramework(addPasswordResetGuide, frameworkType)}`;
 
   return `
 <neon-system-prompt>
@@ -220,6 +235,109 @@ NEON_AUTH_COOKIE_SECRET=your-cookie-secret-here
 `;
 }
 
+const VITE_NITRO_AUTH_DECISION_STEPS_LOCAL_AGENT = `4. **If** user needs auth APIs or sessions → call \`read_guide\` with guide="add-authentication", then follow the Vite + Nitro section. It describes (in prose, not boilerplate) the catch-all proxy at \`server/routes/api/auth/[...all].ts\`, plus \`server/utils/session.ts\`, \`server/middleware/auth.ts\`, and \`src/lib/auth-client.ts\` — write each file yourself from those descriptions.
+5. **If** user wants prebuilt auth or account pages → call \`read_guide\` with guide="add-authentication", then follow the Vite + Nitro section. Wrap the app with \`NeonAuthUIProvider\`, register a \`/auth/:path\` React Router route that renders \`<AuthView>\`, and rely on the catch-all Nitro proxy for \`/api/auth/*\`.
+6. **If** user wants password reset or forgot-password → call \`read_guide\` with guide="add-password-reset", then follow the Vite + Nitro section. The same \`[...all]\` proxy handles reset traffic; UI lives in \`src/pages/auth/\`.`;
+
+const VITE_NITRO_AUTH_DECISION_STEPS = `4. **If** user needs auth APIs or sessions → follow the Auth guide
+   (Vite + Nitro section). It describes (in prose, not boilerplate) the
+   catch-all proxy at \`server/routes/api/auth/[...all].ts\`, plus
+   \`server/utils/session.ts\`, \`server/middleware/auth.ts\`, and
+   \`src/lib/auth-client.ts\` — write each file yourself from those
+   descriptions.
+5. **If** user wants prebuilt auth or account pages → follow the Auth guide
+   (Vite + Nitro section). Wrap the app with \`NeonAuthUIProvider\`, register
+   a \`/auth/:path\` React Router route that renders \`<AuthView>\`, and rely
+   on the catch-all Nitro proxy for \`/api/auth/*\`.
+6. **If** user wants password reset or forgot-password → follow the Password
+   Reset guide (Vite + Nitro section). The same \`[...all]\` proxy handles
+   reset traffic; UI lives in \`src/pages/auth/\`.`;
+
+function getViteNitroNeonPrompt(isLocalAgentMode: boolean): string {
+  const authDecisionSteps = isLocalAgentMode
+    ? VITE_NITRO_AUTH_DECISION_STEPS_LOCAL_AGENT
+    : VITE_NITRO_AUTH_DECISION_STEPS;
+
+  return `
+<vite-nitro-instructions>
+
+## Vite + Nitro + Neon Integration
+
+This project is a Vite app with a Nitro server layer. Nitro mechanics (plugin
+order, route file conventions, \`defineHandler\` usage, the "no server imports
+in client code" rule) are documented in \`AI_RULES.md\` — follow them. The
+guidance below is the Neon-specific layer on top.
+
+<critical-rules>
+Vite-Nitro-specific rules that supplement the global critical rules:
+
+- **no-dburl-in-src**: NEVER reference \`process.env.DATABASE_URL\` or
+  \`NEON_AUTH_BASE_URL\` from any file under \`src/\`. The Vite client bundle is
+  public — leaking these gives anyone full database access or lets them
+  bypass the proxy and call Neon Auth directly.
+- **no-neon-import-in-src**: NEVER import \`@neondatabase/serverless\` from
+  \`src/\` — it is server-only. The browser-safe entry points
+  \`@neondatabase/auth\` (for \`createAuthClient\`),
+  \`@neondatabase/auth/react\`, and \`@neondatabase/auth/react/adapters\` ARE
+  allowed in \`src/\` and are required by the auth client templates.
+- **no-vite-prefix-on-secrets**: NEVER expose Neon vars as \`VITE_*\` — that
+  inlines them into the client bundle.
+</critical-rules>
+
+### Decision Tree
+
+Follow this strictly, in order:
+
+<decision-tree>
+1. Inspect the project for an existing \`server/utils/db.ts\` (or equivalent),
+   auth modules under \`server/\`, and an existing auth middleware in
+   \`server/middleware/\`.
+2. Reuse those modules and conventions if they exist. Do NOT create duplicate
+   database clients, auth clients, or middleware files.
+3. **If** user only needs server-side database access → use the DB-only path.
+${authDecisionSteps}
+</decision-tree>
+
+### DATABASE_URL Allowed Locations
+
+\`DATABASE_URL\` MUST stay exclusively in \`server/**\` and \`.env.local\` — never
+in \`src/\`. Nitro reads \`.env.local\` automatically and exposes it via
+\`process.env\` inside any \`server/\` file.
+
+### Path: DB-Only (No Auth)
+
+Use when the request is about database access without auth UI.
+
+- Reuse the server-side Neon client at \`server/utils/db.ts\` when no
+  equivalent already exists. Always import \`sql\` explicitly from there —
+  do not rely on Nitro auto-imports for the DB client.
+- \`defineHandler\` is imported from \`"nitro"\` (see \`AI_RULES.md\` for route
+  file conventions).
+
+<code-template label="db-only-route-handler" file="server/routes/api/todos.get.ts" language="typescript">
+import { defineHandler } from 'nitro';
+import { sql } from '../../utils/db';
+
+export default defineHandler(async () => {
+  return sql\`SELECT * FROM todos ORDER BY created_at DESC\`;
+});
+</code-template>
+
+### Environment Variables (\`.env.local\`)
+
+DB-only apps need just the Neon database URL. \`NEON_AUTH_BASE_URL\` is added
+by the Auth guide when the user adds auth — do not include it for DB-only
+projects.
+
+<code-template label="env-vars" file=".env.local" language="bash">
+# Neon Database (injected by Dyad)
+DATABASE_URL=postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/dbname?sslmode=require
+</code-template>
+
+</vite-nitro-instructions>
+`;
+}
+
 function getGenericNeonPrompt(): string {
   return `
 ## Generic Database Instructions
@@ -236,7 +354,10 @@ DATABASE_URL=postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/dbname?sslmod
 `;
 }
 
-function getEmailVerificationNote(isLocalAgentMode: boolean): string {
+function getEmailVerificationNote(
+  isLocalAgentMode: boolean,
+  frameworkType: AppFrameworkType | null,
+): string {
   if (isLocalAgentMode) {
     return `
 ## Email Verification
@@ -249,6 +370,6 @@ Email verification is **enabled** on this Neon Auth branch. When implementing si
 
 Email verification is **enabled** on this Neon Auth branch.
 
-${addEmailVerificationGuide}
+${filterGuideByFramework(addEmailVerificationGuide, frameworkType)}
 `;
 }

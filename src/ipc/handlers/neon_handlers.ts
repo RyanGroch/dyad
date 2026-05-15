@@ -31,6 +31,11 @@ import {
   assertNoSupabaseProject,
   assertNoNeonProject,
 } from "../utils/neon_utils";
+import {
+  ensureNitroIfVite,
+  type EnsureNitroResult,
+} from "../utils/nitro_setup";
+import { getDyadAppPath } from "@/paths/paths";
 import { getProductionBranchId } from "../utils/migration_utils";
 import { getConnectionUri } from "../../neon_admin/neon_context";
 
@@ -80,6 +85,25 @@ export function registerNeonHandlers() {
       );
     }
     const appPath = appRecord[0].path;
+    const resolvedAppPath = getDyadAppPath(appPath);
+
+    // Vite apps need a Nitro server layer to safely host server-only Neon code
+    // (DATABASE_URL, neon client, auth secrets). Add it before any Neon API
+    // calls so a Nitro failure won't orphan a Neon project.
+    const nitroSetup = await ensureNitroIfVite(resolvedAppPath);
+    const nitroWarnings = nitroSetup.warningMessages;
+    let nitroRolledBack = false;
+    const rollbackNitroOnce = async () => {
+      if (nitroRolledBack) return;
+      nitroRolledBack = true;
+      try {
+        await nitroSetup.rollback();
+      } catch (rollbackError) {
+        logger.error(
+          `Failed to roll back Nitro setup for app ${appId}: ${rollbackError}`,
+        );
+      }
+    };
 
     try {
       // Get the organization ID
@@ -219,6 +243,7 @@ export function registerNeonHandlers() {
 
         // Auto-inject env vars into the app's .env.local
         const warning = combineWarnings(
+          ...nitroWarnings,
           ...authWarnings,
           await autoInjectNeonEnvVars({
             appPath,
@@ -280,9 +305,18 @@ export function registerNeonHandlers() {
             `Failed to restore .env.local for app ${appId} after project cleanup: ${envCleanupError}`,
           );
         }
+        // Roll back the Nitro server layer we added at the top of this
+        // handler so a failed connect doesn't leave the app with
+        // nitro.config.ts, server/, vite.config.ts edits, and AI_RULES
+        // changes for a project that was never linked.
+        await rollbackNitroOnce();
         throw postCreateError;
       }
     } catch (error: any) {
+      // Catches errors from pre-postCreate steps (e.g. getNeonOrganizationId,
+      // createProject). The postCreate inner catch already rolled back Nitro
+      // for its failures; this handles everything else.
+      await rollbackNitroOnce();
       if (error instanceof DyadError) throw error;
       const errorMessage = getNeonErrorMessage(error);
       const message = `Failed to create Neon project for app ${appId}: ${errorMessage}`;
@@ -457,15 +491,24 @@ export function registerNeonHandlers() {
       );
     }
     const appPath = appRecord[0].path;
+    const resolvedAppPath = getDyadAppPath(appPath);
+
     const envFileSnapshot = await readEnvFileIfExists({ appPath });
+    let nitroSetup: EnsureNitroResult | null = null;
 
     try {
+      // Validate the Neon project exists and is accessible BEFORE installing
+      // Nitro, so an auth/project-id failure doesn't leave the app with a
+      // half-installed Nitro server layer.
       const neonClient = await getNeonClient();
-
-      // Get branches to find the development branch
       const branchesResponse = await neonClient.listProjectBranches({
         projectId,
       });
+
+      // Vite apps need a Nitro server layer to safely host server-only Neon
+      // code. Run this after Neon validation but before linking so a Nitro
+      // failure leaves the app unlinked.
+      nitroSetup = await ensureNitroIfVite(resolvedAppPath);
 
       if (!branchesResponse.data.branches) {
         throw new DyadError(
@@ -550,8 +593,23 @@ export function registerNeonHandlers() {
       logger.info(
         `Successfully linked Neon project ${projectId} to app ${appId}`,
       );
-      return { success: true, warning };
+      return {
+        success: true,
+        warning: combineWarnings(...nitroSetup.warningMessages, warning),
+      };
     } catch (error: any) {
+      // Roll back the Nitro server layer we added so a failed link doesn't
+      // leave the app with nitro.config.ts, server/, vite.config.ts edits,
+      // and AI_RULES changes for a project that was never linked.
+      if (nitroSetup) {
+        try {
+          await nitroSetup.rollback();
+        } catch (rollbackError) {
+          logger.error(
+            `Failed to roll back Nitro setup for app ${appId}: ${rollbackError}`,
+          );
+        }
+      }
       if (error instanceof DyadError) throw error;
       const errorMessage = getNeonErrorMessage(error);
       logger.error(

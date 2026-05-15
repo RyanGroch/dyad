@@ -19,6 +19,8 @@ Email verification is **enabled** on this Neon Auth branch. When users sign up, 
 
 **The sign-up page MUST be a custom form — do NOT use `AuthView` for sign-up.** `AuthView` does not provide a post-sign-up callback, so it is impossible to redirect to the verification page. Build a custom sign-up form that calls `authClient.signUp.email()` directly, checks `emailVerified`, and redirects.
 
+<nextjs-only>
+
 <code-template label="custom-signup-page" file="app/auth/sign-up/page.tsx" language="tsx">
 'use client';
 
@@ -169,6 +171,48 @@ Resend verification code
 );
 }
 </code-template>
+
+</nextjs-only>
+
+<vite-nitro-only>
+
+### Vite + Nitro: Custom Sign-Up + OTP Verification
+
+In a Vite + React Router project, the sign-up and verify-email pages live under `src/pages/auth/` and use `useNavigate` / `useSearchParams` from `react-router-dom`. Both pages call `authClient` from `@/lib/auth-client` (same client used everywhere — talks to the Nitro proxy at `/api/auth/*`).
+
+<critical-rules>
+- **must-not-use-nextjs-routing**: Do NOT use `next/navigation`, `'use client'`, `app/auth/...`, or Next.js Server Components in a Vite + Nitro project. Use `react-router-dom` and `src/pages/auth/...`.
+- **must-register-public-routes**: The sign-up and verify-email routes MUST be reachable WITHOUT auth. The auth-middleware's public-prefix list (covering `/auth/*`) already handles this — don't tighten it.
+</critical-rules>
+
+#### Custom sign-up page
+
+Create `src/pages/auth/SignUpPage.tsx`.
+
+- Imports: `useState` from `'react'`, `useNavigate` from `'react-router-dom'`, `authClient` from `'@/lib/auth-client'`.
+- Local state: `name`, `email`, `password`, `error`, `isLoading`. Get `navigate` from `useNavigate()`.
+- Submit handler: `e.preventDefault()`, set `isLoading`, clear `error`, then `await authClient.signUp.email({ email, password, name })`. If the response has an `error`, show its `message ?? 'Sign-up failed.'` and bail. Wrap in try/catch for unexpected errors. Always reset `isLoading` in `finally`.
+- **Critical redirect**: when the response has `data?.user && !data.user.emailVerified`, immediately call `navigate(\`/auth/verify-email?email=${encodeURIComponent(email)}\`)`. This redirect is mandatory — without it, the user is stranded on the sign-up page and the flow is incomplete.
+- Render an accessible form (name, email, password inputs all `required`), an error message when `error` is set, a submit button that disables and shows a "Signing up…" label while `isLoading`, and a link to `/auth/sign-in` for users who already have an account.
+- Style the page to match the app (same rules as the rest of the auth UI). Use a scoped `auth.css` if the auth pages already share one — do NOT touch `globals.css`.
+
+#### OTP verification page
+
+Create `src/pages/auth/VerifyEmailPage.tsx`.
+
+- Imports: `useState` from `'react'`, `useNavigate`, `useSearchParams`, `useLocation` from `'react-router-dom'`, `authClient` from `'@/lib/auth-client'`.
+- Local state: `otp`, `message`, `isVerifying`. Get `navigate` from `useNavigate()`, `location` from `useLocation()`, `[searchParams]` from `useSearchParams()`. Read `email = searchParams.get('email') ?? ''`.
+- Verify handler: `await authClient.emailOtp.verifyEmail({ email, otp })`. If the response has an `error`, throw it. If `data?.session` exists, the user is signed in — navigate to the app's home/dashboard. Otherwise show "Email verified! You can now sign in." and navigate to `/auth/sign-in`. On thrown errors, surface `err?.message` (fall back to "Invalid or expired verification code."). Always clear `isVerifying` in `finally`.
+- Resend handler: `await authClient.sendVerificationEmail({ email, callbackURL: \`${location.pathname}?email=${encodeURIComponent(email)}\` })`. Throw on error; on success show "Verification email resent! Check your inbox."
+- Render: heading, a line showing the email being verified, a form with a single text input for the OTP (`required`), the `message` line when set, a submit button that disables and shows "Verifying…" while `isVerifying`, a separate "Resend verification code" button wired to the resend handler, and a note that codes expire after 15 minutes.
+
+#### Register the routes
+
+In `src/App.tsx`, add two routes inside the existing `<Routes>` block: `<Route path="/auth/sign-up" element={<SignUpPage />} />` and `<Route path="/auth/verify-email" element={<VerifyEmailPage />} />`. Both must be reachable without authentication — the auth middleware's `/auth/*` public prefix already covers this; do NOT tighten it.
+
+If the project still has the generic `/auth/:path` route (from the base auth guide) rendering `AuthView`, keep it for sign-in but ensure `/auth/sign-up` is a more specific route registered **before** the catch-all so React Router prefers your custom page over `AuthView` for sign-up.
+
+</vite-nitro-only>
 
 ### Key APIs
 
