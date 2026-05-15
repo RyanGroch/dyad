@@ -7,18 +7,20 @@ import { useNavigate } from "@tanstack/react-router";
 import { useChats } from "@/hooks/useChats";
 import { useLoadApps } from "@/hooks/useLoadApps";
 import { useSelectChat } from "@/hooks/useSelectChat";
+import { useIsMac } from "@/hooks/useChatModeToggle";
 import {
   isStreamingByIdAtom,
   recentViewedChatIdsAtom,
   selectedChatIdAtom,
   setRecentViewedChatIdsAtom,
-  removeRecentViewedChatIdAtom,
   pushRecentViewedChatIdAtom,
   closedChatIdsAtom,
   pruneClosedChatIdsAtom,
   sessionOpenedChatIdsAtom,
   closeMultipleTabsAtom,
+  type ClosedTabRecord,
 } from "@/atoms/chatAtoms";
+import { useReopenClosedTab } from "@/hooks/useReopenClosedTab";
 import { cn } from "@/lib/utils";
 import { AppAvatar } from "@/components/AppAvatar";
 import {
@@ -32,6 +34,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -223,13 +226,15 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
   const closedChatIds = useAtomValue(closedChatIdsAtom);
   const sessionOpenedChatIds = useAtomValue(sessionOpenedChatIdsAtom);
   const setRecentViewedChatIds = useSetAtom(setRecentViewedChatIdsAtom);
-  const removeRecentViewedChatId = useSetAtom(removeRecentViewedChatIdAtom);
   const pushRecentViewedChatId = useSetAtom(pushRecentViewedChatIdAtom);
   const pruneClosedChatIds = useSetAtom(pruneClosedChatIdsAtom);
   const closeMultipleTabs = useSetAtom(closeMultipleTabsAtom);
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
+  const { reopenClosedTab, hasClosedTabs, lastClosedTab } =
+    useReopenClosedTab();
   const { selectChat } = useSelectChat();
   const navigate = useNavigate();
+  const isMac = useIsMac();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [draggingChatId, setDraggingChatId] = useState<number | null>(null);
@@ -421,32 +426,13 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
   };
 
   const handleCloseTab = (chatId: number) => {
-    // Use orderedChats (all tabs: visible + overflow) instead of just visibleTabs
-    const closedTab = chatsById.get(chatId);
     const fallbackChatId = getFallbackChatIdAfterClose(orderedChats, chatId);
+    closeTabsAndClearNotifications([chatId], fallbackChatId ?? undefined);
 
-    removeRecentViewedChatId(chatId);
-    clearNotification(chatId);
-
-    if (!closedTab || selectedChatId !== chatId) {
-      return;
-    }
-
-    // If no fallback tab (last tab closed), navigate to home
-    if (fallbackChatId === null) {
+    if (fallbackChatId === null && selectedChatId === chatId) {
       setSelectedChatId(null);
       navigate({ to: "/" });
-      return;
     }
-
-    const fallbackTab = chatsById.get(fallbackChatId);
-    if (!fallbackTab) return;
-
-    selectChat({
-      chatId: fallbackTab.id,
-      appId: fallbackTab.appId,
-      preserveTabOrder: true,
-    });
   };
 
   // Helper to close multiple tabs and optionally switch to a fallback
@@ -458,15 +444,22 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
         clearNotification(id);
       }
 
-      closeMultipleTabs(idsToClose);
+      const records: ClosedTabRecord[] = idsToClose
+        .map((id) => {
+          const chat = chatsById.get(id);
+          return chat
+            ? { chatId: chat.id, appId: chat.appId, title: chat.title }
+            : null;
+        })
+        .filter((record): record is ClosedTabRecord => record !== null);
 
-      // Switch to fallback if:
-      // - fallback is provided AND
-      // - (selected chat is being closed OR selected chat differs from requested fallback)
+      closeMultipleTabs(records);
+
+      // Switch to fallback when a fallback is provided and either there is
+      // no selected chat (null) or the currently selected chat is being closed.
       if (
         fallbackChatId !== undefined &&
-        (idsToClose.includes(selectedChatId ?? -1) ||
-          selectedChatId !== fallbackChatId)
+        (selectedChatId === null || idsToClose.includes(selectedChatId ?? -1))
       ) {
         const fallbackTab = chatsById.get(fallbackChatId);
         if (fallbackTab) {
@@ -725,6 +718,21 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                     disabled={!hasMultipleApps}
                   >
                     {t("groupTabsByApp")}
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    onClick={reopenClosedTab}
+                    disabled={!hasClosedTabs}
+                    title={t("reopenClosedTabTooltip")}
+                  >
+                    {hasClosedTabs && lastClosedTab?.title
+                      ? t("reopenClosedTabWithTitle", {
+                          title: lastClosedTab.title,
+                        })
+                      : t("reopenClosedTab")}
+                    <ContextMenuShortcut title={t("reopenClosedTabTooltip")}>
+                      {isMac ? "⇧⌘T" : "Ctrl+⇧+T"}
+                    </ContextMenuShortcut>
                   </ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
