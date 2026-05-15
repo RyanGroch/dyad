@@ -109,6 +109,8 @@ const ChatMessage = ({
   const previewByChatId = useAtomValue(streamingPreviewByChatIdAtom);
   const hasStreamingPreview =
     message.role === "assistant" &&
+    isLastMessage &&
+    isStreaming &&
     selectedChatId !== null &&
     selectedChatId !== undefined &&
     (previewByChatId.get(selectedChatId)?.length ?? 0) > 0;
