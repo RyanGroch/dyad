@@ -245,24 +245,10 @@ function renderBlock(block: Block, isStreaming: boolean): React.ReactNode {
   return <MemoBlockCustomTag block={block} isStreaming={isStreaming} />;
 }
 
-// Memoized wrapper for closed blocks. Memo hits when the `blocks` array ref
-// and error-related props are unchanged (chunks that just extend the open
-// block) so the entire closed-block subtree is skipped — O(1) per chunk in
-// the common case. On commit chunks, the wrapper re-renders and reconciles
-// N child fibers, but each child is also memoed on `prev.block === next.block`
-// so closed children short-circuit and never re-render their subtrees.
-//
-// Closed blocks are by definition not in progress, so renderBlock can pass
-// isStreaming: false here unconditionally — the inner MemoBlockCustomTag
-// comparator already short-circuits on inProgress === false. Dropping the
-// prop also avoids unnecessary re-renders when isStreaming flips while
-// this component is still mounted.
-//
-// FixAllErrorsButton is rendered inline immediately after the last closed
-// dyad-output error block (when there are multiple errors). Placing it
-// adjacent to the relevant errors makes the connection obvious and matches
-// the pre-PR behavior. The `errorMessages` reference is stabilized in the
-// parent's useMemo so streaming-time renders don't churn this memo.
+// Memoized wrapper for closed blocks. Memo hits when blocks ref + error
+// props are unchanged, so the closed-block subtree is skipped per chunk.
+// Closed children also memo on `prev.block === next.block` and skip their
+// subtrees on commit chunks.
 const MemoClosedBlocks = React.memo(function MemoClosedBlocks({
   blocks,
   lastErrorIndex,
