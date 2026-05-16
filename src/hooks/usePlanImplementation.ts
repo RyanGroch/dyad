@@ -6,12 +6,17 @@ import {
   chatMessagesByIdAtom,
   chatErrorByIdAtom,
   chatStreamCountByIdAtom,
+  streamingPreviewByChatIdAtom,
 } from "@/atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
+import {
+  applyPreviewChunk,
+  clearPreviewForChat,
+} from "@/lib/streamingPreviewSync";
 
 /**
  * Hook to handle starting plan implementation when a plan is accepted.
@@ -26,6 +31,7 @@ export function usePlanImplementation() {
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setErrorById = useSetAtom(chatErrorByIdAtom);
   const setStreamCountById = useSetAtom(chatStreamCountByIdAtom);
+  const setStreamingPreviewByChatId = useSetAtom(streamingPreviewByChatIdAtom);
   const store = useStore();
   const { settings } = useSettings();
 
@@ -112,6 +118,7 @@ export function usePlanImplementation() {
               messages: updatedMessages,
               streamingMessageId,
               streamingPatch,
+              streamingPreview,
               effectiveChatMode,
               chatModeFallbackReason,
             }) => {
@@ -135,6 +142,12 @@ export function usePlanImplementation() {
                 });
                 hasIncrementedStreamCount = true;
               }
+
+              applyPreviewChunk(
+                setStreamingPreviewByChatId,
+                chatId,
+                streamingPreview,
+              );
 
               if (updatedMessages) {
                 // Full messages update (initial load, post-compaction, etc.)
@@ -165,6 +178,7 @@ export function usePlanImplementation() {
                 next.set(chatId, false);
                 return next;
               });
+              clearPreviewForChat(setStreamingPreviewByChatId, chatId);
               syncChatFromDb(
                 chatId,
                 setMessagesById,
@@ -184,6 +198,7 @@ export function usePlanImplementation() {
                 next.set(chatId, false);
                 return next;
               });
+              clearPreviewForChat(setStreamingPreviewByChatId, chatId);
               syncChatFromDb(
                 chatId,
                 setMessagesById,
@@ -212,6 +227,7 @@ export function usePlanImplementation() {
     setMessagesById,
     setErrorById,
     setStreamCountById,
+    setStreamingPreviewByChatId,
     settings,
     store,
   ]);

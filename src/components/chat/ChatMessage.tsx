@@ -20,6 +20,7 @@ import {
 import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
 import { useAtomValue } from "jotai";
+import { selectAtom } from "jotai/utils";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import {
   selectedChatIdAtom,
@@ -100,20 +101,24 @@ const ChatMessage = ({
     message.role === "assistant"
       ? stripCancelledResponseNotice(message.content)
       : "";
-  // Sidecar tool-input XML preview lives outside message.content, so a turn
-  // that starts with a tool call (empty content + active preview) must still
-  // mount DyadMarkdownParser to surface the preview overlay. Without this,
-  // the loading-animation branch fires and the preview is hidden until final
-  // content is committed.
+  // Sidecar tool-input XML preview lives outside message.content. Subscribe
+  // to a per-chat boolean derived atom so non-last messages don't re-render
+  // every preview chunk — only on the boolean transition.
   const selectedChatId = useAtomValue(selectedChatIdAtom);
-  const previewByChatId = useAtomValue(streamingPreviewByChatIdAtom);
+  const hasPreviewForChatAtom = useMemo(
+    () =>
+      selectAtom(streamingPreviewByChatIdAtom, (m) => {
+        if (selectedChatId == null) return false;
+        return (m.get(selectedChatId)?.length ?? 0) > 0;
+      }),
+    [selectedChatId],
+  );
+  const hasPreviewForChat = useAtomValue(hasPreviewForChatAtom);
   const hasStreamingPreview =
     message.role === "assistant" &&
     isLastMessage &&
     isStreaming &&
-    selectedChatId !== null &&
-    selectedChatId !== undefined &&
-    (previewByChatId.get(selectedChatId)?.length ?? 0) > 0;
+    hasPreviewForChat;
   const hasAssistantText =
     message.role === "assistant" &&
     (assistantTextContent.length > 0 || hasStreamingPreview);

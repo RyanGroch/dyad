@@ -26,6 +26,10 @@ import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import {
+  applyPreviewChunk,
+  clearPreviewForChat,
+} from "@/lib/streamingPreviewSync";
+import {
   triggerResync,
   syncChatFromDb,
   mergeResyncMessages,
@@ -238,20 +242,11 @@ export function useStreamChat({
       const targetAppId =
         appId ?? resolvedAppIdFromChat ?? selectedAppId ?? null;
 
-      const clearStreamingPreviewForChat = (chatId: number) => {
-        setStreamingPreviewByChatId((prev) => {
-          if (!prev.has(chatId)) return prev;
-          const next = new Map(prev);
-          next.delete(chatId);
-          return next;
-        });
-      };
-
       const finalizeStream = (chatId: number) => {
         pendingStreamChatIds.delete(chatId);
         latestChunkByChatId.delete(chatId);
         cancelAckTimer(chatId);
-        clearStreamingPreviewForChat(chatId);
+        clearPreviewForChat(setStreamingPreviewByChatId, chatId);
       };
 
       try {
@@ -308,26 +303,11 @@ export function useStreamChat({
                 hasIncrementedStreamCount = true;
               }
 
-              if (streamingPreview) {
-                // Sidecar tool-input XML overlay. Doesn't touch
-                // message.content. Empty content clears the overlay (server
-                // sends an empty preview when the tool's finalized XML is
-                // committed into fullResponse via onXmlComplete).
-                const { content } = streamingPreview;
-                setStreamingPreviewByChatId((prev) => {
-                  const existing = prev.get(chatId);
-                  if (content === "") {
-                    if (existing === undefined) return prev;
-                    const next = new Map(prev);
-                    next.delete(chatId);
-                    return next;
-                  }
-                  if (existing === content) return prev;
-                  const next = new Map(prev);
-                  next.set(chatId, content);
-                  return next;
-                });
-              }
+              applyPreviewChunk(
+                setStreamingPreviewByChatId,
+                chatId,
+                streamingPreview,
+              );
 
               if (updatedMessages) {
                 // Full messages update (initial load, post-compaction, etc.)

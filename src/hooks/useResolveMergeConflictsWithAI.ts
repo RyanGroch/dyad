@@ -7,6 +7,7 @@ import {
   chatMessagesByIdAtom,
   isStreamingByIdAtom,
   chatStreamCountByIdAtom,
+  streamingPreviewByChatIdAtom,
 } from "@/atoms/chatAtoms";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { showError } from "@/lib/toast";
@@ -16,6 +17,10 @@ import { useSettings } from "@/hooks/useSettings";
 import { handleEffectiveChatModeChunk } from "@/lib/chatModeStream";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import { triggerResync, syncChatFromDb } from "@/lib/resyncChat";
+import {
+  applyPreviewChunk,
+  clearPreviewForChat,
+} from "@/lib/streamingPreviewSync";
 
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
@@ -37,6 +42,7 @@ export function useResolveMergeConflictsWithAI({
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setIsStreamingById = useSetAtom(isStreamingByIdAtom);
   const setStreamCountById = useSetAtom(chatStreamCountByIdAtom);
+  const setStreamingPreviewByChatId = useSetAtom(streamingPreviewByChatIdAtom);
   const store = useStore();
   const navigate = useNavigate();
   const [isResolving, setIsResolving] = useState(false);
@@ -110,6 +116,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             messages,
             streamingMessageId,
             streamingPatch,
+            streamingPreview,
             effectiveChatMode,
             chatModeFallbackReason,
           }) => {
@@ -131,6 +138,12 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               });
               hasIncrementedStreamCount = true;
             }
+
+            applyPreviewChunk(
+              setStreamingPreviewByChatId,
+              newChatId,
+              streamingPreview,
+            );
 
             if (messages) {
               // Full messages update (initial load, post-compaction, etc.)
@@ -160,6 +173,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               next.set(newChatId, false);
               return next;
             });
+            clearPreviewForChat(setStreamingPreviewByChatId, newChatId);
             isResolvingRef.current = false;
             setIsResolving(false);
             invalidateChats();
@@ -178,6 +192,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               next.set(newChatId, false);
               return next;
             });
+            clearPreviewForChat(setStreamingPreviewByChatId, newChatId);
             isResolvingRef.current = false;
             setIsResolving(false);
             invalidateChats();
@@ -212,6 +227,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
     setMessagesById,
     setIsStreamingById,
     setStreamCountById,
+    setStreamingPreviewByChatId,
     navigate,
     invalidateChats,
     refreshApp,
