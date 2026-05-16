@@ -1,6 +1,12 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as parserModule from "@/lib/streamingMessageParser";
+import type {
+  Block as ParserBlock,
+  ParserState,
+} from "@/lib/streamingMessageParser";
+
 // Track every render of the inner ReactMarkdown component keyed by the
 // content string it received. The DyadMarkdownParser wraps ReactMarkdown
 // inside a React.memo'd MemoMarkdown, so a call here means the memo did
@@ -111,5 +117,111 @@ describe("DyadMarkdownParser closed-block render counts", () => {
     }
     expect(markdownRenderCounts.get(MD1)).toBe(md1AfterClose);
     expect(markdownRenderCounts.get(MD2)).toBe(md2AfterClose);
+  });
+});
+
+describe("DyadMarkdownParser parser-cache perf metrics", () => {
+  // Spies on the exported parser entry points. Pre-cache builds rebuild
+  // every Block on every chunk via parseFullMessage; post-cache routes
+  // through advanceParser with a stable ParserState. We spy on both so a
+  // single test can run unmodified on either branch.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let advanceSpy: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let parseFullSpy: any;
+
+  beforeEach(() => {
+    markdownRenderCounts.clear();
+    advanceSpy = vi.spyOn(parserModule, "advanceParser");
+    parseFullSpy = vi.spyOn(parserModule, "parseFullMessage");
+  });
+
+  afterEach(() => {
+    cleanup();
+    advanceSpy.mockRestore();
+    parseFullSpy.mockRestore();
+  });
+
+  const MD1 = "First paragraph content goes here.\n\n";
+  const TAG1 = '<dyad-status title="S1" state="finished">ok</dyad-status>';
+  const MD2 = "\n\nSecond paragraph content goes here.\n\n";
+  const TAG2 = '<dyad-status title="S2" state="finished">ok</dyad-status>';
+  const MD3 = "\n\nThird paragraph content goes here.";
+  const FULL = MD1 + TAG1 + MD2 + TAG2 + MD3;
+
+  // Returned states in call order, with bytes-scanned for each call. For
+  // advanceParser we infer scanned bytes from the cursor delta; for
+  // parseFullMessage we treat the full input length as scanned (the parser
+  // restarts from cursor 0).
+  function collectCalls(): { state: ParserState; bytesScanned: number }[] {
+    const out: { state: ParserState; bytesScanned: number }[] = [];
+    (advanceSpy.mock.calls as unknown[][]).forEach((args, i) => {
+      const prev = args[0] as ParserState;
+      const next = advanceSpy.mock.results[i].value as ParserState;
+      out.push({ state: next, bytesScanned: next.cursor - prev.cursor });
+    });
+    (parseFullSpy.mock.calls as unknown[][]).forEach((args, i) => {
+      const content = args[0] as string;
+      const result = parseFullSpy.mock.results[i].value as {
+        state: ParserState;
+      };
+      out.push({ state: result.state, bytesScanned: content.length });
+    });
+    return out;
+  }
+
+  function streamFully() {
+    const { rerender } = render(
+      <DyadMarkdownParser content={FULL.slice(0, 1)} />,
+    );
+    for (let i = 2; i <= FULL.length; i++) {
+      rerender(<DyadMarkdownParser content={FULL.slice(0, i)} />);
+    }
+  }
+
+  it("scans each input byte at most a small constant number of times across a stream", () => {
+    streamFully();
+    const calls = collectCalls();
+    const totalBytesScanned = calls.reduce((s, c) => s + c.bytesScanned, 0);
+    // Linear in message length, not quadratic in chunk count. A parse-
+    // from-scratch implementation hits ~N²/2 (here ≈ 19_000) and busts
+    // this bound; the cached state.cursor keeps it near N.
+    expect(totalBytesScanned).toBeLessThanOrEqual(FULL.length * 2);
+  });
+
+  it("allocates each closed Block exactly once across the stream", () => {
+    streamFully();
+    const calls = collectCalls();
+    const closedBlockRefs = new Set<ParserBlock>();
+    for (const c of calls) {
+      for (const b of c.state.blocks) closedBlockRefs.add(b);
+    }
+    const finalClosedCount = calls[calls.length - 1].state.blocks.length;
+    // Without the cache, every chunk rebuilds every closed Block; the
+    // unique-ref count balloons to ~closedBlocks × chunks. With the
+    // cache, each closed Block keeps one stable reference.
+    expect(closedBlockRefs.size).toBeLessThanOrEqual(finalClosedCount + 1);
+  });
+
+  it("preserves the state.blocks array reference across chunks that do not close a block", () => {
+    streamFully();
+    const calls = collectCalls();
+    let nonClosingPairs = 0;
+    let stablePairs = 0;
+    for (let i = 1; i < calls.length; i++) {
+      const prev = calls[i - 1].state;
+      const next = calls[i].state;
+      if (next.blocks.length === prev.blocks.length) {
+        nonClosingPairs++;
+        if (prev.blocks === next.blocks) stablePairs++;
+      }
+    }
+    // Sanity: streaming a multi-block message char-by-char produces many
+    // chunks that do not close a block — make sure the harness saw them.
+    expect(nonClosingPairs).toBeGreaterThan(0);
+    // This is the property MemoClosedBlocks's default shallow equality
+    // depends on: when no block closes, the blocks-array ref must stay
+    // stable so React.memo bails out the entire subtree in O(1).
+    expect(stablePairs).toBe(nonClosingPairs);
   });
 });
