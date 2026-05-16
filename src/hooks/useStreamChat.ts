@@ -247,6 +247,13 @@ export function useStreamChat({
         });
       };
 
+      const finalizeStream = (chatId: number) => {
+        pendingStreamChatIds.delete(chatId);
+        latestChunkByChatId.delete(chatId);
+        cancelAckTimer(chatId);
+        clearStreamingPreviewForChat(chatId);
+      };
+
       try {
         const cachedChat =
           requestedChatMode === null
@@ -357,10 +364,7 @@ export function useStreamChat({
               }
             },
             onEnd: (response: ChatResponseEnd) => {
-              pendingStreamChatIds.delete(chatId);
-              latestChunkByChatId.delete(chatId);
-              cancelAckTimer(chatId);
-              clearStreamingPreviewForChat(chatId);
+              finalizeStream(chatId);
               void (async () => {
                 // Only mark as successful if NOT cancelled - wasCancelled flag is set
                 // by the backend when user cancels the stream
@@ -535,10 +539,7 @@ export function useStreamChat({
             },
             onError: ({ error: errorMessage, warningMessages }) => {
               // Remove from pending set now that stream ended with error
-              pendingStreamChatIds.delete(chatId);
-              latestChunkByChatId.delete(chatId);
-              cancelAckTimer(chatId);
-              clearStreamingPreviewForChat(chatId);
+              finalizeStream(chatId);
 
               for (const warningMessage of warningMessages ?? []) {
                 showWarning(warningMessage);
@@ -573,10 +574,7 @@ export function useStreamChat({
         );
       } catch (error) {
         // Remove from pending set on exception
-        pendingStreamChatIds.delete(chatId);
-        latestChunkByChatId.delete(chatId);
-        cancelAckTimer(chatId);
-        clearStreamingPreviewForChat(chatId);
+        finalizeStream(chatId);
 
         console.error("[CHAT] Exception during streaming setup:", error);
         setIsStreamingById((prev) => {
