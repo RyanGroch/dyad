@@ -1378,11 +1378,12 @@ async function runMcpCase(params: {
     abortSignal: abortController.signal,
     appPath,
   });
-  const sandboxTool = await buildExecuteSandboxScriptHarnessTool({
-    case: c,
-    state,
-    ctx,
-  });
+  const { tool: sandboxTool, description: sandboxToolDescription } =
+    await buildExecuteSandboxScriptHarnessTool({
+      case: c,
+      state,
+      ctx,
+    });
 
   try {
     const result = await generateText({
@@ -1547,6 +1548,7 @@ async function runMcpCase(params: {
       mcpCalls: state.mcpCalls satisfies McpCallRecord[],
       sandboxScripts: state.sandboxScripts satisfies SandboxScriptRecord[],
       xmlEmissions: state.xmlEmissions,
+      executeSandboxScriptDescription: sandboxToolDescription,
     });
   }
 }
