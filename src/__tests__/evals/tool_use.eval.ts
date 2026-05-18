@@ -1,6 +1,6 @@
-import { describe, it } from "vitest";
+import { afterAll, beforeAll, describe, it, vi } from "vitest";
 import { generateText, stepCountIs, type Tool } from "ai";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { searchReplaceTool } from "@/pro/main/ipc/handlers/local_agent/tools/search_replace";
 import { writeFileTool } from "@/pro/main/ipc/handlers/local_agent/tools/write_file";
@@ -24,6 +24,8 @@ import {
   type LLMRequestRecord,
   type ToolCallRecord,
   type JudgeRecord,
+  type McpCallRecord,
+  type SandboxScriptRecord,
 } from "./helpers/eval_recorder";
 import { createUnifiedDiff } from "./helpers/unified_diff";
 import {
@@ -31,6 +33,127 @@ import {
   SEARCH_REPLACE_FEW_SYSTEM_PROMPT,
   PRO_AGENT_EXPERIMENTAL_SYSTEM_PROMPT,
 } from "./helpers/prompts";
+
+// ── MCP suite imports + mocks ──────────────────────────────────
+//
+// vi.mock factories are hoisted by vitest above every import in this
+// file. Three modules need partial mocks so the production
+// `execute_sandbox_script` code path runs unmodified while the eval
+// suite controls the MCP server registration, consent decisions, and
+// experiment gate.
+
+vi.mock("@/main/settings", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/main/settings")>();
+  return {
+    ...orig,
+    readSettings: () => ({
+      ...orig.readSettings?.(),
+      experiments: { enableSandboxScriptExecution: true },
+    }),
+  };
+});
+
+// Telemetry calls `BrowserWindow.getAllWindows()` which is undefined in
+// a pure-Node vitest env (no Electron). The real module catches and
+// logs its own crash, but the noisy stderr obscures actual failures.
+// Mirrors the same mock used by `execute_sandbox_script.spec.ts`.
+vi.mock("@/ipc/utils/telemetry", () => ({
+  sendTelemetryEvent: () => {},
+}));
+
+vi.mock("@/ipc/utils/mcp_consent", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/ipc/utils/mcp_consent")>();
+  const registry = await import("./mcp/mcp_registry");
+  return {
+    ...orig,
+    requireMcpToolConsent: async (
+      _event: unknown,
+      params: { serverId: number; serverName: string; toolName: string },
+    ) => registry.evalConsentDecide(params),
+  };
+});
+
+vi.mock(
+  "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs",
+  async (importOriginal) => {
+    const orig =
+      await importOriginal<
+        typeof import("@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs")
+      >();
+    const registry = await import("./mcp/mcp_registry");
+    return {
+      ...orig,
+      collectMcpToolDefs: async () => registry.getEvalMcpDefs(),
+      // Wrap each capability fn so MCP calls fire the registry observer.
+      // The wrapper invokes the real production fn and records timing /
+      // result / error for the eval transcript.
+      buildMcpCapabilityMap: (
+        params: Parameters<typeof orig.buildMcpCapabilityMap>[0],
+      ) => {
+        const inner = orig.buildMcpCapabilityMap(params);
+        const wrapped: typeof inner = {};
+        for (const def of params.defs) {
+          const fn = inner[def.jsName];
+          if (!fn) continue;
+          wrapped[def.jsName] = async (rawArgs: unknown) => {
+            const startedAt = Date.now();
+            try {
+              const result = await fn(rawArgs);
+              registry.notifyEvalMcpCall({
+                jsName: def.jsName,
+                serverName: def.serverName,
+                toolName: def.toolName,
+                args: rawArgs,
+                result,
+                durationMs: Date.now() - startedAt,
+                succeeded: true,
+                error: null,
+              });
+              return result;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              registry.notifyEvalMcpCall({
+                jsName: def.jsName,
+                serverName: def.serverName,
+                toolName: def.toolName,
+                args: rawArgs,
+                result: null,
+                durationMs: Date.now() - startedAt,
+                succeeded: false,
+                error: message,
+              });
+              throw err;
+            }
+          };
+        }
+        return wrapped;
+      },
+    };
+  },
+);
+
+import { MCP_CASES, type McpEvalCase } from "./mcp/cases";
+import { startFixtureServer, type FixtureServer } from "./mcp/fixture_server";
+import {
+  startEvalMcpEnvironment,
+  probeChromeDevtoolsMcp,
+  type EvalMcpEnvironment,
+} from "./mcp/mcp_setup";
+import {
+  buildExecuteSandboxScriptHarnessTool,
+  buildMcpAgentContext,
+  buildProductionToolStubs,
+  createCaseAppDir,
+  writeCaseSetupFile,
+  type McpRunState,
+} from "./mcp/harness";
+import {
+  setEvalMcpDefs,
+  setEvalConsentDecider,
+  resetEvalConsentDecider,
+  setEvalConsentObserver,
+  setEvalMcpCallObserver,
+} from "./mcp/mcp_registry";
 
 // ── Fixture loader ─────────────────────────────────────────────
 
@@ -398,6 +521,93 @@ async function judgeResult(
   // record a clear marker instead of an empty string so reviewers can
   // tell "no explanation given" apart from "explanation missing due to
   // a bug in the recorder".
+  const explanationBody = lines.slice(0, -1).join("\n").trim();
+  const explanation =
+    explanationBody.length > 0
+      ? explanationBody
+      : `(no explanation emitted — raw model output was: ${JSON.stringify(text)})`;
+
+  return {
+    label: JUDGE_LABEL,
+    provider: JUDGE_PROVIDER,
+    modelName: JUDGE_MODEL,
+    durationMs,
+    usage: normalizeUsage(result.totalUsage),
+    pass,
+    explanation,
+  };
+}
+
+/**
+ * Judge variant for MCP cases. File-edit cases care about
+ * character-level fidelity in `resultFile` (it gets applied verbatim),
+ * but MCP cases produce freeform assistant text where markdown bold,
+ * stray code fences, or extra explanatory prose are cosmetic. The
+ * file-edit judge prompt was failing MCP cases on those decorations
+ * even when the substantive answer was correct (e.g. `**SKU-003**`
+ * marked FAIL on a prompt that just asked for `SKU-003`).
+ *
+ * This variant tells the judge to assess substantive correctness only,
+ * and to disregard cosmetic formatting. It still fails wrong answers,
+ * missing answers, and claims contradicted by the transcript.
+ */
+async function judgeMcpResult(params: {
+  prompt: string;
+  transcript: string;
+  answer: string;
+  abortSignal?: AbortSignal;
+}): Promise<JudgeRecord> {
+  const startMs = Date.now();
+  const result = await generateText({
+    model: getEvalModel(JUDGE_PROVIDER, JUDGE_MODEL),
+    temperature: 1,
+    abortSignal: params.abortSignal,
+    system:
+      "You are evaluating an MCP tool-use eval case. The user asked a " +
+      "question, the model called browser / MCP tools to gather " +
+      "information, and produced a final assistant text answer. You " +
+      "will be given the user's prompt, a transcript of the MCP tool " +
+      "calls and sandbox scripts the model executed, and the model's " +
+      "final answer.\n\n" +
+      "Judge whether the answer is SUBSTANTIVELY correct given the " +
+      "transcript. Do NOT fail for cosmetic issues — extra explanatory " +
+      "prose, markdown bold/italic, code fences, headings, bullet " +
+      "lists, or other harmless decoration around the substantively " +
+      "correct answer. The user is reading freeform chat output, not a " +
+      "verbatim file diff.\n\n" +
+      "DO fail if the answer is:\n" +
+      "- factually wrong (incorrect SKU, wrong number, wrong title)\n" +
+      "- missing the requested information entirely\n" +
+      "- contradicted by what the MCP transcript actually shows\n" +
+      "- a hallucination unsupported by the transcript (the model " +
+      "  claimed something happened that didn't appear in the recorded " +
+      "  tool calls)\n" +
+      "- refusing to answer when the transcript shows the data was " +
+      "  available\n\n" +
+      "Format your response as follows (do NOT keep reasoning private — " +
+      "write it in your visible output):\n\n" +
+      "1. Write a concise written explanation of what you observed and " +
+      "why you are passing or failing the answer. This explanation MUST " +
+      "appear in your visible output, not in any hidden reasoning " +
+      "channel.\n" +
+      "2. On the VERY LAST line, write exactly `PASS` or `FAIL` and " +
+      "nothing else.",
+    messages: [
+      {
+        role: "user",
+        content:
+          `## User prompt\n${params.prompt}\n\n` +
+          `## Transcript (MCP tool calls + sandbox scripts)\n${params.transcript || "(no tool calls recorded)"}\n\n` +
+          `## Model's final answer\n${params.answer}`,
+      },
+    ],
+  });
+  const durationMs = Date.now() - startMs;
+
+  const text = result.text.trim();
+  const lines = text.split("\n");
+  const lastLine = lines.at(-1)?.trim() ?? "";
+  const pass = lastLine === "PASS";
   const explanationBody = lines.slice(0, -1).join("\n").trim();
   const explanation =
     explanationBody.length > 0
@@ -896,6 +1106,20 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
             .map((s) => s.trim())
             .filter((s) => s !== ""),
         );
+
+  // MCP suite ("mcp_execute") has a separate case shape and a separate
+  // runner. Peel it out of `requestedSuiteNames` so the file-edit suite
+  // filter validation below doesn't complain that it's "unknown", and
+  // record a flag the MCP describe block reads.
+  const MCP_SUITE_NAME = "mcp_execute";
+  const mcpRequested =
+    requestedSuiteNames === null || requestedSuiteNames.has(MCP_SUITE_NAME);
+  if (requestedSuiteNames !== null) requestedSuiteNames.delete(MCP_SUITE_NAME);
+  // True when the caller asked for the MCP suite AND NOT for any of the
+  // file-edit suites (so the file-edit validation should be quiet).
+  const onlyMcpRequested =
+    requestedSuiteNames !== null && requestedSuiteNames.size === 0;
+
   const ACTIVE_SUITES =
     requestedSuiteNames === null
       ? SUITES
@@ -905,19 +1129,19 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
   // crashing module load with an opaque stack trace. The describe block
   // gives vitest a place to attach the (carefully written) error message.
   const configErrors: string[] = [];
-  if (ACTIVE_SUITES.length === 0) {
+  if (ACTIVE_SUITES.length === 0 && !onlyMcpRequested) {
     configErrors.push(
       `EVAL_SUITE="${SUITE_FILTER_RAW}" matched no suites. ` +
-        `Available: ${SUITES.map((s) => s.name).join(", ")} (or "all"). ` +
+        `Available: ${SUITES.map((s) => s.name).join(", ")}, ${MCP_SUITE_NAME} (or "all"). ` +
         `Use exact names, comma-separated for multiple.`,
     );
-  } else if (requestedSuiteNames !== null) {
+  } else if (requestedSuiteNames !== null && ACTIVE_SUITES.length > 0) {
     const matched = new Set(ACTIVE_SUITES.map((s) => s.name.toLowerCase()));
     const unknown = [...requestedSuiteNames].filter((n) => !matched.has(n));
     if (unknown.length > 0) {
       configErrors.push(
         `EVAL_SUITE contains unknown suite name(s): ${unknown.join(", ")}. ` +
-          `Available: ${SUITES.map((s) => s.name).join(", ")} (or "all").`,
+          `Available: ${SUITES.map((s) => s.name).join(", ")}, ${MCP_SUITE_NAME} (or "all").`,
       );
     }
   }
@@ -976,5 +1200,353 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
         );
       }
     }
+  }
+
+  // ── MCP suite ────────────────────────────────────────────────
+  //
+  // Real chrome-devtools-mcp server, spawned via stdio, driven against
+  // the local fixture server. Gated by:
+  //   - EVAL_SUITE filter (mcpRequested, computed above)
+  //   - DYAD_PRO_API_KEY presence (same as file-edit suites)
+  //   - chrome-devtools-mcp reachable via npx (probed in beforeAll)
+  if (mcpRequested && configErrors.length === 0) {
+    const mcpEnvHolder: {
+      fixture: FixtureServer | null;
+      mcp: EvalMcpEnvironment | null;
+      skipReason: string | null;
+    } = { fixture: null, mcp: null, skipReason: null };
+
+    describe.skipIf(!hasDyadProKey())(
+      "mcp_execute — real chrome-devtools",
+      () => {
+        beforeAll(async () => {
+          if (!probeChromeDevtoolsMcp()) {
+            mcpEnvHolder.skipReason =
+              "chrome-devtools-mcp not reachable via `npx -y chrome-devtools-mcp@latest`";
+            return;
+          }
+          mcpEnvHolder.fixture = await startFixtureServer();
+          mcpEnvHolder.mcp = await startEvalMcpEnvironment({
+            originForBrowser: mcpEnvHolder.fixture.origin,
+          });
+          setEvalMcpDefs(mcpEnvHolder.mcp.defs);
+        }, 120_000);
+
+        afterAll(async () => {
+          try {
+            await mcpEnvHolder.mcp?.close();
+          } finally {
+            await mcpEnvHolder.fixture?.close();
+          }
+        });
+
+        for (const { provider, modelName, label, temperature } of MODELS) {
+          describe(`mcp_execute — ${label}`, () => {
+            for (const c of MCP_CASES) {
+              it(c.name, async () => {
+                if (mcpEnvHolder.skipReason) {
+                  console.warn(
+                    `\n[mcp_execute / ${label}] ${c.name} — SKIPPED: ${mcpEnvHolder.skipReason}`,
+                  );
+                  return;
+                }
+                if (!mcpEnvHolder.fixture || !mcpEnvHolder.mcp) {
+                  throw new Error("MCP environment not initialized");
+                }
+                await runMcpCase({
+                  c,
+                  fixtureOrigin: mcpEnvHolder.fixture.origin,
+                  provider,
+                  modelName,
+                  label,
+                  temperature,
+                });
+              });
+            }
+          });
+        }
+      },
+    );
+  }
+}
+
+// ── MCP case runner ────────────────────────────────────────────
+//
+// Sibling to `runCase` for the file-edit suites. Reuses the same
+// recorder, same judge call path, and the same `recordEvalRun` sink.
+// `file` fields are filled with empty placeholders since MCP cases
+// don't operate on a fixture file.
+async function runMcpCase(params: {
+  c: McpEvalCase;
+  fixtureOrigin: string;
+  provider: EvalProvider;
+  modelName: string;
+  label: string;
+  temperature: number;
+}): Promise<void> {
+  const { c, fixtureOrigin, provider, modelName, label, temperature } = params;
+  const SUITE_NAME = "mcp_execute";
+  const runTimestamp = new Date().toISOString();
+  const llmStartMs = Date.now();
+  let lastStepEndMs = llmStartMs;
+  const requests: LLMRequestRecord[] = [];
+  let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let totalDurationMs = 0;
+  let responseModelId: string | null = null;
+  let judgeRecord: JudgeRecord | null = null;
+  let passed = false;
+  let errorMessage: string | null = null;
+
+  const systemPrompt = constructLocalAgentPrompt(undefined);
+  const prompt = c.prompt.replace(/\{ORIGIN\}/g, fixtureOrigin);
+  const userPrompt = prompt;
+
+  const INTERNAL_TIMEOUT_MS = 330_000;
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    abortController.abort(
+      new Error(
+        `runMcpCase internal timeout: exceeded ${INTERNAL_TIMEOUT_MS}ms budget`,
+      ),
+    );
+  }, INTERNAL_TIMEOUT_MS);
+
+  const state: McpRunState = {
+    answer: "",
+    mcpCalls: [],
+    sandboxScripts: [],
+    xmlEmissions: [],
+    abortSignal: abortController.signal,
+  };
+
+  // Install per-case consent decider.
+  if (c.denyFirstConsent) {
+    setEvalConsentDecider(({ callIndex }) => callIndex !== 0);
+  } else {
+    resetEvalConsentDecider();
+  }
+  setEvalConsentObserver(({ granted, ...meta }) => {
+    if (!granted) {
+      // Record the denial as a synthetic MCP "call" so reviewers can see
+      // it in the transcript even though the production capability map
+      // throws before recording the real attempt.
+      state.mcpCalls.push({
+        timestamp: new Date().toISOString(),
+        index: state.mcpCalls.length,
+        jsName: `${meta.serverName}__${meta.toolName}`.replace(
+          /[^A-Za-z0-9_$]/g,
+          "_",
+        ),
+        serverName: meta.serverName,
+        toolName: meta.toolName,
+        args: undefined,
+        result: null,
+        durationMs: 0,
+        succeeded: false,
+        error: "consent denied",
+        consentGranted: false,
+      });
+    }
+  });
+  setEvalMcpCallObserver((event) => {
+    state.mcpCalls.push({
+      timestamp: new Date().toISOString(),
+      index: state.mcpCalls.length,
+      jsName: event.jsName,
+      serverName: event.serverName,
+      toolName: event.toolName,
+      args: event.args,
+      result: event.result,
+      durationMs: event.durationMs,
+      succeeded: event.succeeded,
+      error: event.error,
+      consentGranted: true,
+    });
+  });
+
+  const appPath = createCaseAppDir();
+  // Case-specific setup: a few cases rely on a file being present in
+  // the app dir before the model runs.
+  if (c.name === "Mixed file + MCP: read instructions then navigate") {
+    await writeCaseSetupFile(appPath, "instructions.txt", "visit /about\n");
+  }
+
+  const ctx = buildMcpAgentContext({
+    case: c,
+    state,
+    fixtureOrigin,
+    abortSignal: abortController.signal,
+    appPath,
+  });
+  const sandboxTool = await buildExecuteSandboxScriptHarnessTool({
+    case: c,
+    state,
+    ctx,
+  });
+
+  try {
+    const result = await generateText({
+      model: getEvalModel(provider, modelName),
+      temperature,
+      stopWhen: stepCountIs(40),
+      abortSignal: abortController.signal,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      tools: {
+        execute_sandbox_script: sandboxTool,
+        ...buildProductionToolStubs(),
+      },
+      onStepFinish: (step) => {
+        const now = Date.now();
+        requests.push({
+          stepIndex: requests.length,
+          timestamp: step.response.timestamp.toISOString(),
+          durationMs: now - lastStepEndMs,
+          usage: normalizeUsage(step.usage),
+          finishReason: step.finishReason ?? null,
+        });
+        lastStepEndMs = now;
+      },
+    });
+
+    totalDurationMs = Date.now() - llmStartMs;
+    totalUsage = normalizeUsage(result.totalUsage);
+    responseModelId = result.response.modelId ?? null;
+    state.answer = result.text;
+
+    console.log(
+      `\n[${SUITE_NAME} / ${label}] ${c.name} — sandbox scripts: ${state.sandboxScripts.length}, mcp calls: ${state.mcpCalls.length}`,
+    );
+
+    // Structural checks.
+    if (c.expectNoMcpCalls) {
+      if (state.mcpCalls.length > 0) {
+        throw new Error(
+          `Expected no MCP calls but model made ${state.mcpCalls.length}`,
+        );
+      }
+    } else if (c.expectedToolNameContains?.length) {
+      // Each entry is a `|`-separated list of synonyms. Pass condition:
+      // at least one synonym appears in at least one recorded MCP call
+      // name. Every entry must pass independently.
+      for (const needle of c.expectedToolNameContains) {
+        const alternatives = needle
+          .split("|")
+          .map((s) => s.trim().toLowerCase())
+          .filter((s) => s.length > 0);
+        const matched = state.mcpCalls.some((call) =>
+          alternatives.some(
+            (alt) =>
+              call.jsName.toLowerCase().includes(alt) ||
+              call.toolName.toLowerCase().includes(alt),
+          ),
+        );
+        if (!matched) {
+          throw new Error(
+            `No MCP call name matched any of [${alternatives.join(", ")}]. Calls made: ` +
+              state.mcpCalls.map((c2) => c2.toolName).join(", "),
+          );
+        }
+      }
+    }
+    // Same `|`-alternation semantics as expectedToolNameContains: each
+    // entry is a list of acceptable synonyms, at least one must appear
+    // in the final answer.
+    for (const needle of c.expectedAnswerContains ?? []) {
+      const alternatives = needle
+        .split("|")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const matched = alternatives.some((alt) =>
+        state.answer.toLowerCase().includes(alt.toLowerCase()),
+      );
+      if (!matched) {
+        throw new Error(
+          `Final answer matched none of [${alternatives.join(", ")}]. Answer: ${state.answer.slice(0, 500)}`,
+        );
+      }
+    }
+
+    // Judge step. Uses the MCP-specific judge (not the file-edit
+    // judge) so cosmetic markdown / extra prose in the model's answer
+    // doesn't flip pass→fail. Both transcripts are passed so the judge
+    // can evaluate file host-fn calls (read_file, list_files,
+    // file_stats) AND MCP tool calls — without sandbox scripts
+    // included, the judge has no evidence the model used host
+    // functions and may incorrectly fail cases that relied on them.
+    const transcriptSections: string[] = [];
+    if (state.sandboxScripts.length > 0) {
+      transcriptSections.push(
+        `### Sandbox scripts (file host calls + MCP via sandbox)\n` +
+          JSON.stringify(state.sandboxScripts, null, 2),
+      );
+    }
+    if (state.mcpCalls.length > 0) {
+      transcriptSections.push(
+        `### MCP tool calls\n${JSON.stringify(state.mcpCalls, null, 2)}`,
+      );
+    }
+    judgeRecord = await judgeMcpResult({
+      prompt,
+      transcript: transcriptSections.join("\n\n"),
+      answer: state.answer,
+      abortSignal: abortController.signal,
+    });
+    console.log(
+      `\n[${SUITE_NAME} / ${label}] ${c.name} — judge verdict: ${judgeRecord.pass ? "PASS" : "FAIL"}\n${judgeRecord.explanation}`,
+    );
+    if (!judgeRecord.pass) {
+      throw new Error(
+        `Judge (${JUDGE_LABEL}) said FAIL for ${label}:\n${judgeRecord.explanation}`,
+      );
+    }
+    passed = true;
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : String(err);
+    if (totalDurationMs === 0) totalDurationMs = Date.now() - llmStartMs;
+    if (totalUsage.totalTokens === 0 && requests.length > 0) {
+      totalUsage = requests.reduce(
+        (acc, r) => ({
+          inputTokens: acc.inputTokens + r.usage.inputTokens,
+          outputTokens: acc.outputTokens + r.usage.outputTokens,
+          totalTokens: acc.totalTokens + r.usage.totalTokens,
+        }),
+        { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutHandle);
+    resetEvalConsentDecider();
+    setEvalConsentObserver(undefined);
+    setEvalMcpCallObserver(undefined);
+    try {
+      rmSync(appPath, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    await recordEvalRun({
+      timestamp: runTimestamp,
+      suite: SUITE_NAME,
+      caseName: c.name,
+      model: { label, provider, modelName, responseModelId },
+      prompt: { system: systemPrompt, instructions: prompt, user: userPrompt },
+      file: { name: "(none)", before: "", after: "" },
+      llm: {
+        totalDurationMs,
+        totalUsage,
+        requestCount: requests.length,
+        requests,
+      },
+      toolCalls: [],
+      diff: "",
+      judge: judgeRecord,
+      passed,
+      errorMessage,
+      answer: state.answer,
+      mcpCalls: state.mcpCalls satisfies McpCallRecord[],
+      sandboxScripts: state.sandboxScripts satisfies SandboxScriptRecord[],
+      xmlEmissions: state.xmlEmissions,
+    });
   }
 }
