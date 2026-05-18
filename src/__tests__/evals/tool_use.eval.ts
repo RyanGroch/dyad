@@ -132,13 +132,10 @@ vi.mock(
   },
 );
 
-import { MCP_CASES, type McpEvalCase } from "./mcp/cases";
+import { MCP_CASES, type McpEvalCase, type McpServerKey } from "./mcp/cases";
 import { startFixtureServer, type FixtureServer } from "./mcp/fixture_server";
-import {
-  startEvalMcpEnvironment,
-  probeChromeDevtoolsMcp,
-  type EvalMcpEnvironment,
-} from "./mcp/mcp_setup";
+import { type EvalMcpEnvironment, withTimeout } from "./mcp/mcp_setup";
+import { MCP_SERVER_SPECS, type McpServerSpec } from "./mcp/servers";
 import {
   buildExecuteSandboxScriptHarnessTool,
   buildMcpAgentContext,
@@ -1204,70 +1201,158 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
 
   // ── MCP suite ────────────────────────────────────────────────
   //
-  // Real chrome-devtools-mcp server, spawned via stdio, driven against
-  // the local fixture server. Gated by:
+  // One sub-describe per MCP server spec. Each sub-describe spawns its
+  // own MCP server in beforeAll (chrome-devtools, stripe, …), runs the
+  // cases tagged with that server's key, then tears down. The fixture
+  // HTTP server is only started for specs that declare
+  // `needsFixtureServer: true` — Stripe-style servers hit live APIs
+  // and have nothing to navigate to.
+  //
+  // Gated by:
   //   - EVAL_SUITE filter (mcpRequested, computed above)
   //   - DYAD_PRO_API_KEY presence (same as file-edit suites)
-  //   - chrome-devtools-mcp reachable via npx (probed in beforeAll)
+  //   - EVAL_MCP_SERVERS filter (default: chrome_devtools only — keeps
+  //     back-compat with the original single-server invocation; pass
+  //     `all` to run every spec, or comma-list specific keys)
+  //   - per-spec probe (server reachable, required env vars present)
   if (mcpRequested && configErrors.length === 0) {
-    const mcpEnvHolder: {
-      fixture: FixtureServer | null;
-      mcp: EvalMcpEnvironment | null;
-      skipReason: string | null;
-    } = { fixture: null, mcp: null, skipReason: null };
+    const SERVERS_FILTER_RAW =
+      process.env.EVAL_MCP_SERVERS?.trim() || "chrome_devtools";
+    const serversFilter = SERVERS_FILTER_RAW.toLowerCase();
+    const requestedServerKeys =
+      serversFilter === "all"
+        ? new Set(MCP_SERVER_SPECS.map((s) => s.key))
+        : new Set(
+            serversFilter
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s !== ""),
+          );
 
-    describe.skipIf(!hasDyadProKey())(
-      "mcp_execute — real chrome-devtools",
-      () => {
-        beforeAll(async () => {
-          if (!probeChromeDevtoolsMcp()) {
-            mcpEnvHolder.skipReason =
-              "chrome-devtools-mcp not reachable via `npx -y chrome-devtools-mcp@latest`";
-            return;
-          }
-          mcpEnvHolder.fixture = await startFixtureServer();
-          mcpEnvHolder.mcp = await startEvalMcpEnvironment({
-            originForBrowser: mcpEnvHolder.fixture.origin,
-          });
-          setEvalMcpDefs(mcpEnvHolder.mcp.defs);
-        }, 120_000);
+    const knownKeys = new Set(MCP_SERVER_SPECS.map((s) => s.key));
+    const unknownServerKeys = [...requestedServerKeys].filter(
+      (k) => !knownKeys.has(k as McpServerKey),
+    );
+    if (unknownServerKeys.length > 0) {
+      describe("mcp_execute — configuration error", () => {
+        it(`EVAL_MCP_SERVERS contains unknown server key(s): ${unknownServerKeys.join(", ")}`, () => {
+          throw new Error(
+            `EVAL_MCP_SERVERS="${SERVERS_FILTER_RAW}" contains unknown server key(s): ` +
+              `${unknownServerKeys.join(", ")}. ` +
+              `Available: ${[...knownKeys].join(", ")} (or "all").`,
+          );
+        });
+      });
+    }
 
-        afterAll(async () => {
-          try {
-            await mcpEnvHolder.mcp?.close();
-          } finally {
-            await mcpEnvHolder.fixture?.close();
+    const activeSpecs = MCP_SERVER_SPECS.filter((s) =>
+      requestedServerKeys.has(s.key),
+    );
+
+    for (const spec of activeSpecs) {
+      const specCases = MCP_CASES.filter((c) => c.server === spec.key);
+      if (specCases.length === 0) continue;
+      registerMcpDescribeForSpec({
+        spec,
+        cases: specCases,
+        models: MODELS,
+      });
+    }
+  }
+}
+
+function registerMcpDescribeForSpec(params: {
+  spec: McpServerSpec;
+  cases: McpEvalCase[];
+  models: Array<{
+    provider: EvalProvider;
+    modelName: string;
+    label: string;
+    temperature: number;
+  }>;
+}): void {
+  const { spec, cases, models } = params;
+  const envHolder: {
+    fixture: FixtureServer | null;
+    mcp: EvalMcpEnvironment | null;
+    skipReason: string | null;
+  } = { fixture: null, mcp: null, skipReason: null };
+
+  describe.skipIf(!hasDyadProKey())(
+    `mcp_execute — ${spec.serverName} (${spec.key})`,
+    () => {
+      beforeAll(async () => {
+        const probe = spec.probe();
+        if (!probe.ok) {
+          envHolder.skipReason = probe.reason;
+          return;
+        }
+        if (spec.needsFixtureServer) {
+          envHolder.fixture = await startFixtureServer();
+        }
+        try {
+          envHolder.mcp = await withTimeout(
+            spec.start(),
+            60_000,
+            `${spec.key} MCP server start`,
+          );
+        } catch (err) {
+          // Probe approved but real spawn failed — surface as a skip
+          // (not a hard fail) so an unrelated suite isn't blocked by
+          // e.g. a Stripe key that has the right prefix but is
+          // rejected upstream. The reason text reaches each test via
+          // envHolder.skipReason and shows up in the test output.
+          const message = err instanceof Error ? err.message : String(err);
+          envHolder.skipReason = `${spec.key} MCP server failed to start: ${message}`;
+          await envHolder.fixture?.close();
+          envHolder.fixture = null;
+          return;
+        }
+        setEvalMcpDefs(envHolder.mcp.defs);
+      }, 120_000);
+
+      afterAll(async () => {
+        try {
+          await envHolder.mcp?.close();
+        } finally {
+          await envHolder.fixture?.close();
+        }
+      });
+
+      for (const { provider, modelName, label, temperature } of models) {
+        describe(`mcp_execute (${spec.key}) — ${label}`, () => {
+          for (const c of cases) {
+            it(c.name, async () => {
+              if (envHolder.skipReason) {
+                console.warn(
+                  `\n[mcp_execute / ${spec.key} / ${label}] ${c.name} — SKIPPED: ${envHolder.skipReason}`,
+                );
+                return;
+              }
+              if (!envHolder.mcp) {
+                throw new Error(
+                  `MCP environment for spec "${spec.key}" not initialized`,
+                );
+              }
+              if (spec.needsFixtureServer && !envHolder.fixture) {
+                throw new Error(
+                  `Fixture server for spec "${spec.key}" not started`,
+                );
+              }
+              await runMcpCase({
+                c,
+                fixtureOrigin: envHolder.fixture?.origin ?? "",
+                provider,
+                modelName,
+                label,
+                temperature,
+              });
+            });
           }
         });
-
-        for (const { provider, modelName, label, temperature } of MODELS) {
-          describe(`mcp_execute — ${label}`, () => {
-            for (const c of MCP_CASES) {
-              it(c.name, async () => {
-                if (mcpEnvHolder.skipReason) {
-                  console.warn(
-                    `\n[mcp_execute / ${label}] ${c.name} — SKIPPED: ${mcpEnvHolder.skipReason}`,
-                  );
-                  return;
-                }
-                if (!mcpEnvHolder.fixture || !mcpEnvHolder.mcp) {
-                  throw new Error("MCP environment not initialized");
-                }
-                await runMcpCase({
-                  c,
-                  fixtureOrigin: mcpEnvHolder.fixture.origin,
-                  provider,
-                  modelName,
-                  label,
-                  temperature,
-                });
-              });
-            }
-          });
-        }
-      },
-    );
-  }
+      }
+    },
+  );
 }
 
 // ── MCP case runner ────────────────────────────────────────────
@@ -1365,10 +1450,11 @@ async function runMcpCase(params: {
   });
 
   const appPath = createCaseAppDir();
-  // Case-specific setup: a few cases rely on a file being present in
-  // the app dir before the model runs.
-  if (c.name === "Mixed file + MCP: read instructions then navigate") {
-    await writeCaseSetupFile(appPath, "instructions.txt", "visit /about\n");
+  // Cases that exercise file host calls (`read_file`, etc.) inside
+  // `execute_sandbox_script` declare a `setupFile` whose contents the
+  // runner writes into the app dir before the model runs.
+  if (c.setupFile) {
+    await writeCaseSetupFile(appPath, c.setupFile.name, c.setupFile.contents);
   }
 
   const ctx = buildMcpAgentContext({
