@@ -73,6 +73,33 @@ export interface JudgeRecord {
   explanation: string;
 }
 
+// MCP suite extensions. Optional so existing file-edit cases compile
+// unchanged. Populated only by the `mcp_execute` suite.
+export interface McpCallRecord {
+  timestamp: string;
+  index: number;
+  jsName: string;
+  serverName: string;
+  toolName: string;
+  args: unknown;
+  result: unknown | null;
+  durationMs: number;
+  succeeded: boolean;
+  error: string | null;
+  consentGranted: boolean;
+}
+
+export interface SandboxScriptRecord {
+  timestamp: string;
+  index: number;
+  script: string;
+  description: string | null;
+  output: string;
+  executionMs: number;
+  truncated: boolean;
+  mcpCallIndexes: number[];
+}
+
 export interface EvalRunRecord {
   timestamp: string;
   suite: string;
@@ -110,6 +137,16 @@ export interface EvalRunRecord {
   judge: JudgeRecord | null;
   passed: boolean;
   errorMessage: string | null;
+  // MCP suite extensions (optional). Present only for `mcp_execute`.
+  answer?: string;
+  mcpCalls?: McpCallRecord[];
+  sandboxScripts?: SandboxScriptRecord[];
+  /**
+   * Raw XML emitted via `onXmlComplete` while the case ran. Mirrors
+   * what the UI would render and includes the full MCP tool-call /
+   * tool-result XML envelopes.
+   */
+  xmlEmissions?: string[];
 }
 
 function sanitize(s: string): string {
@@ -237,6 +274,57 @@ export function renderEvalRunAsText(record: EvalRunRecord): string {
   lines.push("");
   for (const tc of record.toolCalls) {
     lines.push(formatToolCall(tc));
+  }
+
+  if (record.sandboxScripts && record.sandboxScripts.length > 0) {
+    lines.push(hr("="));
+    lines.push(`Sandbox scripts (${record.sandboxScripts.length})`);
+    lines.push(hr("="));
+    for (const s of record.sandboxScripts) {
+      lines.push(hr("-"));
+      lines.push(
+        `Script #${s.index + 1} — ${s.executionMs}ms${s.truncated ? " [truncated]" : ""}`,
+      );
+      if (s.description) lines.push(`Description: ${s.description}`);
+      lines.push(`MCP calls in this script: ${s.mcpCallIndexes.length}`);
+      lines.push("----- SCRIPT -----");
+      lines.push(s.script);
+      lines.push("----- OUTPUT -----");
+      lines.push(s.output);
+    }
+    lines.push("");
+  }
+
+  if (record.mcpCalls && record.mcpCalls.length > 0) {
+    lines.push(hr("="));
+    lines.push(`MCP calls (${record.mcpCalls.length})`);
+    lines.push(hr("="));
+    for (const c of record.mcpCalls) {
+      lines.push(hr("-"));
+      const status = c.succeeded ? "" : " [FAILED]";
+      const consent = c.consentGranted ? "" : " [CONSENT DENIED]";
+      lines.push(
+        `MCP call #${c.index + 1}: ${c.jsName} (${c.serverName}/${c.toolName})${status}${consent}`,
+      );
+      lines.push(`Duration: ${c.durationMs}ms`);
+      lines.push("----- ARGS -----");
+      lines.push(JSON.stringify(c.args, null, 2));
+      lines.push("----- RESULT -----");
+      lines.push(JSON.stringify(c.result, null, 2));
+      if (!c.succeeded && c.error) {
+        lines.push("----- ERROR -----");
+        lines.push(c.error);
+      }
+    }
+    lines.push("");
+  }
+
+  if (record.answer !== undefined) {
+    lines.push(hr("="));
+    lines.push("Final answer");
+    lines.push(hr("="));
+    lines.push(record.answer);
+    lines.push("");
   }
 
   lines.push(hr("="));
