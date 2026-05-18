@@ -100,9 +100,8 @@ export function createCaseAppDir(): string {
     resolve(dir, "README.md"),
     "# MCP eval fixture app\n\n" +
       "This is a throwaway directory used by the Dyad MCP eval suite. " +
-      "It contains no real source code. Cases that need MCP browser " +
-      "access should use the chrome devtools tools, not the file " +
-      "host functions.\n",
+      "It contains no real source code. Cases should use their " +
+      "registered MCP tools for real work, not the file host functions.\n",
   );
   return dir;
 }

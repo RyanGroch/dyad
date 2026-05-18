@@ -254,18 +254,27 @@ call. The split view contains the raw pieces as standalone files:
 
 The `mcp_execute` suite exercises the model's ability to call **MCP
 tools** from inside the production `execute_sandbox_script` tool. Unlike
-the file-edit suites, cases here do not edit a fixture file — they have a
-user question whose answer requires browsing or scraping a real web page,
-and the verdict is the model's final assistant text.
+the file-edit suites, cases here do not edit a fixture file — they pose a
+question whose answer requires the model to drive an MCP server (browse
+a web page, query a remote API, search documentation, …), and the
+verdict is the model's final assistant text.
+
+The suite supports multiple MCP servers, one spec per server under
+`mcp/servers/`. Each case is tagged with its `server` key
+(`chrome_devtools` or `stripe`) and routed to that server's spec by the
+runner. Select which servers run via `EVAL_MCP_SERVERS` (default
+`chrome_devtools` — keeps single-server invocations back-compatible).
 
 ### How it works
 
-- `beforeAll` starts a small Node HTTP server on `127.0.0.1:<random>`
-  serving deterministic HTML pages from `mcp/fixture_pages.ts`.
-- `beforeAll` spawns `chrome-devtools-mcp` via `npx -y
-chrome-devtools-mcp@latest` (configurable — see env vars below),
-  injects the live MCP client into `mcpManager`, and registers the
-  discovered tool defs in a registry module.
+- For each active server spec, a sub-describe spawns its own MCP server
+  in `beforeAll`, registers the live client with `mcpManager`, and
+  records the discovered tool defs.
+- Specs that declare `needsFixtureServer: true` (i.e. `chrome_devtools`)
+  also start a small Node HTTP server on `127.0.0.1:<random>` serving
+  deterministic HTML pages from `mcp/fixture_pages.ts`. Cases for those
+  specs reference the server origin via the `{ORIGIN}` placeholder in
+  their prompt. Other specs (e.g. `stripe`) skip the fixture server.
 - For each case, the runner creates a fresh temp app dir seeded with
   minimal `package.json` + `README.md` stubs. The sandbox tool resolves
   file host calls (`read_file`, `list_files`, `file_stats`) against
@@ -289,13 +298,21 @@ chrome-devtools-mcp@latest` (configurable — see env vars below),
 
 ### Cases
 
-The suite ships with eight cases (see `mcp/cases.ts`) covering
-distinct MCP usage patterns: single call, data-dependent chain,
-loop-and-aggregate, filter-and-return, mixed file + MCP, error
-handling, consent denial recovery, and a negative case that should
-answer without any MCP call.
+`mcp/cases.ts` ships cases for two MCP servers:
 
-Each case may declare:
+- **`chrome_devtools`** — eight cases against the local fixture HTTP
+  server, covering distinct browser-MCP usage patterns: single call,
+  data-dependent chain, loop-and-aggregate, filter-and-return, mixed
+  file + MCP, error handling, consent denial recovery, and a negative
+  case that should answer without any MCP call.
+- **`stripe`** — five cases against the live Stripe API in test mode,
+  covering documentation search, balance retrieval, list-and-count,
+  and consent denial recovery. Read-only by design so they pass on a
+  fresh test account without pre-seeded customers, products, or
+  balances.
+
+Each case declares a `server` key (one of the registered specs in
+`mcp/servers/`) plus optional fields:
 
 - `expectedToolNameContains: string[]` — every entry must match at
   least one recorded MCP call's `jsName` or `toolName`. Entries
@@ -307,6 +324,9 @@ Each case may declare:
 - `expectNoMcpCalls: true` — fails if any MCP call was made.
 - `denyFirstConsent: true` — installs a consent decider that denies
   only the first MCP call, exercising recovery.
+- `setupFile: { name, contents }` — file written into the per-case
+  temp app dir before the model runs (for cases that exercise file
+  host calls inside `execute_sandbox_script`).
 
 Verdict order per case: structural checks (above) → LLM judge (GPT
 5.4) sees the prompt, MCP transcript, sandbox-script transcript, and
@@ -315,17 +335,38 @@ final answer, and returns PASS/FAIL.
 ### Running
 
 ```bash
+# Default — runs only the chrome_devtools cases.
 EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." npm run eval
+
+# Run the Stripe cases only (requires STRIPE_API_KEY — see below).
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=stripe \
+  STRIPE_API_KEY="sk_test_..." DYAD_PRO_API_KEY="..." npm run eval
+
+# Run every MCP server spec (chrome_devtools + stripe).
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=all \
+  STRIPE_API_KEY="sk_test_..." DYAD_PRO_API_KEY="..." npm run eval
 ```
 
-The suite is skipped (without failing) if `chrome-devtools-mcp` cannot
-be reached. It can be combined with file-edit suites
-(`EVAL_SUITE=pro_agent,mcp_execute` or `EVAL_SUITE=all`).
+`EVAL_MCP_SERVERS` selects which MCP server specs (`mcp/servers/`) run
+this invocation. Default is `chrome_devtools` (back-compat with the
+single-server suite). Pass a comma-separated list of keys, or `all`.
+Each server spec runs its own per-case probe; an unconfigured spec
+(missing API key, server binary not reachable) skips its cases without
+failing the run. The `mcp_execute` suite can also be combined with
+file-edit suites (`EVAL_SUITE=pro_agent,mcp_execute` or `EVAL_SUITE=all`).
 
 ### Environment variables
 
 In addition to `EVAL_SUITE`, `EVAL_MODEL`, and `DYAD_PRO_API_KEY` (see
-above for the file-edit suites), the MCP suite reads the following:
+above for the file-edit suites), the MCP suite reads:
+
+| Variable           | Default           | Purpose                                                                                                                                                 |
+| ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EVAL_MCP_SERVERS` | `chrome_devtools` | Comma-separated list of MCP server keys to spawn (or `all`). Available: `chrome_devtools`, `stripe`. Unknown keys fail with the list of available ones. |
+
+Per-spec env vars:
+
+#### `chrome_devtools`
 
 | Variable                   | Default                          | Purpose                                                                                                                                     |
 | -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -339,6 +380,26 @@ Safe defaults baked in regardless of env vars: `--isolated`
 (ephemeral user-data-dir, auto-cleaned), `--headless` (unless
 overridden), `--no-usage-statistics` (no analytics traffic from eval
 runs).
+
+#### `stripe`
+
+| Variable                     | Default       | Purpose                                                                                                                                                                                                                      |
+| ---------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_API_KEY`             | _(unset)_     | **Required.** Stripe API key forwarded as `--api-key=<key>`. Must be a **test-mode** key (`sk_test_...` or `rk_test_...`) — the spec's probe rejects anything else, so an eval run cannot accidentally drive a live account. |
+| `EVAL_STRIPE_MCP_COMMAND`    | `npx`         | Binary used to spawn the MCP server.                                                                                                                                                                                         |
+| `EVAL_STRIPE_MCP_PACKAGE`    | `@stripe/mcp` | Package spec passed to `npx`. Pin a specific version for reproducibility (e.g. `@stripe/mcp@0.3.3`).                                                                                                                         |
+| `EVAL_STRIPE_MCP_EXTRA_ARGS` | _(unset)_     | Extra args appended verbatim to the MCP server invocation, space-separated.                                                                                                                                                  |
+
+The Stripe cases hit the live Stripe API — they are read-only by
+default (docs search, balance retrieval, customer listing) so they pass
+on a fresh test account, but they DO send real requests to Stripe.
+Never point this at an `sk_live_...` / `rk_live_...` key.
+
+`@stripe/mcp` is a stdio→HTTP proxy that forwards MCP messages to
+`https://mcp.stripe.com`. Tool permissions are controlled by your API
+key's scopes — use a Restricted API Key (`rk_test_...`) scoped to the
+operations you want the eval to perform (the deprecated `--tools`
+allowlist no longer exists).
 
 ### Examples
 
@@ -373,9 +434,11 @@ EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." \
 
 ### Safety notes
 
-The MCP suite drives a **real browser**, not a sandboxed/fake one, and
-the consent layer is mocked to auto-approve every call. Treat it like
-an integration test:
+The MCP suite drives **real external services**, not sandboxed/fake
+ones, and the consent layer is mocked to auto-approve every call.
+Treat it like an integration test.
+
+`chrome_devtools`:
 
 - The model can navigate to any URL — the fixture server origin is
   not enforced as an allowlist. A misbehaving model could navigate to
@@ -390,3 +453,18 @@ an integration test:
 - Don't run this suite on a machine with sensitive credentials in
   the default browser profile or in CI without network egress
   restrictions.
+
+`stripe`:
+
+- The model issues real Stripe API requests against the account
+  whose key is in `STRIPE_API_KEY`. The probe refuses anything other
+  than a test-mode key (`sk_test_...` / `rk_test_...`) — never
+  override that.
+- Even in test mode the model can in principle invoke
+  state-changing tools (create customers, products, payment links,
+  etc.). The shipped cases are read-only, but the hosted Stripe MCP
+  server exposes write tools based on your API key's scopes. Use a
+  Restricted API Key (`rk_test_...`) scoped to read-only operations
+  if you want to forbid mutations at the auth layer.
+- `npx -y @stripe/mcp` pulls the latest release from npm. Pin a
+  version via `EVAL_STRIPE_MCP_PACKAGE` to reduce supply-chain risk.
