@@ -18,7 +18,7 @@
  * add) but narrower than `string` (so a typo'd `server: "chrom"` fails
  * fast at runtime when the registry lookup misses).
  */
-export type McpServerKey = "chrome_devtools" | "stripe";
+export type McpServerKey = "chrome_devtools" | "stripe" | "linear";
 
 export interface McpEvalCase {
   name: string;
@@ -217,7 +217,50 @@ const STRIPE_CASES: McpEvalCase[] = [
   },
 ];
 
+// Linear cases stay read-only so they pass against any workspace the
+// user grants the OAuth app `read` access to, even an empty one. Tool
+// expectations use substrings of the sanitized jsName
+// (`linear_eval__<tool_name>`); Linear's MCP currently exposes tools
+// like `list_issues`, `list_teams`, `list_projects`, `get_user`,
+// `search_issues`, etc. — substrings chosen to match the family rather
+// than a specific name.
+const LINEAR_CASES: McpEvalCase[] = [
+  {
+    name: "List teams in workspace",
+    server: "linear",
+    prompt:
+      "Use the Linear MCP tools to list the teams in this Linear workspace. " +
+      "Report how many teams were returned. If zero, say `0 teams`. Otherwise " +
+      "state the count plainly. You do not need to list the team names.",
+    expectedToolNameContains: ["team"],
+    expectedAnswerContains: ["team"],
+  },
+  {
+    name: "Identify authenticated user",
+    server: "linear",
+    prompt:
+      "Use the Linear MCP tools to look up the currently authenticated user " +
+      "for this OAuth token. Report the user's display name or email — " +
+      "whichever the API returns.",
+    expectedToolNameContains: ["user|me|viewer"],
+    expectedAnswerContains: ["@|name"],
+  },
+  {
+    name: "Consent denied then retry: list teams",
+    server: "linear",
+    prompt:
+      "Use the Linear MCP tools to list teams in this workspace. If your " +
+      "first Linear tool call is denied due to user permissions, retry the " +
+      "same call once — the second attempt will be allowed. Then report how " +
+      "many teams were returned.",
+    denyFirstConsent: true,
+    expectedToolNameContains: ["team"],
+    expectedAnswerContains: ["team"],
+  },
+];
+
 export const MCP_CASES: McpEvalCase[] = [
   ...CHROME_DEVTOOLS_CASES,
   ...STRIPE_CASES,
+  ...LINEAR_CASES,
 ];
