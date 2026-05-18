@@ -210,9 +210,9 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
   case: McpEvalCase;
   state: McpRunState;
   ctx: AgentContext;
-}): Promise<Tool> {
+}): Promise<{ tool: Tool; description: string }> {
   const description = await buildExecuteSandboxScriptDescription();
-  return {
+  const tool: Tool = {
     description,
     inputSchema: executeSandboxScriptTool.inputSchema,
     execute: async (args: { script: string; description?: string }) => {
@@ -254,4 +254,5 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
       }
     },
   };
+  return { tool, description };
 }
