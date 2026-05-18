@@ -121,6 +121,7 @@ vi.mock(
                 durationMs: Date.now() - startedAt,
                 succeeded: false,
                 error: message,
+                errorDetail: registry.serializeError(err),
               });
               throw err;
             }
@@ -1322,11 +1323,17 @@ function registerMcpDescribeForSpec(params: {
       for (const { provider, modelName, label, temperature } of models) {
         describe(`mcp_execute (${spec.key}) — ${label}`, () => {
           for (const c of cases) {
-            it(c.name, async () => {
+            it(c.name, async (ctx) => {
               if (envHolder.skipReason) {
                 console.warn(
                   `\n[mcp_execute / ${spec.key} / ${label}] ${c.name} — SKIPPED: ${envHolder.skipReason}`,
                 );
+                // Mark the test as skipped (not passed). vitest reports
+                // `↓` for skipped vs `✓` for passed — important because
+                // a probe failure (missing API key, unreachable server,
+                // OAuth not configured) is not a passing result, and
+                // silently green-lighting it would mask config drift.
+                ctx.skip(envHolder.skipReason);
                 return;
               }
               if (!envHolder.mcp) {
@@ -1445,6 +1452,7 @@ async function runMcpCase(params: {
       durationMs: event.durationMs,
       succeeded: event.succeeded,
       error: event.error,
+      errorDetail: event.errorDetail,
       consentGranted: true,
     });
   });

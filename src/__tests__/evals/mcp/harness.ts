@@ -31,6 +31,10 @@ export interface McpCallRecord {
   durationMs: number;
   succeeded: boolean;
   error: string | null;
+  // See `helpers/eval_recorder.ts` for why `errorDetail` exists. Mirrors
+  // that field so the harness's in-memory record matches the persisted
+  // shape 1:1.
+  errorDetail?: unknown;
   consentGranted: boolean;
 }
 

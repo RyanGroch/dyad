@@ -86,6 +86,16 @@ export interface McpCallRecord {
   durationMs: number;
   succeeded: boolean;
   error: string | null;
+  /**
+   * Deep-serialized error payload (own properties + recursive `.cause`
+   * chain + any custom JSON-RPC fields like `.code` / `.data`).
+   * `error` carries only `err.message`, which for MCP failures is often
+   * something terse like `"MCP error -32602"` that loses the actual
+   * server-side reason. `errorDetail` preserves the full context so
+   * reviewers and the judge can see WHY a call failed (e.g. "did not
+   * contain a required property of 'question'").
+   */
+  errorDetail?: unknown;
   consentGranted: boolean;
 }
 
@@ -469,6 +479,10 @@ async function writeMcpCallsFolder(
 
       const status = c.succeeded ? "" : " [FAILED]";
       const consent = c.consentGranted ? "" : " [CONSENT DENIED]";
+      const errorDetailJson =
+        c.errorDetail !== undefined
+          ? JSON.stringify(c.errorDetail, null, 2)
+          : null;
       const combined =
         `${hr("=")}\n` +
         `MCP call #${c.index + 1}: ${c.jsName} (${c.serverName}/${c.toolName})${status}${consent}\n` +
@@ -477,9 +491,12 @@ async function writeMcpCallsFolder(
         `${hr("=")}\n\n` +
         `----- ARGS -----\n${JSON.stringify(c.args, null, 2)}\n\n` +
         `----- RESULT -----\n${JSON.stringify(c.result, null, 2)}\n` +
-        (!c.succeeded && c.error ? `\n----- ERROR -----\n${c.error}\n` : "");
+        (!c.succeeded && c.error ? `\n----- ERROR -----\n${c.error}\n` : "") +
+        (errorDetailJson
+          ? `\n----- ERROR DETAIL -----\n${errorDetailJson}\n`
+          : "");
 
-      await Promise.all([
+      const writes: Promise<void>[] = [
         writeFile(resolve(dir, `${base}.txt`), combined),
         writeFile(
           resolve(splitDir, "args.json"),
@@ -501,7 +518,16 @@ async function writeMcpCallsFolder(
             `consent_granted: ${c.consentGranted}\n` +
             (!c.succeeded && c.error ? `error:           ${c.error}\n` : ""),
         ),
-      ]);
+      ];
+      if (errorDetailJson) {
+        writes.push(
+          writeFile(
+            resolve(splitDir, "error_detail.json"),
+            errorDetailJson + "\n",
+          ),
+        );
+      }
+      await Promise.all(writes);
     }),
   );
 }
