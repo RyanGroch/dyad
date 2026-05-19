@@ -1,8 +1,10 @@
 # Evals
 
-LLM eval suite for tool-use quality. Five suites run the same 16 cases and
-the same three models (Claude Sonnet 4.6, GPT 5.4, Gemini 3 Flash) but with
-different tool sets and system prompts:
+LLM eval suite for tool-use quality. Several file-edit suites run the same
+cases against several frontier models, but with different tool sets and
+system prompts. The active list lives in `tool_use.eval.ts` (`SUITES`,
+`ALL_MODELS`, `CASES`) — that file is the source of truth; this README
+explains the framework, not the specific contents.
 
 | Suite name               | Tools available                | System prompt                                |
 | ------------------------ | ------------------------------ | -------------------------------------------- |
@@ -12,10 +14,13 @@ different tool sets and system prompts:
 | `pro_agent`              | `search_replace`, `write_file` | Production `LOCAL_AGENT_SYSTEM_PROMPT` (Pro) |
 | `pro_agent_experimental` | `search_replace`, `write_file` | Editable copy of the Pro prompt for tweaking |
 
+A sixth suite, `mcp_execute`, has a different case shape — see the **MCP
+eval suite** section near the end of this README.
+
 Each case gives the model a real source file plus an editing instruction,
 runs the model with the suite's tools wired up, applies the produced edits,
-and then asks an LLM judge (GPT 5.4) whether the result satisfies the
-instruction.
+and then asks an LLM judge (defined as `JUDGE_MODEL` in
+`tool_use.eval.ts`) whether the result satisfies the instruction.
 
 ## Prerequisites
 
@@ -59,10 +64,10 @@ EVAL_SUITE=all EVAL_MODEL=all DYAD_PRO_API_KEY="..." npm run eval
 ```
 
 **Heads up — this is expensive.** A full `all`/`all` run issues one
-generation per (suite × model × case) triple plus one judge call per case,
-across 5 suites, 3 models, and 16 cases. Expect dozens of LLM requests,
-some of which run reasoning models on 300+ line fixtures. Use sparingly;
-prefer narrow filters during development.
+generation per (suite × model × case) triple plus one judge call per case.
+Expect dozens to hundreds of LLM requests, some of which run reasoning
+models on 300+ line fixtures. Use sparingly; prefer narrow filters during
+development.
 
 ### Running a single suite
 
@@ -164,13 +169,8 @@ eval-results/
 ```
 
 The top-level folder is the suite `name`, so each suite lands in its own
-directory:
-
-- `eval-results/search_replace/`
-- `eval-results/search_replace_few/`
-- `eval-results/basic_agent/`
-- `eval-results/pro_agent/`
-- `eval-results/pro_agent_experimental/`
+directory under `eval-results/`. Browse the directory after a run to see
+which suites have results.
 
 `<run-start-ts>` is captured once at process start, so every case from the
 same `npm run eval` invocation for a given (suite, model) pair clusters into
@@ -246,3 +246,308 @@ call. The split view contains the raw pieces as standalone files:
   JSON blobs. So a `search_replace` call produces `old_string.ts` and
   `new_string.ts`; a `write_file` call produces `content.ts` and
   `description.ts`.
+
+## MCP eval suite (`mcp_execute`)
+
+The `mcp_execute` suite exercises the model's ability to call **MCP
+tools** from inside the production `execute_sandbox_script` tool. Unlike
+the file-edit suites, cases here do not edit a fixture file — they pose a
+question whose answer requires the model to drive an MCP server (browse
+a web page, query a remote API, search documentation, …), and the
+verdict is the model's final assistant text.
+
+The suite supports multiple MCP servers, one spec per server under
+`mcp/servers/`. Each case is tagged with a `server` key and routed to
+that server's spec by the runner. Select which servers run via
+`EVAL_MCP_SERVERS` (default `chrome_devtools`); pass a comma-separated
+list of keys or `all`. The authoritative list of available server keys
+is `MCP_SERVER_SPECS` in `mcp/servers/index.ts`. An unconfigured spec
+(missing API key, server binary not reachable) skips its cases without
+failing the run. The `mcp_execute` suite can also be combined with
+file-edit suites (e.g. `EVAL_SUITE=pro_agent,mcp_execute` or
+`EVAL_SUITE=all`).
+
+The MCP suite drives **real external services**, not sandboxed/fake
+ones, and the consent layer is mocked to auto-approve every call.
+Treat it like an integration test — see the per-server safety notes
+below.
+
+### Case declaration shape
+
+Each case declares a `server` key (one of the registered specs in
+`mcp/servers/`) plus optional fields:
+
+- `expectedToolNameContains: string[]` — every entry must match at
+  least one recorded MCP call's `jsName` or `toolName`. Entries
+  support `|`-alternation so synonymous tools count as one match
+  (e.g. `"navigate_page|new_page"`).
+- `expectedAnswerContains: string[]` — every entry must appear (case
+  insensitive) in the model's final assistant text. Entries also
+  support `|`-alternation.
+- `expectNoMcpCalls: true` — fails if any MCP call was made.
+- `denyFirstConsent: true` — installs a consent decider that denies
+  only the first MCP call, exercising recovery.
+- `setupFile: { name, contents }` — file written into the per-case
+  temp app dir before the model runs (for cases that exercise file
+  host calls inside `execute_sandbox_script`).
+
+Verdict order per case: structural checks (above) → LLM judge
+(`JUDGE_MODEL` in `tool_use.eval.ts`) sees the prompt, MCP transcript,
+sandbox-script transcript, and final answer, and returns PASS/FAIL.
+
+See `mcp/cases.ts` for the current case list — the README is not the
+source of truth for which cases exist.
+
+### Shared environment variables
+
+In addition to `EVAL_SUITE`, `EVAL_MODEL`, and `DYAD_PRO_API_KEY` (see
+above for the file-edit suites), every MCP server spec honors:
+
+| Variable           | Default           | Purpose                                                                                                                                                                                                       |
+| ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EVAL_MCP_SERVERS` | `chrome_devtools` | Comma-separated list of MCP server keys to spawn (or `all`). The set of available keys is whatever `MCP_SERVER_SPECS` in `mcp/servers/index.ts` exports — unknown keys fail at startup with the current list. |
+| `EVAL_OAUTH_AUTO`  | _(unset)_         | Set to `1` to allow OAuth flows to run in a non-TTY environment (CI). By default OAuth-protected specs skip when stdin is not a TTY and no token is cached.                                                   |
+
+To run every MCP server spec at once:
+
+```bash
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=all \
+  STRIPE_API_KEY="sk_test_..." LINEAR_CLIENT_ID="..." \
+  DYAD_PRO_API_KEY="..." npm run eval
+```
+
+### `chrome_devtools`
+
+Browser-MCP cases against a local fixture HTTP server that serves
+deterministic HTML pages. Patterns include single call, data-dependent
+chain, loop-and-aggregate, filter-and-return, mixed file + MCP, error
+handling, consent denial recovery, and a negative case that should
+answer without any MCP call.
+
+#### Running
+
+`chrome_devtools` is the default server, so no `EVAL_MCP_SERVERS` is
+needed:
+
+```bash
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." npm run eval
+```
+
+Run against a non-default Chromium build (e.g. a packaged Chromium
+binary, an alternative Chromium-derived browser, or any
+Chrome-compatible install not on `PATH`) with the window visible:
+
+```bash
+EVAL_MCP_EXECUTABLE_PATH=/path/to/chromium \
+EVAL_MCP_HEADLESS=false \
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." npm run eval
+```
+
+Run with a sandboxed Chromium that needs `--no-sandbox` (common with
+packaged builds like AppImages) and a debug log file:
+
+```bash
+EVAL_MCP_EXTRA_ARGS="--chrome-arg=--no-sandbox --logFile=/tmp/cdt-mcp.log" \
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." npm run eval
+```
+
+Run a single MCP case (vitest substring filter):
+
+```bash
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet DYAD_PRO_API_KEY="..." \
+  npm run eval -- -t "Consent denied"
+```
+
+#### Environment variables
+
+| Variable                   | Default                          | Purpose                                                                                                                                     |
+| -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EVAL_MCP_COMMAND`         | `npx`                            | Binary used to spawn the MCP server. Override to use a globally installed `chrome-devtools-mcp` (skips the `npx` resolution step).          |
+| `EVAL_MCP_PACKAGE`         | `chrome-devtools-mcp@latest`     | Package spec passed to `npx`. Pin a specific version for reproducibility / supply-chain safety (e.g. `chrome-devtools-mcp@0.x.y`).          |
+| `EVAL_MCP_EXECUTABLE_PATH` | _(unset)_                        | Path to a Chrome/Chromium-compatible binary. Forwarded as `--executablePath=<path>`. Required when no Chrome is on `PATH` (e.g. AppImages). |
+| `EVAL_MCP_HEADLESS`        | `true` (i.e. `--headless` added) | Set to `"false"` to disable headless mode and watch the browser window during eval runs. Useful for debugging case behavior visually.       |
+| `EVAL_MCP_EXTRA_ARGS`      | _(unset)_                        | Extra args appended verbatim to the MCP server invocation, space-separated. Example: `EVAL_MCP_EXTRA_ARGS="--chrome-arg=--no-sandbox"`.     |
+
+Safe defaults baked in regardless of env vars: `--isolated`
+(ephemeral user-data-dir, auto-cleaned), `--headless` (unless
+overridden), `--no-usage-statistics` (no analytics traffic from eval
+runs).
+
+#### Safety notes
+
+- The model can navigate to any URL — the fixture server origin is
+  not enforced as an allowlist. A misbehaving model could navigate to
+  arbitrary external sites with your real IP and browser
+  fingerprint.
+- `npx -y chrome-devtools-mcp@latest` pulls the latest release from
+  npm. Pin a version via `EVAL_MCP_PACKAGE` to reduce supply-chain
+  risk in long-lived environments.
+- The `--isolated` flag means the spawned browser uses an ephemeral
+  user-data-dir that is wiped after each run — your real Chrome
+  profile, cookies, and logged-in sessions are not exposed.
+- Don't run this suite on a machine with sensitive credentials in
+  the default browser profile or in CI without network egress
+  restrictions.
+
+### `stripe`
+
+Cases against the live Stripe API in test mode. Read-only by design
+(documentation search, balance retrieval, list-and-count, consent
+denial recovery) so they pass on a fresh test account without
+pre-seeded customers, products, or balances.
+
+`@stripe/mcp` is a stdio→HTTP proxy that forwards MCP messages to
+`https://mcp.stripe.com`. Tool permissions are controlled by your API
+key's scopes — use a Restricted API Key (`rk_test_...`) scoped to the
+operations you want the eval to perform (the deprecated `--tools`
+allowlist no longer exists). Never point this at an `sk_live_...` /
+`rk_live_...` key — the spec's probe rejects anything other than a
+test-mode key, so an eval run cannot accidentally drive a live
+account.
+
+#### Running
+
+```bash
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=stripe \
+  STRIPE_API_KEY="sk_test_..." DYAD_PRO_API_KEY="..." npm run eval
+```
+
+#### Environment variables
+
+| Variable                     | Default       | Purpose                                                                                                                                                                                                                      |
+| ---------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_API_KEY`             | _(unset)_     | **Required.** Stripe API key forwarded as `--api-key=<key>`. Must be a **test-mode** key (`sk_test_...` or `rk_test_...`) — the spec's probe rejects anything else, so an eval run cannot accidentally drive a live account. |
+| `EVAL_STRIPE_MCP_COMMAND`    | `npx`         | Binary used to spawn the MCP server.                                                                                                                                                                                         |
+| `EVAL_STRIPE_MCP_PACKAGE`    | `@stripe/mcp` | Package spec passed to `npx`. Pin a specific version for reproducibility (e.g. `@stripe/mcp@0.3.3`).                                                                                                                         |
+| `EVAL_STRIPE_MCP_EXTRA_ARGS` | _(unset)_     | Extra args appended verbatim to the MCP server invocation, space-separated.                                                                                                                                                  |
+
+#### Safety notes
+
+- The model issues real Stripe API requests against the account
+  whose key is in `STRIPE_API_KEY`. The probe refuses anything other
+  than a test-mode key (`sk_test_...` / `rk_test_...`) — never
+  override that.
+- Even in test mode the model can in principle invoke
+  state-changing tools (create customers, products, payment links,
+  etc.). The shipped cases are read-only, but the hosted Stripe MCP
+  server exposes write tools based on your API key's scopes. Use a
+  Restricted API Key (`rk_test_...`) scoped to read-only operations
+  if you want to forbid mutations at the auth layer.
+- `npx -y @stripe/mcp` pulls the latest release from npm. Pin a
+  version via `EVAL_STRIPE_MCP_PACKAGE` to reduce supply-chain risk.
+
+### `linear`
+
+Cases against the live Linear API via OAuth. Read-only (list teams,
+identify authenticated user, consent denial recovery) so they pass
+against any workspace the user grants `read` scope to.
+
+Linear's MCP server is a **remote** server at
+`https://mcp.linear.app/sse` (SSE transport — server-sent events, not
+streamable HTTP), gated by Linear OAuth 2.0 with PKCE. The eval suite
+walks the OAuth flow interactively on first run, caches the resulting
+access token under `~/.cache/dyad-eval/oauth/linear.json` (mode
+`0600`), and reuses it on subsequent runs until expiry.
+
+#### One-time Linear OAuth app setup
+
+1. Sign in to your Linear workspace and visit
+   https://linear.app/settings/api.
+2. Click "Create new" (or similar) to register a new OAuth application.
+3. Fill in the form. **Only three fields actually affect the eval**:
+   - **Callback URLs** (a.k.a. redirect URIs): set to exactly
+     `http://localhost:53682/callback`. If you want a different port,
+     pick one between 1024 and 65535 and export
+     `EVAL_LINEAR_OAUTH_PORT=<port>` to match. Linear requires the
+     redirect URI to be pre-registered down to the port, so this must
+     be exact.
+   - **Scopes**: enable at least `read`. The shipped Linear cases are
+     all read-only. If you add cases that mutate workspace data,
+     widen this and set `EVAL_LINEAR_SCOPE` accordingly.
+   - **Public** vs **Confidential**: public PKCE apps don't need a
+     client secret. If Linear marks your app as confidential anyway,
+     export `LINEAR_CLIENT_SECRET` alongside the client ID.
+
+   The other fields (application name, description, icon, developer
+   info, webhook URL, privacy/TOS URLs) are Linear-side metadata for
+   the consent screen and app gallery. **None of them affect whether
+   the eval passes** — fill them in if Linear requires it for app
+   creation, otherwise stub anything that's allowed to be empty.
+
+4. After saving, copy the **Client ID** from the app's detail page.
+   Export it as `LINEAR_CLIENT_ID`.
+
+#### Environment variables
+
+| Variable                 | Default   | Purpose                                                                                                                                                                                                                |
+| ------------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LINEAR_CLIENT_ID`       | _(unset)_ | **Required.** Client ID of your registered Linear OAuth application.                                                                                                                                                   |
+| `LINEAR_CLIENT_SECRET`   | _(unset)_ | Client Secret, if Linear treats your OAuth app as confidential. Public PKCE clients don't need one — try without it first; add it only if the token endpoint rejects the exchange.                                     |
+| `EVAL_LINEAR_OAUTH_PORT` | `53682`   | TCP port the loopback callback listener binds to. **Must match the port in your Linear OAuth app's callback URL exactly** — Linear (like most OAuth providers) pins redirect URIs to a specific port at the app level. |
+| `EVAL_LINEAR_SCOPE`      | `read`    | Space-separated OAuth scopes requested at the authorize endpoint. The shipped cases only need `read`. Use a wider scope (e.g. `read write`) if you add cases that mutate Linear data.                                  |
+
+#### Running
+
+First run — acquire the token. Vitest runs tests in worker threads
+where `process.stdin.isTTY` is undefined, so the OAuth helper would
+normally refuse to prompt. Opt in with `EVAL_OAUTH_AUTO=1`
+(`EVAL_OAUTH_AUTO` overrides the TTY check — fine when you're running
+locally and watching the terminal, unsafe in headless CI). The helper
+prints the authorize URL, opens your default browser, captures the
+redirect on the loopback port, and caches the token. Filter to a
+single case so the first run finishes fast and you don't burn a long
+matrix on the OAuth round trip:
+
+```bash
+EVAL_OAUTH_AUTO=1 \
+LINEAR_CLIENT_ID="<your client id>" \
+DYAD_PRO_API_KEY="<your dyad key>" \
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=linear \
+  npm run eval -- -t "List teams"
+```
+
+Subsequent runs — token cached. Drop `EVAL_OAUTH_AUTO=1` and the `-t`
+filter; the helper reads the cached token, no prompt:
+
+```bash
+LINEAR_CLIENT_ID="<your client id>" \
+DYAD_PRO_API_KEY="<your dyad key>" \
+EVAL_SUITE=mcp_execute EVAL_MODEL=sonnet EVAL_MCP_SERVERS=linear \
+  npm run eval
+```
+
+To force a fresh OAuth flow (e.g. you revoked the app, expired the
+token, or want to test the flow itself again), delete
+`~/.cache/dyad-eval/oauth/linear.json` and rerun the first-run
+command above.
+
+#### Troubleshooting
+
+| Symptom                                                         | Likely cause                                                                    | Fix                                                                                         |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `LINEAR_CLIENT_ID not set` (case skipped)                       | Env var missing                                                                 | Export `LINEAR_CLIENT_ID`                                                                   |
+| `No cached OAuth token ... not a TTY` (case skipped)            | Vitest worker has no TTY, no cached token                                       | Set `EVAL_OAUTH_AUTO=1` for the first run                                                   |
+| Browser opens to Linear, says "redirect URI doesn't match"      | Callback URL on the Linear app doesn't match `EVAL_LINEAR_OAUTH_PORT`           | Set them equal — the URI must be `http://localhost:<EVAL_LINEAR_OAUTH_PORT>/callback`       |
+| Authorize succeeds, then `Error POSTing to endpoint (HTTP 404)` | Wrong transport class against `https://mcp.linear.app/sse`                      | Already fixed (uses `SSEClientTransport`) — re-pull `mcp/servers/linear.ts` if you see this |
+| `Token endpoint returned 401`                                   | Linear flagged your app as confidential and is rejecting the PKCE-only exchange | Export `LINEAR_CLIENT_SECRET` from the same app's detail page                               |
+| `Failed to bind OAuth callback listener on port 53682`          | Another process holds the port                                                  | `lsof -i :53682` to find it, or pick a different port via `EVAL_LINEAR_OAUTH_PORT`          |
+
+#### Safety notes
+
+- The model issues real Linear API requests against the workspace
+  whose OAuth token is cached. Cached tokens grant whatever scopes
+  you approved at the authorize step — keep that scope `read` unless
+  you actively want cases that mutate Linear data.
+- The OAuth access token sits in plaintext at
+  `~/.cache/dyad-eval/oauth/linear.json` with mode `0600`. Anyone
+  with read access to that file can act as you against the Linear
+  API. Don't commit it, don't sync that path to other machines, and
+  delete it when you're done if your machine is shared.
+- The first run prints the authorize URL and opens your default
+  browser. The URL contains the OAuth `state` and PKCE
+  `code_challenge` — anyone observing your terminal could in
+  principle race you to the redirect and intercept the `code`. Use
+  this only on a trusted local terminal.
+- Linear's MCP `state` param protects against cross-site request
+  forgery at the callback boundary; the helper verifies the returned
+  `state` matches what it sent and rejects on mismatch.

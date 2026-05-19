@@ -73,6 +73,43 @@ export interface JudgeRecord {
   explanation: string;
 }
 
+// MCP suite extensions. Optional so existing file-edit cases compile
+// unchanged. Populated only by the `mcp_execute` suite.
+export interface McpCallRecord {
+  timestamp: string;
+  index: number;
+  jsName: string;
+  serverName: string;
+  toolName: string;
+  args: unknown;
+  result: unknown | null;
+  durationMs: number;
+  succeeded: boolean;
+  error: string | null;
+  /**
+   * Deep-serialized error payload (own properties + recursive `.cause`
+   * chain + any custom JSON-RPC fields like `.code` / `.data`).
+   * `error` carries only `err.message`, which for MCP failures is often
+   * something terse like `"MCP error -32602"` that loses the actual
+   * server-side reason. `errorDetail` preserves the full context so
+   * reviewers and the judge can see WHY a call failed (e.g. "did not
+   * contain a required property of 'question'").
+   */
+  errorDetail?: unknown;
+  consentGranted: boolean;
+}
+
+export interface SandboxScriptRecord {
+  timestamp: string;
+  index: number;
+  script: string;
+  description: string | null;
+  output: string;
+  executionMs: number;
+  truncated: boolean;
+  mcpCallIndexes: number[];
+}
+
 export interface EvalRunRecord {
   timestamp: string;
   suite: string;
@@ -110,6 +147,23 @@ export interface EvalRunRecord {
   judge: JudgeRecord | null;
   passed: boolean;
   errorMessage: string | null;
+  // MCP suite extensions (optional). Present only for `mcp_execute`.
+  answer?: string;
+  mcpCalls?: McpCallRecord[];
+  sandboxScripts?: SandboxScriptRecord[];
+  /**
+   * Raw XML emitted via `onXmlComplete` while the case ran. Mirrors
+   * what the UI would render and includes the full MCP tool-call /
+   * tool-result XML envelopes.
+   */
+  xmlEmissions?: string[];
+  /**
+   * The full dynamically-built `execute_sandbox_script` tool description
+   * that the model saw — preamble + MCP type defs block. Captured so
+   * reviewers can see exactly which MCP tools (and what TS signatures)
+   * the model had access to.
+   */
+  executeSandboxScriptDescription?: string;
 }
 
 function sanitize(s: string): string {
@@ -239,6 +293,57 @@ export function renderEvalRunAsText(record: EvalRunRecord): string {
     lines.push(formatToolCall(tc));
   }
 
+  if (record.sandboxScripts && record.sandboxScripts.length > 0) {
+    lines.push(hr("="));
+    lines.push(`Sandbox scripts (${record.sandboxScripts.length})`);
+    lines.push(hr("="));
+    for (const s of record.sandboxScripts) {
+      lines.push(hr("-"));
+      lines.push(
+        `Script #${s.index + 1} — ${s.executionMs}ms${s.truncated ? " [truncated]" : ""}`,
+      );
+      if (s.description) lines.push(`Description: ${s.description}`);
+      lines.push(`MCP calls in this script: ${s.mcpCallIndexes.length}`);
+      lines.push("----- SCRIPT -----");
+      lines.push(s.script);
+      lines.push("----- OUTPUT -----");
+      lines.push(s.output);
+    }
+    lines.push("");
+  }
+
+  if (record.mcpCalls && record.mcpCalls.length > 0) {
+    lines.push(hr("="));
+    lines.push(`MCP calls (${record.mcpCalls.length})`);
+    lines.push(hr("="));
+    for (const c of record.mcpCalls) {
+      lines.push(hr("-"));
+      const status = c.succeeded ? "" : " [FAILED]";
+      const consent = c.consentGranted ? "" : " [CONSENT DENIED]";
+      lines.push(
+        `MCP call #${c.index + 1}: ${c.jsName} (${c.serverName}/${c.toolName})${status}${consent}`,
+      );
+      lines.push(`Duration: ${c.durationMs}ms`);
+      lines.push("----- ARGS -----");
+      lines.push(JSON.stringify(c.args, null, 2));
+      lines.push("----- RESULT -----");
+      lines.push(JSON.stringify(c.result, null, 2));
+      if (!c.succeeded && c.error) {
+        lines.push("----- ERROR -----");
+        lines.push(c.error);
+      }
+    }
+    lines.push("");
+  }
+
+  if (record.answer !== undefined) {
+    lines.push(hr("="));
+    lines.push("Final answer");
+    lines.push(hr("="));
+    lines.push(record.answer);
+    lines.push("");
+  }
+
   lines.push(hr("="));
   lines.push("Diff (original → final)");
   lines.push(hr("="));
@@ -295,8 +400,136 @@ export async function recordEvalRun(record: EvalRunRecord): Promise<void> {
   if (record.toolCalls.length > 0) {
     writes.push(writeToolCallsFolder(recordDir, record));
   }
+  if (record.sandboxScripts && record.sandboxScripts.length > 0) {
+    writes.push(writeSandboxScriptsFolder(recordDir, record));
+  }
+  if (record.mcpCalls && record.mcpCalls.length > 0) {
+    writes.push(writeMcpCallsFolder(recordDir, record));
+  }
 
   await Promise.all(writes);
+}
+
+async function writeSandboxScriptsFolder(
+  recordDir: string,
+  record: EvalRunRecord,
+): Promise<void> {
+  const scripts = record.sandboxScripts ?? [];
+  if (scripts.length === 0) return;
+  const dir = resolve(recordDir, "sandbox_scripts");
+  await mkdir(dir, { recursive: true });
+  const padWidth = Math.max(2, String(scripts.length).length);
+
+  await Promise.all(
+    scripts.map(async (s) => {
+      const base = String(s.index + 1).padStart(padWidth, "0");
+      const splitDir = resolve(dir, base);
+      await mkdir(splitDir, { recursive: true });
+
+      const combined =
+        `${hr("=")}\n` +
+        `Sandbox script #${s.index + 1}\n` +
+        `Timestamp:  ${s.timestamp}\n` +
+        `Duration:   ${s.executionMs}ms\n` +
+        `Truncated:  ${s.truncated}\n` +
+        (s.description ? `Description: ${s.description}\n` : "") +
+        `MCP calls:  ${s.mcpCallIndexes.length}` +
+        (s.mcpCallIndexes.length
+          ? ` (indexes: ${s.mcpCallIndexes.map((i) => i + 1).join(", ")})`
+          : "") +
+        `\n${hr("=")}\n\n` +
+        `----- SCRIPT (MustardScript) -----\n${s.script}\n\n` +
+        `----- OUTPUT -----\n${s.output}\n`;
+
+      await Promise.all([
+        writeFile(resolve(dir, `${base}.txt`), combined),
+        writeFile(resolve(splitDir, "script.js"), s.script + "\n"),
+        writeFile(resolve(splitDir, "output.txt"), s.output + "\n"),
+        writeFile(
+          resolve(splitDir, "meta.txt"),
+          `index:        ${s.index + 1}\n` +
+            `timestamp:    ${s.timestamp}\n` +
+            `description:  ${s.description ?? ""}\n` +
+            `execution_ms: ${s.executionMs}\n` +
+            `truncated:    ${s.truncated}\n` +
+            `mcp_call_indexes: ${s.mcpCallIndexes
+              .map((i) => i + 1)
+              .join(", ")}\n`,
+        ),
+      ]);
+    }),
+  );
+}
+
+async function writeMcpCallsFolder(
+  recordDir: string,
+  record: EvalRunRecord,
+): Promise<void> {
+  const calls = record.mcpCalls ?? [];
+  if (calls.length === 0) return;
+  const dir = resolve(recordDir, "mcp_calls");
+  await mkdir(dir, { recursive: true });
+  const padWidth = Math.max(2, String(calls.length).length);
+
+  await Promise.all(
+    calls.map(async (c) => {
+      const base = String(c.index + 1).padStart(padWidth, "0");
+      const splitDir = resolve(dir, base);
+      await mkdir(splitDir, { recursive: true });
+
+      const status = c.succeeded ? "" : " [FAILED]";
+      const consent = c.consentGranted ? "" : " [CONSENT DENIED]";
+      const errorDetailJson =
+        c.errorDetail !== undefined
+          ? JSON.stringify(c.errorDetail, null, 2)
+          : null;
+      const combined =
+        `${hr("=")}\n` +
+        `MCP call #${c.index + 1}: ${c.jsName} (${c.serverName}/${c.toolName})${status}${consent}\n` +
+        `Timestamp: ${c.timestamp}\n` +
+        `Duration:  ${c.durationMs}ms\n` +
+        `${hr("=")}\n\n` +
+        `----- ARGS -----\n${JSON.stringify(c.args, null, 2)}\n\n` +
+        `----- RESULT -----\n${JSON.stringify(c.result, null, 2)}\n` +
+        (!c.succeeded && c.error ? `\n----- ERROR -----\n${c.error}\n` : "") +
+        (errorDetailJson
+          ? `\n----- ERROR DETAIL -----\n${errorDetailJson}\n`
+          : "");
+
+      const writes: Promise<void>[] = [
+        writeFile(resolve(dir, `${base}.txt`), combined),
+        writeFile(
+          resolve(splitDir, "args.json"),
+          JSON.stringify(c.args, null, 2) + "\n",
+        ),
+        writeFile(
+          resolve(splitDir, "result.json"),
+          JSON.stringify(c.result, null, 2) + "\n",
+        ),
+        writeFile(
+          resolve(splitDir, "meta.txt"),
+          `index:           ${c.index + 1}\n` +
+            `timestamp:       ${c.timestamp}\n` +
+            `js_name:         ${c.jsName}\n` +
+            `server_name:     ${c.serverName}\n` +
+            `tool_name:       ${c.toolName}\n` +
+            `duration_ms:     ${c.durationMs}\n` +
+            `succeeded:       ${c.succeeded}\n` +
+            `consent_granted: ${c.consentGranted}\n` +
+            (!c.succeeded && c.error ? `error:           ${c.error}\n` : ""),
+        ),
+      ];
+      if (errorDetailJson) {
+        writes.push(
+          writeFile(
+            resolve(splitDir, "error_detail.json"),
+            errorDetailJson + "\n",
+          ),
+        );
+      }
+      await Promise.all(writes);
+    }),
+  );
 }
 
 async function writeToolCallsFolder(
@@ -388,10 +621,14 @@ async function writeDetailsFolder(
     errorMessage: record.errorMessage,
   };
 
-  await Promise.all([
-    writeFile(resolve(detailsDir, `file_before${ext}`), record.file.before),
-    writeFile(resolve(detailsDir, `file_after${ext}`), record.file.after),
-    writeFile(resolve(detailsDir, "diff.patch"), record.diff || ""),
+  // Skip file_before / file_after / diff.patch when the case did not
+  // operate on a file fixture (e.g. MCP cases use `file.name: "(none)"`
+  // and empty before/after). Writing those as empty files adds noise
+  // and confuses reviewers into thinking something went wrong.
+  const hasFileFixture =
+    record.file.before.length > 0 || record.file.after.length > 0;
+
+  const writes: Promise<void>[] = [
     writeFile(resolve(detailsDir, "system_prompt.txt"), record.prompt.system),
     writeFile(
       resolve(detailsDir, "instructions.txt"),
@@ -406,7 +643,29 @@ async function writeDetailsFolder(
       resolve(detailsDir, "metadata.txt"),
       renderMetadataAsText(metadata),
     ),
-  ]);
+  ];
+  if (hasFileFixture) {
+    writes.push(
+      writeFile(resolve(detailsDir, `file_before${ext}`), record.file.before),
+      writeFile(resolve(detailsDir, `file_after${ext}`), record.file.after),
+      writeFile(resolve(detailsDir, "diff.patch"), record.diff || ""),
+    );
+  }
+  if (record.executeSandboxScriptDescription) {
+    // The dynamic tool description the model saw — preamble + MCP type
+    // defs block. Written as Markdown so the embedded ```ts fences in
+    // the description render in code-block-aware viewers.
+    writes.push(
+      writeFile(
+        resolve(detailsDir, "execute_sandbox_script_description.md"),
+        record.executeSandboxScriptDescription,
+      ),
+    );
+  }
+  if (record.answer !== undefined) {
+    writes.push(writeFile(resolve(detailsDir, "answer.txt"), record.answer));
+  }
+  await Promise.all(writes);
 }
 
 function renderMetadataAsText(m: {
