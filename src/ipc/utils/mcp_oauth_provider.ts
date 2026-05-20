@@ -160,7 +160,12 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       redirect_uris: [this.redirectUrl],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
-      token_endpoint_auth_method: "client_secret_post",
+      // Dyad is a public PKCE client -- no `client_secret` is ever
+      // stored. Declaring "client_secret_post" misled servers
+      // (including Linear's MCP) into expecting a secret on the
+      // token exchange, which they then rejected as invalid_client.
+      // "none" tells the server we'll authenticate via PKCE alone.
+      token_endpoint_auth_method: "none",
       client_name: "Dyad",
       scope: this.scope,
     };
@@ -281,6 +286,15 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   async invalidateCredentials(
     scope: "all" | "client" | "tokens" | "verifier",
   ): Promise<void> {
+    // Log the scope so when the SDK invokes this in its
+    // `InvalidClientError` / `InvalidGrantError` catch paths, the
+    // user-visible logs reveal which OAuth error the upstream server
+    // returned. Otherwise the SDK swallows the original error,
+    // retries the flow, and the only surface symptom is the misleading
+    // "Existing OAuth client information is required" message.
+    logger.warn(
+      `invalidateCredentials(${scope}) called for MCP server ${this.serverId}; this typically means the OAuth server returned invalid_client / invalid_grant / unauthorized_client.`,
+    );
     if (scope === "all" || scope === "verifier") {
       codeVerifiers.delete(this.serverId);
     }

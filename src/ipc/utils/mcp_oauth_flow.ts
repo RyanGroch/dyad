@@ -222,13 +222,43 @@ export async function runOAuthFlow(
   // callback arrives before the listener is ready.
   const codePromise = startCallbackListener(callbackPort, expectedState);
 
+  // Logging fetch wrapper: when the OAuth flow fails, the SDK
+  // swallows the upstream server's actual error response (e.g.
+  // `{"error":"invalid_client"}`) and reports a misleading retry
+  // failure. Tee the responses so the user-visible logs show what
+  // the OAuth server actually said. Only used for `auth()`; no
+  // performance cost outside the flow.
+  const loggingFetch: typeof fetch = async (input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const response = await fetch(input, init);
+    if (!response.ok && url.includes("linear")) {
+      // Clone before reading -- we still want to hand the original
+      // response back to the SDK.
+      const cloned = response.clone();
+      const body = await cloned.text().catch(() => "");
+      logger.warn(
+        `OAuth ${init?.method ?? "GET"} ${url} -> ${response.status}: ${body.slice(0, 500)}`,
+      );
+    }
+    return response;
+  };
+
   try {
     // First call kicks off discovery / DCR if needed and opens the
     // browser via our provider's `redirectToAuthorization`. Returns
     // 'REDIRECT' when interactive consent is required. The `scope`
     // here lands in the authorize URL's `scope=` query parameter --
     // load-bearing for providers that require it (Linear).
-    const initial = await auth(provider, { serverUrl: s.url, scope });
+    const initial = await auth(provider, {
+      serverUrl: s.url,
+      scope,
+      fetchFn: loggingFetch,
+    });
     if (initial === "AUTHORIZED") {
       // Tokens were still valid (refresh succeeded silently). Nothing
       // more to do; tear the listener down.
@@ -247,6 +277,7 @@ export async function runOAuthFlow(
       serverUrl: s.url,
       authorizationCode: code,
       scope,
+      fetchFn: loggingFetch,
     });
     if (final !== "AUTHORIZED") {
       return {
