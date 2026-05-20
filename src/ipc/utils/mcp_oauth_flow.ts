@@ -194,11 +194,18 @@ export async function runOAuthFlow(
   }
 
   const callbackPort = params.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
+  // Linear (and likely other OAuth-gated MCP servers) requires the
+  // `scope` query parameter in the authorize URL -- omitting it
+  // surfaces as a misleading "Invalid client" error rather than a
+  // missing-scope error. Read the configured scope from the row,
+  // fall back to the caller's override, and finally to "read" as a
+  // safe default that works against every Linear-style server.
+  const scope = s.oauthScope ?? params.scope ?? "read";
   const expectedState = generateState();
   const provider = new DyadOAuthClientProvider({
     serverId: s.id,
     callbackPort,
-    scope: params.scope,
+    scope,
     preregisteredClientId: s.oauthClientId ?? undefined,
   });
 
@@ -217,8 +224,10 @@ export async function runOAuthFlow(
   try {
     // First call kicks off discovery / DCR if needed and opens the
     // browser via our provider's `redirectToAuthorization`. Returns
-    // 'REDIRECT' when interactive consent is required.
-    const initial = await auth(provider, { serverUrl: s.url });
+    // 'REDIRECT' when interactive consent is required. The `scope`
+    // here lands in the authorize URL's `scope=` query parameter --
+    // load-bearing for providers that require it (Linear).
+    const initial = await auth(provider, { serverUrl: s.url, scope });
     if (initial === "AUTHORIZED") {
       // Tokens were still valid (refresh succeeded silently). Nothing
       // more to do; tear the listener down.
@@ -236,6 +245,7 @@ export async function runOAuthFlow(
     const final = await auth(provider, {
       serverUrl: s.url,
       authorizationCode: code,
+      scope,
     });
     if (final !== "AUTHORIZED") {
       return {

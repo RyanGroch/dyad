@@ -323,6 +323,7 @@ export function ToolsMcpSettings() {
   const [enabled, setEnabled] = useState(true);
   const [oauthEnabled, setOauthEnabled] = useState(false);
   const [oauthClientId, setOauthClientId] = useState("");
+  const [oauthScope, setOauthScope] = useState("");
   const [connectingServerId, setConnectingServerId] = useState<number | null>(
     null,
   );
@@ -379,6 +380,7 @@ export function ToolsMcpSettings() {
       enabled,
       oauthEnabled: oauthEnabled && transport !== "stdio",
       oauthClientId: oauthClientId.trim() || null,
+      oauthScope: oauthScope.trim() || null,
     });
     setName("");
     setCommand("");
@@ -387,6 +389,7 @@ export function ToolsMcpSettings() {
     setEnabled(true);
     setOauthEnabled(false);
     setOauthClientId("");
+    setOauthScope("");
   };
 
   const onConnect = async (serverId: number) => {
@@ -490,20 +493,36 @@ export function ToolsMcpSettings() {
                 <Label>Use OAuth (server requires authentication)</Label>
               </div>
               {oauthEnabled && (
-                <div className="col-span-2">
-                  <Label>
-                    OAuth Client ID
-                    <span className="ml-1 text-xs text-muted-foreground">
-                      (optional — leave blank if the server supports dynamic
-                      client registration)
-                    </span>
-                  </Label>
-                  <Input
-                    value={oauthClientId}
-                    onChange={(e) => setOauthClientId(e.target.value)}
-                    placeholder="Pre-registered client ID (e.g. for Linear)"
-                  />
-                </div>
+                <>
+                  <div className="col-span-2">
+                    <Label>
+                      OAuth Client ID
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        (optional — leave blank if the server supports dynamic
+                        client registration)
+                      </span>
+                    </Label>
+                    <Input
+                      value={oauthClientId}
+                      onChange={(e) => setOauthClientId(e.target.value)}
+                      placeholder="Pre-registered client ID (e.g. for Linear)"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Label>
+                      OAuth Scope
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        (space-separated; defaults to "read" — required by
+                        Linear and most providers)
+                      </span>
+                    </Label>
+                    <Input
+                      value={oauthScope}
+                      onChange={(e) => setOauthScope(e.target.value)}
+                      placeholder="read"
+                    />
+                  </div>
+                </>
               )}
             </>
           )}

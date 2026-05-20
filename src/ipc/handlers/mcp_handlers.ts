@@ -34,6 +34,7 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     oauthEnabled: dbServer.oauthEnabled,
     oauthConnected: dbServer.oauthState !== null,
     oauthClientId: dbServer.oauthClientId,
+    oauthScope: dbServer.oauthScope,
     createdAt: dbServer.createdAt,
     updatedAt: dbServer.updatedAt,
   };
@@ -58,6 +59,7 @@ export function registerMcpHandlers() {
       enabled,
       oauthEnabled,
       oauthClientId,
+      oauthScope,
     } = params;
     // Handle args: can be string (JSON), array, or null/undefined
     const parsedArgs = args
@@ -90,6 +92,7 @@ export function registerMcpHandlers() {
         enabled: !!enabled,
         oauthEnabled: !!oauthEnabled,
         oauthClientId: oauthClientId ?? null,
+        oauthScope: oauthScope ?? null,
       })
       .returning();
     return toMcpServer(result[0]);
@@ -125,6 +128,7 @@ export function registerMcpHandlers() {
       update.oauthEnabled = !!params.oauthEnabled;
     if (params.oauthClientId !== undefined)
       update.oauthClientId = params.oauthClientId;
+    if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;
 
     const result = await db
       .update(mcpServers)

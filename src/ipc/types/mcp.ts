@@ -29,6 +29,7 @@ export const McpServerSchema = z.object({
   // Not connected badge without ever seeing token material.
   oauthConnected: z.boolean(),
   oauthClientId: z.string().nullable(),
+  oauthScope: z.string().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -55,6 +56,7 @@ export const CreateMcpServerSchema = z.object({
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
   oauthClientId: z.string().nullable().optional(),
+  oauthScope: z.string().nullable().optional(),
 });
 
 export type CreateMcpServer = z.infer<typeof CreateMcpServerSchema>;
@@ -74,6 +76,7 @@ export const McpServerUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
   oauthClientId: z.string().nullable().optional(),
+  oauthScope: z.string().nullable().optional(),
 });
 
 export type McpServerUpdate = z.infer<typeof McpServerUpdateSchema>;

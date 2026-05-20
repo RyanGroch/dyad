@@ -264,6 +264,11 @@ export const mcpServers = sqliteTable("mcp_servers", {
   // support dynamic client registration (RFC 7591) -- e.g. Linear.
   // User-supplied via the add-server UI.
   oauthClientId: text("oauth_client_id"),
+  // Space-separated OAuth scopes requested at the authorize endpoint.
+  // Linear specifically REQUIRES this parameter in the authorize URL
+  // -- omitting it surfaces as "Invalid client" rather than a missing-
+  // scope error. Defaults to "read" at flow time when blank.
+  oauthScope: text("oauth_scope"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
