@@ -505,15 +505,14 @@ export function ToolsMcpSettings() {
                     <Input
                       value={oauthClientId}
                       onChange={(e) => setOauthClientId(e.target.value)}
-                      placeholder="Pre-registered client ID (e.g. for Linear)"
+                      placeholder="Pre-registered client ID"
                     />
                   </div>
                   <div className="col-span-2">
                     <Label>
                       OAuth Scope
                       <span className="ml-1 text-xs text-muted-foreground">
-                        (space-separated; defaults to "read" — required by
-                        Linear and most providers)
+                        (space-separated; defaults to "read")
                       </span>
                     </Label>
                     <Input

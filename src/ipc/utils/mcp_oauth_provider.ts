@@ -12,10 +12,10 @@ import { mcpServers } from "../../db/schema";
 
 const logger = log.scope("mcp_oauth_provider");
 
-// Default loopback port for the OAuth callback listener. Matches the
-// eval-suite default so users who pre-registered a Linear OAuth app
-// against `http://localhost:53682/callback` don't need to re-register.
-// Overridable per provider construction.
+// Default loopback port for the OAuth callback listener. Overridable
+// per provider construction so users who pre-registered an OAuth app
+// against a different localhost port can configure it without code
+// changes.
 export const DEFAULT_OAUTH_CALLBACK_PORT = 53682;
 
 // Stored shape of `oauth_state` (after decryption). Both fields are
@@ -62,6 +62,24 @@ function decryptFromString(stored: string): string {
   }
 }
 
+// Whether an encrypted oauth_state blob contains usable access tokens.
+// `oauthState` may be populated with only `clientInformation` (e.g.
+// after DCR succeeds during an ambient transport build but before the
+// interactive consent step runs), so a non-null column value is NOT
+// proof of a working connection. Callers use this to drive the
+// "OAuth: connected" UI badge.
+export function oauthStateHasTokens(stored: string | null): boolean {
+  if (!stored) return false;
+  const json = decryptFromString(stored);
+  if (!json) return false;
+  try {
+    const parsed = JSON.parse(json) as StoredOAuthState;
+    return Boolean(parsed.tokens?.access_token);
+  } catch {
+    return false;
+  }
+}
+
 async function readState(serverId: number): Promise<StoredOAuthState> {
   const rows = await db
     .select({ oauthState: mcpServers.oauthState })
@@ -83,12 +101,9 @@ async function writeState(
   state: StoredOAuthState,
 ): Promise<void> {
   // When the state has no tokens AND no client info, write NULL
-  // rather than an encrypted empty object. The UI derives
-  // `oauthConnected` from `oauthState IS NOT NULL`, so encoding an
-  // empty state as a non-null encrypted blob would leave the
-  // Disconnect button stuck on after invalidateCredentials("all")
-  // -- the user could never get back to Connect without a manual
-  // DB reset.
+  // rather than an encrypted empty object so the column reflects "no
+  // stored OAuth material at all" -- keeps DB inspection unambiguous
+  // and avoids storing meaningless encrypted blobs.
   const isEmpty = !state.tokens && !state.clientInformation;
   const blob = isEmpty ? null : encryptToString(JSON.stringify(state));
   await db
@@ -173,10 +188,10 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       // Dyad is a public PKCE client -- no `client_secret` is ever
-      // stored. Declaring "client_secret_post" misled servers
-      // (including Linear's MCP) into expecting a secret on the
-      // token exchange, which they then rejected as invalid_client.
-      // "none" tells the server we'll authenticate via PKCE alone.
+      // stored. Declaring "client_secret_post" can mislead servers
+      // into expecting a secret on the token exchange, which they
+      // then reject as invalid_client. "none" tells the server we'll
+      // authenticate via PKCE alone.
       token_endpoint_auth_method: "none",
       client_name: "Dyad",
       scope: this.scope,
@@ -318,14 +333,8 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   async invalidateCredentials(
     scope: "all" | "client" | "tokens" | "verifier",
   ): Promise<void> {
-    // Log the scope so when the SDK invokes this in its
-    // `InvalidClientError` / `InvalidGrantError` catch paths, the
-    // user-visible logs reveal which OAuth error the upstream server
-    // returned. Otherwise the SDK swallows the original error,
-    // retries the flow, and the only surface symptom is the misleading
-    // "Existing OAuth client information is required" message.
-    logger.warn(
-      `invalidateCredentials(${scope}) called for MCP server ${this.serverId}; this typically means the OAuth server returned invalid_client / invalid_grant / unauthorized_client.`,
+    logger.debug(
+      `invalidateCredentials(${scope}) for MCP server ${this.serverId}`,
     );
     if (scope === "all" || scope === "verifier") {
       codeVerifiers.delete(this.serverId);

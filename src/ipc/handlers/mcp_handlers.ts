@@ -8,6 +8,7 @@ import { resolveConsent } from "../utils/mcp_consent";
 import { getStoredConsent } from "../utils/mcp_consent";
 import { mcpManager } from "../utils/mcp_manager";
 import { disconnectOAuth, runOAuthFlow } from "../utils/mcp_oauth_flow";
+import { oauthStateHasTokens } from "../utils/mcp_oauth_provider";
 import {
   mcpContracts,
   type McpServer,
@@ -32,7 +33,11 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     url: dbServer.url,
     enabled: dbServer.enabled,
     oauthEnabled: dbServer.oauthEnabled,
-    oauthConnected: dbServer.oauthState !== null,
+    // Reflects whether usable access tokens are stored. `oauthState`
+    // alone is not enough: an ambient transport build can persist
+    // `clientInformation` (via DCR) without tokens, which would
+    // otherwise flip this to true.
+    oauthConnected: oauthStateHasTokens(dbServer.oauthState),
     oauthClientId: dbServer.oauthClientId,
     oauthScope: dbServer.oauthScope,
     createdAt: dbServer.createdAt,
@@ -181,9 +186,6 @@ export function registerMcpHandlers() {
           e instanceof Error ? `${e.name}: ${e.message}` : String(e)
         }`,
       );
-      if (e instanceof Error && e.stack) {
-        logger.error(e.stack);
-      }
       return [];
     }
   });

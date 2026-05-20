@@ -55,9 +55,8 @@ class McpManager {
             // internally when the transport hits a 401 (or on first
             // connect), and at those entry points the scope can only
             // come from `provider.clientMetadata.scope`. Default to
-            // "read" so providers that require a scope (Linear) work
-            // even when the user hasn't customized the per-server
-            // value.
+            // "read" so providers that require a scope still work when
+            // the user hasn't customized the per-server value.
             scope: s.oauthScope ?? "read",
             preregisteredClientId: s.oauthClientId ?? undefined,
           })

@@ -199,8 +199,8 @@ export const mcpContracts = {
       // redirect URI registered with the OAuth provider for servers
       // that pre-register; ignored if the server supports DCR.
       callbackPort: z.number().optional(),
-      // Space-separated OAuth scopes. For Linear this is `"read"`;
-      // most servers infer from the registered client.
+      // Space-separated OAuth scopes. Most servers infer from the
+      // registered client when omitted; some require an explicit value.
       scope: z.string().optional(),
     }),
     output: z.object({

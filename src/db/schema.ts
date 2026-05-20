@@ -261,13 +261,13 @@ export const mcpServers = sqliteTable("mcp_servers", {
   // the `DyadOAuthClientProvider` reads / writes it.
   oauthState: text("oauth_state"),
   // Optional pre-registered OAuth client_id for servers that do NOT
-  // support dynamic client registration (RFC 7591) -- e.g. Linear.
-  // User-supplied via the add-server UI.
+  // support dynamic client registration (RFC 7591). User-supplied via
+  // the add-server UI; left blank for servers that support DCR.
   oauthClientId: text("oauth_client_id"),
   // Space-separated OAuth scopes requested at the authorize endpoint.
-  // Linear specifically REQUIRES this parameter in the authorize URL
-  // -- omitting it surfaces as "Invalid client" rather than a missing-
-  // scope error. Defaults to "read" at flow time when blank.
+  // Some servers reject the request (often as a misleading
+  // "Invalid client" error) when this is omitted. Defaults to "read"
+  // at flow time when blank.
   oauthScope: text("oauth_scope"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
