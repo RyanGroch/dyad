@@ -82,7 +82,15 @@ async function writeState(
   serverId: number,
   state: StoredOAuthState,
 ): Promise<void> {
-  const blob = encryptToString(JSON.stringify(state));
+  // When the state has no tokens AND no client info, write NULL
+  // rather than an encrypted empty object. The UI derives
+  // `oauthConnected` from `oauthState IS NOT NULL`, so encoding an
+  // empty state as a non-null encrypted blob would leave the
+  // Disconnect button stuck on after invalidateCredentials("all")
+  // -- the user could never get back to Connect without a manual
+  // DB reset.
+  const isEmpty = !state.tokens && !state.clientInformation;
+  const blob = isEmpty ? null : encryptToString(JSON.stringify(state));
   await db
     .update(mcpServers)
     .set({ oauthState: blob })

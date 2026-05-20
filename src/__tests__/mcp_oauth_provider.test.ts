@@ -286,6 +286,17 @@ describe("DyadOAuthClientProvider", () => {
       expect(await p.clientInformation()).toBeUndefined();
       await expect(p.codeVerifier()).rejects.toThrow();
     });
+
+    it("writes NULL to oauth_state after scope=all so the UI sees disconnected", async () => {
+      // Critical for the Disconnect button: the UI derives the
+      // "connected" badge from `oauth_state IS NOT NULL`. If
+      // invalidateCredentials("all") writes back an encrypted empty
+      // object, the column stays non-null and the Disconnect button
+      // never goes back to Connect.
+      const p = await seedFull(34);
+      await p.invalidateCredentials("all");
+      expect(dbStore.get(34)).toBeNull();
+    });
   });
 
   it("falls back to base64-only storage when safeStorage encryption is unavailable", async () => {
