@@ -210,6 +210,10 @@ export async function runOAuthFlow(
     // Per-flow CSRF state value. Surfaced via `provider.state()`;
     // verified on the loopback callback against the same value.
     flowState: expectedState,
+    // Only THIS flow path stood up a loopback listener, so it's the
+    // only one allowed to actually open the system browser. The
+    // `mcp_manager`-built providers default to non-interactive.
+    allowInteractive: true,
   });
 
   // Start the listener BEFORE calling `auth()` -- `auth()` opens the

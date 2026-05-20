@@ -104,6 +104,15 @@ interface ProviderConfig {
   // (e.g. on transport connect) don't have an application-supplied
   // state, in which case the SDK falls back to its own generation.
   flowState?: string;
+  // Whether this provider instance is allowed to open the system
+  // browser for interactive OAuth consent. Only the explicit
+  // Connect-button flow sets this to true (because it also stands
+  // up the loopback callback listener). Providers constructed for
+  // ambient use -- e.g. `mcp_manager` building a transport for
+  // tool listing -- pass false so they fail closed with
+  // `UnauthorizedError` instead of opening a browser whose redirect
+  // would have nowhere to land.
+  allowInteractive?: boolean;
 }
 
 export class DyadOAuthClientProvider implements OAuthClientProvider {
@@ -112,6 +121,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly scope: string | undefined;
   private readonly preregisteredClientId: string | undefined;
   private readonly flowState: string | undefined;
+  private readonly allowInteractive: boolean;
 
   constructor(config: ProviderConfig) {
     this.serverId = config.serverId;
@@ -119,6 +129,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     this.scope = config.scope;
     this.preregisteredClientId = config.preregisteredClientId;
     this.flowState = config.flowState;
+    this.allowInteractive = config.allowInteractive ?? false;
   }
 
   // The SDK calls `provider.state()` (if present) when building the
@@ -196,10 +207,21 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    // Hand the URL off to the user's default browser. Main process only
-    // (renderer cannot invoke `shell`). The flow continues when the
-    // loopback callback handler captures the `code` and re-invokes
-    // `auth()` with it.
+    // Only the explicit Connect-button flow (via `runOAuthFlow`)
+    // sets `allowInteractive: true`, because only that path stands
+    // up the loopback callback listener. Providers constructed by
+    // `mcp_manager` for ambient use (transport build during list-
+    // tools, on-demand tool calls, etc.) MUST NOT open a browser --
+    // any redirect would land at a localhost port with nothing
+    // listening, producing the user-facing "localhost can't connect"
+    // failure. Refuse the redirect here so the SDK surfaces an
+    // `UnauthorizedError` to the caller, which the UI renders as a
+    // "not connected" badge and prompts the user to click Connect.
+    if (!this.allowInteractive) {
+      throw new Error(
+        "OAuth not currently allowed (interactive consent required; click Connect on the server row).",
+      );
+    }
     logger.info(
       `Opening browser for OAuth: ${authorizationUrl.origin}${authorizationUrl.pathname}`,
     );

@@ -175,14 +175,30 @@ describe("DyadOAuthClientProvider", () => {
     );
   });
 
-  it("opens the system browser when redirectToAuthorization is called", async () => {
-    const p = new DyadOAuthClientProvider({ serverId: 1 });
+  it("opens the system browser when redirectToAuthorization is called in an interactive provider", async () => {
+    const p = new DyadOAuthClientProvider({
+      serverId: 1,
+      allowInteractive: true,
+    });
     await p.redirectToAuthorization(
       new URL("https://example.com/authorize?foo=bar"),
     );
     expect(shell.openExternal).toHaveBeenCalledWith(
       "https://example.com/authorize?foo=bar",
     );
+  });
+
+  it("refuses to open the browser when allowInteractive is not set", async () => {
+    // Providers built by `mcp_manager` for ambient use must fail
+    // closed rather than open a browser whose redirect would land at
+    // a loopback port with nothing listening. The thrown error gets
+    // surfaced as `UnauthorizedError` by the SDK and rendered as
+    // "not connected" in the UI.
+    const p = new DyadOAuthClientProvider({ serverId: 1 });
+    await expect(
+      p.redirectToAuthorization(new URL("https://example.com/authorize")),
+    ).rejects.toThrow(/click Connect/);
+    expect(shell.openExternal).not.toHaveBeenCalled();
   });
 
   describe("addClientAuthentication", () => {
