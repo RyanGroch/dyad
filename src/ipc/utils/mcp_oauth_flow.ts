@@ -207,13 +207,10 @@ export async function runOAuthFlow(
     callbackPort,
     scope,
     preregisteredClientId: s.oauthClientId ?? undefined,
+    // Per-flow CSRF state value. Surfaced via `provider.state()`;
+    // verified on the loopback callback against the same value.
+    flowState: expectedState,
   });
-
-  // Override `state()` for this flow so the SDK uses our CSRF-protected
-  // value. We compare it against the callback's `state` query param in
-  // the loopback listener.
-  (provider as DyadOAuthClientProvider & { state: () => string }).state = () =>
-    expectedState;
 
   // Start the listener BEFORE calling `auth()` -- `auth()` opens the
   // browser via `redirectToAuthorization`, and the user may complete

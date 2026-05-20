@@ -98,6 +98,12 @@ interface ProviderConfig {
   // `clientInformation` on first use so `auth()` skips the `/register`
   // step entirely.
   preregisteredClientId?: string;
+  // Per-flow CSRF state. Surfaced via `state()` so the SDK puts it
+  // in the authorize URL; the loopback listener verifies the same
+  // value on callback. Optional because internal SDK auth calls
+  // (e.g. on transport connect) don't have an application-supplied
+  // state, in which case the SDK falls back to its own generation.
+  flowState?: string;
 }
 
 export class DyadOAuthClientProvider implements OAuthClientProvider {
@@ -105,12 +111,25 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly callbackPort: number;
   private readonly scope: string | undefined;
   private readonly preregisteredClientId: string | undefined;
+  private readonly flowState: string | undefined;
 
   constructor(config: ProviderConfig) {
     this.serverId = config.serverId;
     this.callbackPort = config.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
     this.scope = config.scope;
     this.preregisteredClientId = config.preregisteredClientId;
+    this.flowState = config.flowState;
+  }
+
+  // The SDK calls `provider.state()` (if present) when building the
+  // authorize URL. Real method on the prototype so it survives
+  // through any bundling -- earlier attempt to assign this property
+  // dynamically after construction silently failed in the prod
+  // bundle, producing URLs without a `state` parameter. Returns
+  // empty string when no flow state is configured so the SDK's
+  // truthy check skips the `state=` parameter in that case.
+  state(): string {
+    return this.flowState ?? "";
   }
 
   get redirectUrl(): string {

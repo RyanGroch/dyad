@@ -126,8 +126,15 @@ export function registerMcpHandlers() {
     if (params.enabled !== undefined) update.enabled = !!params.enabled;
     if (params.oauthEnabled !== undefined)
       update.oauthEnabled = !!params.oauthEnabled;
-    if (params.oauthClientId !== undefined)
+    if (params.oauthClientId !== undefined) {
       update.oauthClientId = params.oauthClientId;
+      // Changing the client_id invalidates any stored `clientInformation`
+      // (it was seeded from the old value). Clearing `oauth_state` here
+      // forces the provider to re-seed from the new column on next
+      // use; without this, the old client_id keeps winning even after
+      // the user edits the field.
+      update.oauthState = null;
+    }
     if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;
 
     const result = await db
