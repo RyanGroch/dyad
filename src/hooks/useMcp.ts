@@ -106,10 +106,18 @@ export function useMcp() {
       return ipc.mcp.startOAuth(params);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.mcp.toolsByServer.all,
-      });
+      // `refetchQueries` (vs invalidateQueries) forces the active
+      // queries to refetch synchronously rather than scheduling a
+      // background refresh. Without this the Connect button can
+      // appear to do nothing until the user navigates away and back
+      // and the queries refetch on remount.
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: queryKeys.mcp.servers }),
+        queryClient.refetchQueries({
+          queryKey: queryKeys.mcp.toolsByServer.all,
+        }),
+        queryClient.refetchQueries({ queryKey: queryKeys.mcp.consents }),
+      ]);
     },
     meta: { showErrorToast: true },
   });
@@ -119,10 +127,13 @@ export function useMcp() {
       return ipc.mcp.disconnectOAuth(serverId);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.mcp.toolsByServer.all,
-      });
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: queryKeys.mcp.servers }),
+        queryClient.refetchQueries({
+          queryKey: queryKeys.mcp.toolsByServer.all,
+        }),
+        queryClient.refetchQueries({ queryKey: queryKeys.mcp.consents }),
+      ]);
     },
     meta: { showErrorToast: true },
   });

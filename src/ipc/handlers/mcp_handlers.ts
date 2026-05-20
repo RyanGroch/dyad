@@ -173,7 +173,17 @@ export function registerMcpHandlers() {
       );
       return tools;
     } catch (e) {
-      logger.error("Failed to list tools", e);
+      // Common cause for OAuth-gated servers: the transport built
+      // before tokens were saved is still cached; surface the error
+      // shape so the user sees more than a silent empty list.
+      logger.error(
+        `Failed to list tools for server ${serverId}: ${
+          e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+        }`,
+      );
+      if (e instanceof Error && e.stack) {
+        logger.error(e.stack);
+      }
       return [];
     }
   });
