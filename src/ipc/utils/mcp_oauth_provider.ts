@@ -236,10 +236,18 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     await shell.openExternal(authorizationUrl.toString());
   }
 
-  async addClientAuthentication(
+  // Declared as an arrow-function field (not a method) so the SDK
+  // can pass it around as a bare function reference without losing
+  // `this`. The SDK invokes it via
+  // `addClientAuthentication(headers, params, url, metadata)` --
+  // never as `provider.addClientAuthentication(...)` -- so a normal
+  // method definition would lose its binding and crash with
+  // "Cannot read properties of undefined (reading 'clientInformation')".
+  // This pattern mirrors Vercel's PR 9127 example provider.
+  addClientAuthentication = async (
     headers: Headers,
     params: URLSearchParams,
-  ): Promise<void> {
+  ): Promise<void> => {
     const info = await this.clientInformation();
     if (!info) return;
     const method = (
@@ -268,7 +276,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
 
     // Public PKCE client: no secret to send, just the client_id.
     params.set("client_id", info.client_id);
-  }
+  };
 
   async invalidateCredentials(
     scope: "all" | "client" | "tokens" | "verifier",

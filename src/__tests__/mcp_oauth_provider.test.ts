@@ -244,6 +244,23 @@ describe("DyadOAuthClientProvider", () => {
       expect(params.get("client_id")).toBe("cid");
       expect(params.get("client_secret")).toBeNull();
     });
+
+    it("works when invoked as a bare function reference (no `this` binding)", async () => {
+      // The SDK passes `provider.addClientAuthentication` around as a
+      // bare function value (e.g. `addClientAuthentication:
+      // provider.addClientAuthentication`) and calls it without going
+      // through the provider receiver. A normal method definition
+      // would lose its binding here and crash trying to read
+      // `this.clientInformation`. Arrow-function field binding keeps
+      // `this` lexical, so the call still works.
+      const p = new DyadOAuthClientProvider({ serverId: 23 });
+      await p.saveClientInformation({ client_id: "cid" });
+      const unbound = p.addClientAuthentication;
+      const headers = new Headers();
+      const params = new URLSearchParams();
+      await unbound(headers, params);
+      expect(params.get("client_id")).toBe("cid");
+    });
   });
 
   describe("invalidateCredentials", () => {
