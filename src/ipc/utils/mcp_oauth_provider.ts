@@ -130,6 +130,18 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly preregisteredClientId: string | undefined;
   private readonly flowState: string | undefined;
   private readonly allowInteractive: boolean;
+  // In-memory mirror of the most recently-read clientInformation so
+  // `addClientAuthentication` can be invoked SYNCHRONOUSLY without
+  // re-hitting the database. The SDK's exchangeAuthorization /
+  // refreshAuthorization paths call `addClientAuthentication(...)`
+  // WITHOUT awaiting its return value (see @ai-sdk/mcp index.js:807):
+  // if our method yields on a DB read, the SDK fires the token
+  // request with no client_id in the body, and the upstream OAuth
+  // server rejects with `invalid_client: "Client ID is required"`.
+  // Always populate this cache before `addClientAuthentication`
+  // could be called -- both `clientInformation()` and
+  // `saveClientInformation()` write to it.
+  private cachedClientInformation: OAuthClientInformation | undefined;
 
   constructor(config: ProviderConfig) {
     this.serverId = config.serverId;
@@ -184,7 +196,10 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
     const state = await readState(this.serverId);
-    if (state.clientInformation) return state.clientInformation;
+    if (state.clientInformation) {
+      this.cachedClientInformation = state.clientInformation;
+      return state.clientInformation;
+    }
     // First-use seed for pre-registered (non-DCR) servers. Persisting
     // here avoids the `/register` round-trip on every flow.
     if (this.preregisteredClientId) {
@@ -192,14 +207,21 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
         client_id: this.preregisteredClientId,
       };
       await writeState(this.serverId, { ...state, clientInformation: seeded });
+      this.cachedClientInformation = seeded;
       return seeded;
     }
+    this.cachedClientInformation = undefined;
     return undefined;
   }
 
   async saveClientInformation(
     clientInformation: OAuthClientInformation,
   ): Promise<void> {
+    // Cache synchronously BEFORE the DB write returns -- the SDK's
+    // exchangeAuthorization path may invoke addClientAuthentication
+    // without yielding, and that path needs `cachedClientInformation`
+    // populated.
+    this.cachedClientInformation = clientInformation;
     const state = await readState(this.serverId);
     state.clientInformation = clientInformation;
     await writeState(this.serverId, state);
@@ -241,20 +263,30 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     await shell.openExternal(authorizationUrl.toString());
   }
 
-  // Declared as an arrow-function field (not a method) so the SDK
-  // can pass it around as a bare function reference without losing
-  // `this`. The SDK invokes it via
-  // `addClientAuthentication(headers, params, url, metadata)` --
-  // never as `provider.addClientAuthentication(...)` -- so a normal
-  // method definition would lose its binding and crash with
-  // "Cannot read properties of undefined (reading 'clientInformation')".
-  // This pattern mirrors Vercel's PR 9127 example provider.
-  addClientAuthentication = async (
+  // SYNCHRONOUS arrow-function field. Two binding considerations
+  // baked in:
+  //   1. The SDK passes this around as a bare function reference
+  //      (`addClientAuthentication: provider.addClientAuthentication`)
+  //      and invokes it without going through the receiver. Arrow-
+  //      function field => `this` is captured lexically and survives.
+  //   2. The SDK invokes it WITHOUT `await`
+  //      (@ai-sdk/mcp index.js:807). If the function is async and
+  //      yields on a DB read, the SDK fires the token-endpoint POST
+  //      before client_id lands in `params`, and the upstream server
+  //      rejects with `invalid_client: Client ID is required`. So we
+  //      read `cachedClientInformation` synchronously instead of
+  //      awaiting `this.clientInformation()`.
+  addClientAuthentication = (
     headers: Headers,
     params: URLSearchParams,
-  ): Promise<void> => {
-    const info = await this.clientInformation();
-    if (!info) return;
+  ): void => {
+    const info = this.cachedClientInformation;
+    if (!info) {
+      logger.warn(
+        `addClientAuthentication invoked without cached clientInformation for MCP server ${this.serverId}; token exchange will fail.`,
+      );
+      return;
+    }
     const method = (
       info as OAuthClientInformation & { token_endpoint_auth_method?: string }
     ).token_endpoint_auth_method;
@@ -305,6 +337,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     }
     if (scope === "all" || scope === "client") {
       delete state.clientInformation;
+      this.cachedClientInformation = undefined;
     }
     await writeState(this.serverId, state);
   }

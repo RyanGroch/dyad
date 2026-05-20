@@ -258,8 +258,27 @@ describe("DyadOAuthClientProvider", () => {
       const unbound = p.addClientAuthentication;
       const headers = new Headers();
       const params = new URLSearchParams();
-      await unbound(headers, params);
+      unbound(headers, params);
       expect(params.get("client_id")).toBe("cid");
+    });
+
+    it("sets client_id synchronously (the SDK does not await this method)", async () => {
+      // The SDK's `exchangeAuthorization` invokes
+      // `addClientAuthentication(headers, params, url, metadata)`
+      // WITHOUT awaiting its return value, then immediately fires
+      // the token-endpoint POST with `params` as the body. If our
+      // method yielded on a DB read, the POST would go out before
+      // `params.set("client_id", ...)` ran and the upstream OAuth
+      // server would reject with `invalid_client`. This test models
+      // that pattern: invoke without awaiting, then assert params
+      // are populated before any microtask boundary.
+      const p = new DyadOAuthClientProvider({ serverId: 24 });
+      await p.saveClientInformation({ client_id: "sync-cid" });
+      const headers = new Headers();
+      const params = new URLSearchParams();
+      // Note: no `await` -- mirrors the SDK's call site.
+      p.addClientAuthentication(headers, params);
+      expect(params.get("client_id")).toBe("sync-cid");
     });
   });
 
