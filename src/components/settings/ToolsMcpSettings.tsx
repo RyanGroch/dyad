@@ -309,6 +309,10 @@ export function ToolsMcpSettings() {
     setToolConsent: updateToolConsent,
     updateServer,
     isUpdatingServer,
+    startOAuth,
+    disconnectOAuth,
+    isStartingOAuth,
+    isDisconnectingOAuth,
   } = useMcp();
   const [consents, setConsents] = useState<Record<string, any>>({});
   const [name, setName] = useState("");
@@ -317,6 +321,11 @@ export function ToolsMcpSettings() {
   const [args, setArgs] = useState<string>("");
   const [url, setUrl] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [oauthEnabled, setOauthEnabled] = useState(false);
+  const [oauthClientId, setOauthClientId] = useState("");
+  const [connectingServerId, setConnectingServerId] = useState<number | null>(
+    null,
+  );
   const { lastDeepLink, clearLastDeepLink } = useDeepLink();
   console.log("lastDeepLink!!!", lastDeepLink);
   useEffect(() => {
@@ -368,12 +377,35 @@ export function ToolsMcpSettings() {
       args: parsedArgs,
       url: url || null,
       enabled,
+      oauthEnabled: oauthEnabled && transport !== "stdio",
+      oauthClientId: oauthClientId.trim() || null,
     });
     setName("");
     setCommand("");
     setArgs("");
     setUrl("");
     setEnabled(true);
+    setOauthEnabled(false);
+    setOauthClientId("");
+  };
+
+  const onConnect = async (serverId: number) => {
+    setConnectingServerId(serverId);
+    try {
+      const result = await startOAuth({ serverId });
+      if (!result.success) {
+        showInfo(result.error ?? "OAuth flow failed");
+      } else {
+        showInfo("OAuth connection successful");
+      }
+    } finally {
+      setConnectingServerId(null);
+    }
+  };
+
+  const onDisconnect = async (serverId: number) => {
+    await disconnectOAuth(serverId);
+    showInfo("Disconnected OAuth");
   };
 
   // Removed activation toggling – tools are used dynamically with consent checks
@@ -410,6 +442,7 @@ export function ToolsMcpSettings() {
             >
               <option value="stdio">stdio</option>
               <option value="http">http</option>
+              <option value="sse">sse</option>
             </select>
           </div>
           {transport === "stdio" && (
@@ -432,15 +465,47 @@ export function ToolsMcpSettings() {
               </div>
             </>
           )}
-          {transport === "http" && (
+          {(transport === "http" || transport === "sse") && (
             <div className="col-span-2">
               <Label>URL</Label>
               <Input
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="http://localhost:3000"
+                placeholder={
+                  transport === "sse"
+                    ? "https://mcp.example.com/sse"
+                    : "http://localhost:3000"
+                }
               />
             </div>
+          )}
+          {(transport === "http" || transport === "sse") && (
+            <>
+              <div className="flex items-center gap-2 col-span-2">
+                <Switch
+                  aria-label="Use OAuth"
+                  checked={oauthEnabled}
+                  onCheckedChange={setOauthEnabled}
+                />
+                <Label>Use OAuth (server requires authentication)</Label>
+              </div>
+              {oauthEnabled && (
+                <div className="col-span-2">
+                  <Label>
+                    OAuth Client ID
+                    <span className="ml-1 text-xs text-muted-foreground">
+                      (optional — leave blank if the server supports dynamic
+                      client registration)
+                    </span>
+                  </Label>
+                  <Input
+                    value={oauthClientId}
+                    onChange={(e) => setOauthClientId(e.target.value)}
+                    placeholder="Pre-registered client ID (e.g. for Linear)"
+                  />
+                </div>
+              )}
+            </>
           )}
           <div className="flex items-center gap-2">
             <Switch
@@ -463,7 +528,20 @@ export function ToolsMcpSettings() {
           <div key={s.id} className="border rounded-lg p-3">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium">{s.name}</div>
+                <div className="font-medium flex items-center gap-2">
+                  {s.name}
+                  {s.oauthEnabled && (
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded ${
+                        s.oauthConnected
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100"
+                      }`}
+                    >
+                      OAuth: {s.oauthConnected ? "connected" : "not connected"}
+                    </span>
+                  )}
+                </div>
                 <div className="text-xs text-muted-foreground">
                   {s.transport}
                   {s.url ? ` · ${s.url}` : ""}
@@ -474,6 +552,26 @@ export function ToolsMcpSettings() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {s.oauthEnabled && !s.oauthConnected && (
+                  <Button
+                    variant="default"
+                    onClick={() => onConnect(s.id)}
+                    disabled={isStartingOAuth && connectingServerId === s.id}
+                  >
+                    {isStartingOAuth && connectingServerId === s.id
+                      ? "Connecting…"
+                      : "Connect"}
+                  </Button>
+                )}
+                {s.oauthEnabled && s.oauthConnected && (
+                  <Button
+                    variant="outline"
+                    onClick={() => onDisconnect(s.id)}
+                    disabled={isDisconnectingOAuth}
+                  >
+                    Disconnect
+                  </Button>
+                )}
                 <Switch
                   aria-label={`Toggle ${s.name}`}
                   checked={!!s.enabled}
@@ -503,7 +601,7 @@ export function ToolsMcpSettings() {
                 />
               </div>
             )}
-            {s.transport === "http" && (
+            {(s.transport === "http" || s.transport === "sse") && (
               <div className="mt-3">
                 <div className="text-sm font-medium mb-2">Headers</div>
                 <KeyValueEditor

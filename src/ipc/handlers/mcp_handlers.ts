@@ -7,6 +7,7 @@ import { createTypedHandler } from "./base";
 import { resolveConsent } from "../utils/mcp_consent";
 import { getStoredConsent } from "../utils/mcp_consent";
 import { mcpManager } from "../utils/mcp_manager";
+import { disconnectOAuth, runOAuthFlow } from "../utils/mcp_oauth_flow";
 import {
   mcpContracts,
   type McpServer,
@@ -16,11 +17,25 @@ import {
 
 const logger = log.scope("mcp_handlers");
 
-// Helper to cast DB server to typed server
+// Helper to cast DB server to typed server. Strips `oauthState`
+// (encrypted token blob) before returning -- the renderer never needs
+// the encrypted material and exposing it would be a footgun.
 function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
   return {
-    ...dbServer,
+    id: dbServer.id,
+    name: dbServer.name,
     transport: dbServer.transport as McpTransport,
+    command: dbServer.command,
+    args: dbServer.args,
+    envJson: dbServer.envJson,
+    headersJson: dbServer.headersJson,
+    url: dbServer.url,
+    enabled: dbServer.enabled,
+    oauthEnabled: dbServer.oauthEnabled,
+    oauthConnected: dbServer.oauthState !== null,
+    oauthClientId: dbServer.oauthClientId,
+    createdAt: dbServer.createdAt,
+    updatedAt: dbServer.updatedAt,
   };
 }
 
@@ -41,6 +56,8 @@ export function registerMcpHandlers() {
       headersJson,
       url,
       enabled,
+      oauthEnabled,
+      oauthClientId,
     } = params;
     // Handle args: can be string (JSON), array, or null/undefined
     const parsedArgs = args
@@ -71,6 +88,8 @@ export function registerMcpHandlers() {
         headersJson: parsedHeadersJson,
         url: url || null,
         enabled: !!enabled,
+        oauthEnabled: !!oauthEnabled,
+        oauthClientId: oauthClientId ?? null,
       })
       .returning();
     return toMcpServer(result[0]);
@@ -102,6 +121,10 @@ export function registerMcpHandlers() {
         : null;
     if (params.url !== undefined) update.url = params.url;
     if (params.enabled !== undefined) update.enabled = !!params.enabled;
+    if (params.oauthEnabled !== undefined)
+      update.oauthEnabled = !!params.oauthEnabled;
+    if (params.oauthClientId !== undefined)
+      update.oauthClientId = params.oauthClientId;
 
     const result = await db
       .update(mcpServers)
@@ -198,6 +221,24 @@ export function registerMcpHandlers() {
   // Receive consent response from renderer
   createTypedHandler(mcpContracts.respondToConsent, async (_, data) => {
     resolveConsent(data.requestId, data.decision);
+  });
+
+  // OAuth: kick off the full flow against the named MCP server. The
+  // main-process loopback listener captures the redirect, the
+  // `@ai-sdk/mcp` `auth()` function drives PKCE + token exchange, and
+  // tokens land in the encrypted `oauth_state` column.
+  createTypedHandler(mcpContracts.startOAuth, async (_, params) => {
+    return await runOAuthFlow({
+      serverId: params.serverId,
+      callbackPort: params.callbackPort,
+      scope: params.scope,
+    });
+  });
+
+  // OAuth disconnect: clear stored tokens + client info. Forces the
+  // next tool call to require a fresh consent flow.
+  createTypedHandler(mcpContracts.disconnectOAuth, async (_, serverId) => {
+    return await disconnectOAuth(serverId);
   });
 
   logger.debug("Registered MCP IPC handlers");

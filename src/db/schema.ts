@@ -249,6 +249,21 @@ export const mcpServers = sqliteTable("mcp_servers", {
   enabled: integer("enabled", { mode: "boolean" })
     .notNull()
     .default(sql`0`),
+  // Whether this server requires OAuth. When true, the MCP manager wires
+  // an `OAuthClientProvider` into the transport (HTTP/SSE) so the
+  // Vercel `@ai-sdk/mcp` `auth()` flow can drive PKCE + refresh.
+  oauthEnabled: integer("oauth_enabled", { mode: "boolean" })
+    .notNull()
+    .default(sql`0`),
+  // Encrypted OAuth state (access token, refresh token, expiry, client
+  // info) for this server. Encrypted via Electron `safeStorage` before
+  // write; never holds plaintext at rest. Shape is opaque JSON; only
+  // the `DyadOAuthClientProvider` reads / writes it.
+  oauthState: text("oauth_state"),
+  // Optional pre-registered OAuth client_id for servers that do NOT
+  // support dynamic client registration (RFC 7591) -- e.g. Linear.
+  // User-supplied via the add-server UI.
+  oauthClientId: text("oauth_client_id"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),

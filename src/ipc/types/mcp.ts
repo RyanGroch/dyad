@@ -23,6 +23,12 @@ export const McpServerSchema = z.object({
   headersJson: z.record(z.string(), z.string()).nullable(),
   url: z.string().nullable(),
   enabled: z.boolean(),
+  oauthEnabled: z.boolean(),
+  // Whether OAuth tokens are currently stored. Derived (not the
+  // encrypted blob itself) so the renderer can render a Connected /
+  // Not connected badge without ever seeing token material.
+  oauthConnected: z.boolean(),
+  oauthClientId: z.string().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -47,6 +53,8 @@ export const CreateMcpServerSchema = z.object({
     .optional(),
   url: z.string().nullable().optional(),
   enabled: z.boolean().optional(),
+  oauthEnabled: z.boolean().optional(),
+  oauthClientId: z.string().nullable().optional(),
 });
 
 export type CreateMcpServer = z.infer<typeof CreateMcpServerSchema>;
@@ -64,6 +72,8 @@ export const McpServerUpdateSchema = z.object({
     .optional(),
   url: z.string().optional(),
   enabled: z.boolean().optional(),
+  oauthEnabled: z.boolean().optional(),
+  oauthClientId: z.string().nullable().optional(),
 });
 
 export type McpServerUpdate = z.infer<typeof McpServerUpdateSchema>;
@@ -176,6 +186,32 @@ export const mcpContracts = {
     channel: "mcp:tool-consent-response",
     input: McpConsentResponseSchema,
     output: z.void(),
+  }),
+
+  startOAuth: defineContract({
+    channel: "mcp:start-oauth",
+    input: z.object({
+      serverId: z.number(),
+      // Override the default loopback port (53682). Must match the
+      // redirect URI registered with the OAuth provider for servers
+      // that pre-register; ignored if the server supports DCR.
+      callbackPort: z.number().optional(),
+      // Space-separated OAuth scopes. For Linear this is `"read"`;
+      // most servers infer from the registered client.
+      scope: z.string().optional(),
+    }),
+    output: z.object({
+      success: z.boolean(),
+      // Populated when `success` is false. Surfaced to the user via UI
+      // toast / inline message in `ToolsMcpSettings`.
+      error: z.string().nullable(),
+    }),
+  }),
+
+  disconnectOAuth: defineContract({
+    channel: "mcp:disconnect-oauth",
+    input: z.number(), // serverId
+    output: z.object({ success: z.boolean() }),
   }),
 } as const;
 

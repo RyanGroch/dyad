@@ -10,7 +10,7 @@ import type {
 } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
 
-export type Transport = "stdio" | "http";
+export type Transport = "stdio" | "http" | "sse";
 
 export function useMcp() {
   const queryClient = useQueryClient();
@@ -97,6 +97,36 @@ export function useMcp() {
     meta: { showErrorToast: true },
   });
 
+  const startOAuthMutation = useMutation({
+    mutationFn: async (params: {
+      serverId: number;
+      callbackPort?: number;
+      scope?: string;
+    }) => {
+      return ipc.mcp.startOAuth(params);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.mcp.toolsByServer.all,
+      });
+    },
+    meta: { showErrorToast: true },
+  });
+
+  const disconnectOAuthMutation = useMutation({
+    mutationFn: async (serverId: number) => {
+      return ipc.mcp.disconnectOAuth(serverId);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.mcp.toolsByServer.all,
+      });
+    },
+    meta: { showErrorToast: true },
+  });
+
   const setConsentMutation = useMutation({
     mutationFn: async (params: {
       serverId: number;
@@ -129,6 +159,15 @@ export function useMcp() {
     consent: McpToolConsent["consent"],
   ) => setConsentMutation.mutateAsync({ serverId, toolName, consent });
 
+  const startOAuth = async (params: {
+    serverId: number;
+    callbackPort?: number;
+    scope?: string;
+  }) => startOAuthMutation.mutateAsync(params);
+
+  const disconnectOAuth = async (serverId: number) =>
+    disconnectOAuthMutation.mutateAsync(serverId);
+
   const refetchAll = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
@@ -158,6 +197,8 @@ export function useMcp() {
     updateServer,
     deleteServer,
     setToolConsent,
+    startOAuth,
+    disconnectOAuth,
 
     // Status flags
     isCreating: createServerMutation.isPending,
@@ -165,5 +206,7 @@ export function useMcp() {
     isUpdatingServer: updateServerMutation.isPending,
     isDeleting: deleteServerMutation.isPending,
     isSettingConsent: setConsentMutation.isPending,
+    isStartingOAuth: startOAuthMutation.isPending,
+    isDisconnectingOAuth: disconnectOAuthMutation.isPending,
   } as const;
 }
