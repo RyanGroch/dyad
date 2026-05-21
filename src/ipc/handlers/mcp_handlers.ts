@@ -144,31 +144,6 @@ export function registerMcpHandlers() {
         : null;
     if (params.url !== undefined) update.url = params.url;
     if (params.enabled !== undefined) update.enabled = !!params.enabled;
-    if (params.oauthEnabled !== undefined)
-      update.oauthEnabled = !!params.oauthEnabled;
-    if (params.oauthClientId !== undefined) {
-      update.oauthClientId = params.oauthClientId;
-      // Changing the client_id invalidates any stored `clientInformation`
-      // (it was seeded from the old value). Clearing `oauth_state` here
-      // forces the provider to re-seed from the new column on next
-      // use; without this, the old client_id keeps winning even after
-      // the user edits the field.
-      update.oauthState = null;
-    }
-    // Tri-state semantics on the IPC schema (see McpServerUpdateSchema):
-    //   undefined -> field omitted, keep stored secret untouched
-    //   null      -> explicit clear (user clicked "Clear secret")
-    //   string    -> replace with new plaintext (encrypted here)
-    // The cached client info is wiped because the secret is part of
-    // the seeded `clientInformation`; without this, the SDK keeps
-    // using the old secret silently on subsequent token exchanges.
-    if (params.oauthClientSecret !== undefined) {
-      update.oauthClientSecret = params.oauthClientSecret
-        ? encryptToString(params.oauthClientSecret)
-        : null;
-      update.oauthState = null;
-    }
-    if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;
 
     const result = await db
       .update(mcpServers)

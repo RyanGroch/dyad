@@ -84,18 +84,6 @@ export const McpServerUpdateSchema = z.object({
     .optional(),
   url: z.string().optional(),
   enabled: z.boolean().optional(),
-  oauthEnabled: z.boolean().optional(),
-  oauthClientId: z.string().nullable().optional(),
-  // Plaintext OAuth client_secret on update.
-  //   undefined -> keep existing stored secret (most edits)
-  //   null      -> clear the stored secret
-  //   string    -> replace with new plaintext value
-  // The handler distinguishes these three on `"oauthClientSecret" in
-  // params` rather than truthiness, so empty string is treated as
-  // "replace with empty" (effectively clearing). Renderer is expected
-  // to send null for explicit clears.
-  oauthClientSecret: z.string().nullable().optional(),
-  oauthScope: z.string().nullable().optional(),
 });
 
 export type McpServerUpdate = z.infer<typeof McpServerUpdateSchema>;
