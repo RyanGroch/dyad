@@ -57,10 +57,11 @@ class McpManager {
             // explicit OAuth-start path -- the SDK also drives auth
             // internally when the transport hits a 401 (or on first
             // connect), and at those entry points the scope can only
-            // come from `provider.clientMetadata.scope`. Default to
-            // "read" so providers that require a scope still work when
-            // the user hasn't customized the per-server value.
-            scope: s.oauthScope ?? "read",
+            // come from `provider.clientMetadata.scope`. Pass undefined
+            // when the user hasn't configured a value so the server
+            // applies its own default; a hard-coded fallback would be
+            // wrong for the majority of OAuth providers.
+            scope: s.oauthScope ?? undefined,
             preregisteredClientId: s.oauthClientId ?? undefined,
             // Decrypted client_secret (if any). Confidential clients
             // need the secret on refresh-token grants the transport

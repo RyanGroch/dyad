@@ -273,9 +273,9 @@ export const mcpServers = sqliteTable("mcp_servers", {
   // main-process OAuth flow when seeding `clientInformation`.
   oauthClientSecret: text("oauth_client_secret"),
   // Space-separated OAuth scopes requested at the authorize endpoint.
-  // Some servers reject the request (often as a misleading
-  // "Invalid client" error) when this is omitted. Defaults to "read"
-  // at flow time when blank.
+  // Server-defined values; check provider docs. Blank means omit the
+  // `scope` parameter entirely so the server applies its own default
+  // (rather than us guessing a value that fits a minority of providers).
   oauthScope: text("oauth_scope"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()

@@ -258,12 +258,11 @@ export async function runOAuthFlow(
   }
 
   const callbackPort = params.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
-  // Some OAuth-gated MCP servers require an explicit `scope` parameter
-  // in the authorize URL -- omitting it can surface as a misleading
-  // "Invalid client" error rather than a missing-scope error. Read the
-  // configured scope from the row, fall back to the caller's override,
-  // and finally to "read" as a conservative default.
-  const scope = s.oauthScope ?? params.scope ?? "read";
+  // Scope is server-defined and there is no universal default value that
+  // works across providers (bare "read" is Linear-flavored; most others
+  // reject it). Pass through what the user configured, otherwise omit
+  // the `scope` parameter entirely so the server applies its own default.
+  const scope = s.oauthScope ?? params.scope ?? undefined;
   // Decrypt the stored client_secret (if any) just in time so the
   // plaintext value never lives in the row payload that crosses the
   // IPC boundary. Empty string from decryptFromString means decryption
@@ -358,18 +357,14 @@ export async function disconnectOAuth(
   serverId: number,
 ): Promise<{ success: boolean }> {
   const rows = await db
-    .select()
+    .select({ id: mcpServers.id })
     .from(mcpServers)
     .where(eq(mcpServers.id, serverId));
-  const s = rows[0];
-  if (!s) return { success: false };
-  const provider = new DyadOAuthClientProvider({
-    serverId: s.id,
-    preregisteredClientId: s.oauthClientId ?? undefined,
-    preregisteredClientSecret: s.oauthClientSecret
-      ? decryptFromString(s.oauthClientSecret) || undefined
-      : undefined,
-  });
+  if (!rows[0]) return { success: false };
+  // `invalidateCredentials` only deletes state; it doesn't read the
+  // pre-registered client_id / client_secret, so don't decrypt or
+  // pass them.
+  const provider = new DyadOAuthClientProvider({ serverId });
   await provider.invalidateCredentials("all");
   mcpManager.dispose(serverId);
   return { success: true };

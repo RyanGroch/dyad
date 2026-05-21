@@ -235,11 +235,12 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       this.cachedClientInformation = state.clientInformation;
       return state.clientInformation;
     }
-    // First-use seed for pre-registered (non-DCR) servers. Persisting
-    // here avoids the `/register` round-trip on every flow. When the
-    // user also configured a `client_secret`, seed that too -- the
-    // SDK's `addClientAuthentication` reads both off the stored
-    // clientInformation.
+    // First-use seed for pre-registered (non-DCR) servers. Returning
+    // a non-undefined value here is what tells the SDK to skip the
+    // `/register` round-trip. Persisting alongside the return so an
+    // eventual `saveClientInformation` from DCR (e.g. user later
+    // clears the column) lives in the same `oauth_state` blob and the
+    // read path doesn't have to branch on which source wins.
     if (this.preregisteredClientId) {
       const seeded: OAuthClientInformation = {
         client_id: this.preregisteredClientId,
@@ -334,11 +335,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     const hasSecret = Boolean(info.client_secret);
     const chosen = method ?? (hasSecret ? "client_secret_post" : "none");
 
-    if (chosen === "client_secret_basic") {
-      if (!info.client_secret) {
-        params.set("client_id", info.client_id);
-        return;
-      }
+    if (chosen === "client_secret_basic" && info.client_secret) {
       const credentials = Buffer.from(
         `${info.client_id}:${info.client_secret}`,
       ).toString("base64");

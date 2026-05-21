@@ -501,8 +501,9 @@ export function ToolsMcpSettings() {
                     <Label>
                       OAuth Client ID
                       <span className="ml-1 text-xs text-muted-foreground">
-                        (optional — leave blank if the server supports dynamic
-                        client registration)
+                        If the MCP server's setup requires you to register an
+                        app, paste the Client ID of your app here. Otherwise
+                        leave this blank.
                       </span>
                     </Label>
                     <Input
@@ -515,8 +516,8 @@ export function ToolsMcpSettings() {
                     <Label>
                       OAuth Client Secret
                       <span className="ml-1 text-xs text-muted-foreground">
-                        (only for confidential clients — e.g. GitHub OAuth Apps,
-                        Spotify, Reddit; encrypted at rest)
+                        Include this only if the MCP server gave you a secret
+                        alongside the Client ID.
                       </span>
                     </Label>
                     <Input
@@ -530,13 +531,14 @@ export function ToolsMcpSettings() {
                     <Label>
                       OAuth Scope
                       <span className="ml-1 text-xs text-muted-foreground">
-                        (space-separated; defaults to "read")
+                        Permissions to request, space-separated. Check the
+                        server's OAuth docs for valid values.
                       </span>
                     </Label>
                     <Input
                       value={oauthScope}
                       onChange={(e) => setOauthScope(e.target.value)}
-                      placeholder="read"
+                      placeholder=""
                     />
                   </div>
                 </>
