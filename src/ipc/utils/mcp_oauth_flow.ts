@@ -22,7 +22,7 @@ const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 interface PendingFlow {
   resolve: (code: string) => void;
   reject: (err: Error) => void;
-  server: Server;
+  servers: Server[];
   timeout: NodeJS.Timeout;
   expectedState: string | null;
 }
@@ -41,6 +41,18 @@ function generateState(): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
+// The hosts we attempt to bind the callback listener to. We have to
+// bind BOTH IPv4 and IPv6 loopback addresses because modern OS
+// resolvers (and browsers) often return `::1` first for `localhost`
+// while the OAuth `redirect_uri` registered with the server is
+// `http://localhost:<port>/callback`. Binding only `127.0.0.1` then
+// has the browser hit `[::1]:<port>` -> nothing listening -> the user
+// sees "connection refused" right after consent. We accept partial
+// success (e.g. IPv6 disabled in the kernel) as long as at least one
+// stack bound; the redirect will then reach whichever one the
+// browser's resolver picks.
+const LOOPBACK_BIND_HOSTS = ["127.0.0.1", "::1"] as const;
+
 function startCallbackListener(
   port: number,
   expectedState: string,
@@ -57,7 +69,28 @@ function startCallbackListener(
   }
 
   return new Promise<string>((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const servers: Server[] = [];
+
+    const closeAllDeferred = () => {
+      // Defer close so the browser receives the response body before
+      // the listener tears down. Without this, some browsers show a
+      // connection-reset error to the user.
+      for (const s of servers) {
+        setTimeout(() => s.close(), 100);
+      }
+    };
+
+    const settle = (fn: () => void) => {
+      const pending = pendingFlows.get(port);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        pendingFlows.delete(port);
+      }
+      closeAllDeferred();
+      fn();
+    };
+
+    const handler = (req: any, res: any): void => {
       if (!req.url) {
         res.writeHead(400).end("Bad request");
         return;
@@ -70,19 +103,6 @@ function startCallbackListener(
       const code = url.searchParams.get("code");
       const errParam = url.searchParams.get("error");
       const state = url.searchParams.get("state");
-
-      const settle = (fn: () => void) => {
-        const pending = pendingFlows.get(port);
-        if (pending) {
-          clearTimeout(pending.timeout);
-          pendingFlows.delete(port);
-        }
-        // Defer close so the browser receives the response body
-        // before the listener tears down. Without this, some
-        // browsers show a connection-reset error to the user.
-        setTimeout(() => server.close(), 100);
-        fn();
-      };
 
       if (state !== expectedState) {
         res
@@ -120,19 +140,41 @@ function startCallbackListener(
           new Error(`OAuth callback error: ${errParam ?? "missing code"}`),
         ),
       );
-    });
+    };
 
-    server.on("error", (err) => {
-      pendingFlows.delete(port);
-      reject(err);
-    });
+    const tryBind = (host: string): Promise<Server | null> =>
+      new Promise((resolveBind) => {
+        const s = createServer(handler);
+        const onError = (err: Error) => {
+          logger.warn(
+            `Could not bind OAuth callback listener on ${host}:${port}: ${err.message}`,
+          );
+          resolveBind(null);
+        };
+        s.once("error", onError);
+        s.listen(port, host, () => {
+          s.removeListener("error", onError);
+          resolveBind(s);
+        });
+      });
 
-    server.listen(port, "127.0.0.1", () => {
+    Promise.all(LOOPBACK_BIND_HOSTS.map(tryBind)).then((bindResults) => {
+      const bound = bindResults.filter((s): s is Server => s !== null);
+      if (bound.length === 0) {
+        reject(
+          new Error(
+            `Could not bind OAuth callback listener on port ${port} (tried IPv4 and IPv6 loopback).`,
+          ),
+        );
+        return;
+      }
+      servers.push(...bound);
+
       const timeout = setTimeout(() => {
         const pending = pendingFlows.get(port);
         if (pending) {
           pendingFlows.delete(port);
-          server.close();
+          closeAllDeferred();
           reject(
             new Error(
               `OAuth flow timed out after ${OAUTH_FLOW_TIMEOUT_MS / 1000}s. Did you close the browser tab?`,
@@ -144,11 +186,13 @@ function startCallbackListener(
       pendingFlows.set(port, {
         resolve,
         reject,
-        server,
+        servers,
         timeout,
         expectedState,
       });
-      logger.info(`OAuth callback listener bound on http://localhost:${port}`);
+      logger.info(
+        `OAuth callback listener bound on http://localhost:${port} (${bound.length} stack${bound.length === 1 ? "" : "s"})`,
+      );
     });
   });
 }
@@ -233,11 +277,11 @@ export async function runOAuthFlow(
     });
     if (initial === "AUTHORIZED") {
       // Tokens were still valid (refresh succeeded silently). Nothing
-      // more to do; tear the listener down.
+      // more to do; tear the listener(s) down.
       const pending = pendingFlows.get(callbackPort);
       if (pending) {
         clearTimeout(pending.timeout);
-        pending.server.close();
+        for (const sv of pending.servers) sv.close();
         pendingFlows.delete(callbackPort);
       }
       mcpManager.dispose(s.id);
@@ -262,12 +306,12 @@ export async function runOAuthFlow(
     mcpManager.dispose(s.id);
     return { success: true, error: null };
   } catch (err) {
-    // Clean up the listener if `auth()` threw before the callback
+    // Clean up the listener(s) if `auth()` threw before the callback
     // arrived (network failure, discovery 4xx, etc).
     const pending = pendingFlows.get(callbackPort);
     if (pending) {
       clearTimeout(pending.timeout);
-      pending.server.close();
+      for (const sv of pending.servers) sv.close();
       pendingFlows.delete(callbackPort);
     }
     const message = err instanceof Error ? err.message : String(err);

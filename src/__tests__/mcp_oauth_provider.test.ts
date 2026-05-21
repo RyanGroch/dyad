@@ -75,7 +75,11 @@ vi.mock("drizzle-orm", () => ({
 // work; resolve the provider module after mocks are in place.
 const electronImport = await import("electron");
 const providerImport = await import("../ipc/utils/mcp_oauth_provider");
-const { DyadOAuthClientProvider, _resetCodeVerifiersForTest } = providerImport;
+const {
+  DyadOAuthClientProvider,
+  _resetCodeVerifiersForTest,
+  oauthStateHasTokens,
+} = providerImport;
 const { shell, safeStorage } = electronImport;
 
 describe("DyadOAuthClientProvider", () => {
@@ -332,6 +336,73 @@ describe("DyadOAuthClientProvider", () => {
       const p = await seedFull(34);
       await p.invalidateCredentials("all");
       expect(dbStore.get(34)).toBeNull();
+    });
+  });
+
+  describe("oauthStateHasTokens", () => {
+    // The "OAuth: connected" UI badge derives from this helper. A
+    // non-null `oauth_state` column is NOT proof of a usable
+    // connection: ambient transport builds can persist
+    // `clientInformation` (via DCR) before tokens land, and a row
+    // carrying only client info would otherwise flip the badge.
+    function encryptedBlobFor(payload: object): string {
+      return Buffer.from(`enc:${JSON.stringify(payload)}`, "utf8").toString(
+        "base64",
+      );
+    }
+
+    it("returns false for null input", () => {
+      expect(oauthStateHasTokens(null)).toBe(false);
+    });
+
+    it("returns false when state has only clientInformation (the toggle-enabled bug)", () => {
+      const stored = encryptedBlobFor({
+        clientInformation: { client_id: "from-dcr" },
+      });
+      expect(oauthStateHasTokens(stored)).toBe(false);
+    });
+
+    it("returns true when state has tokens with an access_token", () => {
+      const stored = encryptedBlobFor({
+        tokens: { access_token: "t", token_type: "Bearer" },
+        clientInformation: { client_id: "cid" },
+      });
+      expect(oauthStateHasTokens(stored)).toBe(true);
+    });
+
+    it("returns false when tokens object has no access_token", () => {
+      // Shouldn't happen in practice but the helper must be strict
+      // about what counts as "connected" -- an empty token object
+      // would otherwise flip the badge based on truthiness alone.
+      const stored = encryptedBlobFor({ tokens: { token_type: "Bearer" } });
+      expect(oauthStateHasTokens(stored)).toBe(false);
+    });
+
+    it("returns false when the encrypted payload is not valid JSON", () => {
+      const stored = Buffer.from("enc:not-json", "utf8").toString("base64");
+      expect(oauthStateHasTokens(stored)).toBe(false);
+    });
+
+    it("returns false when safeStorage decryption fails", () => {
+      // Simulate a state blob from a different machine / wiped
+      // keychain -- decryptString throws, the helper must treat as
+      // disconnected rather than crashing the listServers handler.
+      vi.mocked(safeStorage.decryptString).mockImplementationOnce(() => {
+        throw new Error("decrypt failed");
+      });
+      const stored = encryptedBlobFor({
+        tokens: { access_token: "t", token_type: "Bearer" },
+      });
+      expect(oauthStateHasTokens(stored)).toBe(false);
+    });
+
+    it("works with the safeStorage-unavailable fallback (base64-only)", () => {
+      vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+      const stored = Buffer.from(
+        JSON.stringify({ tokens: { access_token: "tok" } }),
+        "utf8",
+      ).toString("base64");
+      expect(oauthStateHasTokens(stored)).toBe(true);
     });
   });
 
