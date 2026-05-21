@@ -30,7 +30,11 @@ interface StoredOAuthState {
 // ensures they die with the process even if the DB file leaks.
 const codeVerifiers = new Map<number, string>();
 
-function encryptToString(plaintext: string): string {
+// Exported so `mcp_handlers` / `mcp_oauth_flow` can encrypt the
+// `oauth_client_secret` column at the boundary without re-implementing
+// the safeStorage fallback. Same byte shape as the `oauth_state`
+// column so existing diagnostics treat both consistently.
+export function encryptToString(plaintext: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     // Platforms without a configured keyring (e.g. Linux without
     // libsecret) fall through to plaintext. We log a warning so the
@@ -46,7 +50,7 @@ function encryptToString(plaintext: string): string {
   return safeStorage.encryptString(plaintext).toString("base64");
 }
 
-function decryptFromString(stored: string): string {
+export function decryptFromString(stored: string): string {
   const buf = Buffer.from(stored, "base64");
   if (!safeStorage.isEncryptionAvailable()) {
     return buf.toString("utf8");
@@ -121,6 +125,14 @@ interface ProviderConfig {
   // `clientInformation` on first use so `auth()` skips the `/register`
   // step entirely.
   preregisteredClientId?: string;
+  // Pre-registered client_secret for confidential OAuth clients (e.g.
+  // GitHub OAuth Apps, Spotify, Reddit). Only meaningful alongside
+  // `preregisteredClientId`. When present, `clientMetadata` declares
+  // `token_endpoint_auth_method: "client_secret_post"` and
+  // `addClientAuthentication` sends both id + secret on the token
+  // exchange; when absent, the provider behaves as a public PKCE
+  // client as before.
+  preregisteredClientSecret?: string;
   // Per-flow CSRF state. Surfaced via `state()` so the SDK puts it
   // in the authorize URL; the loopback listener verifies the same
   // value on callback. Optional because internal SDK auth calls
@@ -143,6 +155,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly callbackPort: number;
   private readonly scope: string | undefined;
   private readonly preregisteredClientId: string | undefined;
+  private readonly preregisteredClientSecret: string | undefined;
   private readonly flowState: string | undefined;
   private readonly allowInteractive: boolean;
   // In-memory mirror of the most recently-read clientInformation so
@@ -163,6 +176,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     this.callbackPort = config.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
     this.scope = config.scope;
     this.preregisteredClientId = config.preregisteredClientId;
+    this.preregisteredClientSecret = config.preregisteredClientSecret;
     this.flowState = config.flowState;
     this.allowInteractive = config.allowInteractive ?? false;
   }
@@ -183,16 +197,22 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
+    // Declare auth method based on whether the user supplied a
+    // `client_secret`. Default is public PKCE ("none"); declaring
+    // "client_secret_post" on a public client misleads DCR servers
+    // into expecting a secret on the token exchange and rejecting
+    // with invalid_client. For confidential clients (e.g. GitHub
+    // OAuth Apps) the opposite is true: declaring "none" while
+    // sending a secret would also confuse the server. Pick based
+    // on stored state.
+    const tokenEndpointAuthMethod = this.preregisteredClientSecret
+      ? "client_secret_post"
+      : "none";
     return {
       redirect_uris: [this.redirectUrl],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
-      // Dyad is a public PKCE client -- no `client_secret` is ever
-      // stored. Declaring "client_secret_post" can mislead servers
-      // into expecting a secret on the token exchange, which they
-      // then reject as invalid_client. "none" tells the server we'll
-      // authenticate via PKCE alone.
-      token_endpoint_auth_method: "none",
+      token_endpoint_auth_method: tokenEndpointAuthMethod,
       client_name: "Dyad",
       scope: this.scope,
     };
@@ -216,10 +236,16 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       return state.clientInformation;
     }
     // First-use seed for pre-registered (non-DCR) servers. Persisting
-    // here avoids the `/register` round-trip on every flow.
+    // here avoids the `/register` round-trip on every flow. When the
+    // user also configured a `client_secret`, seed that too -- the
+    // SDK's `addClientAuthentication` reads both off the stored
+    // clientInformation.
     if (this.preregisteredClientId) {
       const seeded: OAuthClientInformation = {
         client_id: this.preregisteredClientId,
+        ...(this.preregisteredClientSecret
+          ? { client_secret: this.preregisteredClientSecret }
+          : {}),
       };
       await writeState(this.serverId, { ...state, clientInformation: seeded });
       this.cachedClientInformation = seeded;

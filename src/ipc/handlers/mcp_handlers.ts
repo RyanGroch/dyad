@@ -8,7 +8,10 @@ import { resolveConsent } from "../utils/mcp_consent";
 import { getStoredConsent } from "../utils/mcp_consent";
 import { mcpManager } from "../utils/mcp_manager";
 import { disconnectOAuth, runOAuthFlow } from "../utils/mcp_oauth_flow";
-import { oauthStateHasTokens } from "../utils/mcp_oauth_provider";
+import {
+  encryptToString,
+  oauthStateHasTokens,
+} from "../utils/mcp_oauth_provider";
 import {
   mcpContracts,
   type McpServer,
@@ -39,6 +42,11 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     // otherwise flip this to true.
     oauthConnected: oauthStateHasTokens(dbServer.oauthState),
     oauthClientId: dbServer.oauthClientId,
+    // Never expose the encrypted blob (or, worse, plaintext) to the
+    // renderer. Send only the boolean so the UI can render
+    // "(set — leave blank to keep)" placeholder text without the
+    // process ever holding the secret.
+    hasOauthClientSecret: dbServer.oauthClientSecret !== null,
     oauthScope: dbServer.oauthScope,
     createdAt: dbServer.createdAt,
     updatedAt: dbServer.updatedAt,
@@ -64,6 +72,7 @@ export function registerMcpHandlers() {
       enabled,
       oauthEnabled,
       oauthClientId,
+      oauthClientSecret,
       oauthScope,
     } = params;
     // Handle args: can be string (JSON), array, or null/undefined
@@ -97,6 +106,12 @@ export function registerMcpHandlers() {
         enabled: !!enabled,
         oauthEnabled: !!oauthEnabled,
         oauthClientId: oauthClientId ?? null,
+        // Encrypt the plaintext client_secret at the IPC boundary so
+        // it never lives in the row payload that gets logged /
+        // serialized later in this process.
+        oauthClientSecret: oauthClientSecret
+          ? encryptToString(oauthClientSecret)
+          : null,
         oauthScope: oauthScope ?? null,
       })
       .returning();
@@ -138,6 +153,19 @@ export function registerMcpHandlers() {
       // forces the provider to re-seed from the new column on next
       // use; without this, the old client_id keeps winning even after
       // the user edits the field.
+      update.oauthState = null;
+    }
+    // Tri-state semantics on the IPC schema (see McpServerUpdateSchema):
+    //   undefined -> field omitted, keep stored secret untouched
+    //   null      -> explicit clear (user clicked "Clear secret")
+    //   string    -> replace with new plaintext (encrypted here)
+    // The cached client info is wiped because the secret is part of
+    // the seeded `clientInformation`; without this, the SDK keeps
+    // using the old secret silently on subsequent token exchanges.
+    if (params.oauthClientSecret !== undefined) {
+      update.oauthClientSecret = params.oauthClientSecret
+        ? encryptToString(params.oauthClientSecret)
+        : null;
       update.oauthState = null;
     }
     if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;

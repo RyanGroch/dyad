@@ -34,6 +34,7 @@ type Row = {
   url: string | null;
   oauthEnabled: boolean;
   oauthClientId: string | null;
+  oauthClientSecret: string | null;
   oauthState: string | null;
 };
 const dbStore = new Map<number, Row>();
@@ -119,6 +120,7 @@ const {
   oauthStateHasTokens,
   _resetCodeVerifiersForTest,
   DyadOAuthClientProvider,
+  encryptToString,
 } = providerImport;
 const { shell } = electronImport;
 
@@ -132,11 +134,13 @@ const { shell } = electronImport;
 const DCR_SERVER_PORT = 47002;
 const STATIC_SERVER_PORT = 47003;
 const REFRESH_SERVER_PORT = 47004;
+const CONFIDENTIAL_SERVER_PORT = 47005;
 // Fixed, deterministic callback port ranges per describe block so the
 // suite repeats identically across runs.
 const DCR_CALLBACK_PORT_BASE = 53700;
 const STATIC_CALLBACK_PORT_BASE = 53800;
 const REFRESH_CALLBACK_PORT_BASE = 53900;
+const CONFIDENTIAL_CALLBACK_PORT_BASE = 54000;
 
 async function waitForReady(baseUrl: string, attempts = 40): Promise<void> {
   for (let i = 0; i < attempts; i++) {
@@ -188,6 +192,7 @@ function seedRow(row: Partial<Row> & { id: number; url: string }): void {
     url: row.url,
     oauthEnabled: row.oauthEnabled ?? true,
     oauthClientId: row.oauthClientId ?? null,
+    oauthClientSecret: row.oauthClientSecret ?? null,
     oauthState: row.oauthState ?? null,
   });
 }
@@ -446,5 +451,87 @@ describe("OAuth integration: refresh-token rotation against fake server", () => 
     const refreshedState = dbStore.get(serverId)!.oauthState;
     expect(refreshedState).not.toBe(initialState);
     expect(rowIsConnected(serverId)).toBe(true);
+  });
+});
+
+describe("OAuth integration: confidential client (client_secret) against fake server", () => {
+  // Mirrors the real-world GitHub OAuth App / Spotify / Reddit case:
+  // a pre-registered client_id PLUS a pre-registered client_secret
+  // are required at the token exchange. The fake server is launched
+  // with both FAKE_CLIENT_ID and FAKE_CLIENT_SECRET; the row seeds
+  // the encrypted secret in the DB; Dyad decrypts it just-in-time
+  // and the SDK posts both id + secret to /token via the
+  // `client_secret_post` auth method.
+  let child: ChildProcess;
+  const port = CONFIDENTIAL_SERVER_PORT;
+  const base = `http://localhost:${port}`;
+  const STATIC_ID = "confidential-app-001";
+  const STATIC_SECRET = "supersecret-007";
+  let nextCallbackPort = CONFIDENTIAL_CALLBACK_PORT_BASE;
+
+  beforeAll(async () => {
+    child = spawnFakeServer({
+      PORT: String(port),
+      FAKE_DCR: "0",
+      FAKE_CLIENT_ID: STATIC_ID,
+      FAKE_CLIENT_SECRET: STATIC_SECRET,
+    });
+    await waitForReady(base);
+  }, 15000);
+
+  afterAll(async () => {
+    child?.kill();
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  beforeEach(() => {
+    dbStore.clear();
+    _resetCodeVerifiersForTest();
+    vi.clearAllMocks();
+    stubOpenExternalToAutoComplete();
+  });
+
+  it("sends client_id + client_secret on token exchange and lands tokens (confidential client path)", async () => {
+    const serverId = 1;
+    seedRow({
+      id: serverId,
+      url: `${base}/mcp`,
+      oauthClientId: STATIC_ID,
+      // Mirror the real persistence path: the column stores the
+      // ENCRYPTED blob (not plaintext). The flow decrypts it before
+      // handing to the provider, just like a row written through the
+      // real handler.
+      oauthClientSecret: encryptToString(STATIC_SECRET),
+    });
+
+    const result = await runOAuthFlow({
+      serverId,
+      callbackPort: nextCallbackPort++,
+    });
+    // Success here is the load-bearing assertion: the fake /token
+    // rejects with `invalid_client` unless client_secret matches
+    // exactly, so tokens landing means our wiring passed the secret
+    // through correctly end-to-end.
+    expect(result.success).toBe(true);
+    expect(result.error).toBeNull();
+    expect(rowIsConnected(serverId)).toBe(true);
+  });
+
+  it("fails (invalid_client) when the stored secret doesn't match what the server expects", async () => {
+    const serverId = 2;
+    seedRow({
+      id: serverId,
+      url: `${base}/mcp`,
+      oauthClientId: STATIC_ID,
+      oauthClientSecret: encryptToString("wrong-secret"),
+    });
+
+    const result = await runOAuthFlow({
+      serverId,
+      callbackPort: nextCallbackPort++,
+    });
+    expect(result.success).toBe(false);
+    // No tokens persisted on a failed exchange.
+    expect(rowIsConnected(serverId)).toBe(false);
   });
 });

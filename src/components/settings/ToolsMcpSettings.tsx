@@ -323,6 +323,7 @@ export function ToolsMcpSettings() {
   const [enabled, setEnabled] = useState(true);
   const [oauthEnabled, setOauthEnabled] = useState(false);
   const [oauthClientId, setOauthClientId] = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
   const [oauthScope, setOauthScope] = useState("");
   const [connectingServerId, setConnectingServerId] = useState<number | null>(
     null,
@@ -380,6 +381,7 @@ export function ToolsMcpSettings() {
       enabled,
       oauthEnabled: oauthEnabled && transport !== "stdio",
       oauthClientId: oauthClientId.trim() || null,
+      oauthClientSecret: oauthClientSecret.trim() || null,
       oauthScope: oauthScope.trim() || null,
     });
     setName("");
@@ -389,6 +391,7 @@ export function ToolsMcpSettings() {
     setEnabled(true);
     setOauthEnabled(false);
     setOauthClientId("");
+    setOauthClientSecret("");
     setOauthScope("");
   };
 
@@ -506,6 +509,21 @@ export function ToolsMcpSettings() {
                       value={oauthClientId}
                       onChange={(e) => setOauthClientId(e.target.value)}
                       placeholder="Pre-registered client ID"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Label>
+                      OAuth Client Secret
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        (only for confidential clients — e.g. GitHub OAuth Apps,
+                        Spotify, Reddit; encrypted at rest)
+                      </span>
+                    </Label>
+                    <Input
+                      type="password"
+                      value={oauthClientSecret}
+                      onChange={(e) => setOauthClientSecret(e.target.value)}
+                      placeholder="Pre-registered client secret"
                     />
                   </div>
                   <div className="col-span-2">

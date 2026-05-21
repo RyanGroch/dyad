@@ -149,6 +149,65 @@ describe("DyadOAuthClientProvider", () => {
     expect(dbStore.get(9)).toBeDefined();
   });
 
+  it("seeds client_secret alongside client_id when both are pre-registered (confidential client)", async () => {
+    // GitHub OAuth Apps / Spotify / Reddit etc. require BOTH a
+    // client_id and client_secret on the token exchange. The seeded
+    // clientInformation must carry both so addClientAuthentication
+    // can post them when the SDK builds the request.
+    const p = new DyadOAuthClientProvider({
+      serverId: 91,
+      preregisteredClientId: "confidential-id",
+      preregisteredClientSecret: "confidential-secret",
+    });
+    const info = await p.clientInformation();
+    expect(info?.client_id).toBe("confidential-id");
+    expect(info?.client_secret).toBe("confidential-secret");
+  });
+
+  it("emits clientMetadata.token_endpoint_auth_method=client_secret_post when a secret is configured", async () => {
+    // The SDK reads this from clientMetadata to decide which
+    // authentication method to declare on DCR / advertise to the
+    // server. Declaring "none" while sending a secret -- or vice
+    // versa -- confuses providers and surfaces as invalid_client.
+    const publicProvider = new DyadOAuthClientProvider({
+      serverId: 92,
+      preregisteredClientId: "id-only",
+    });
+    expect(publicProvider.clientMetadata.token_endpoint_auth_method).toBe(
+      "none",
+    );
+
+    const confidentialProvider = new DyadOAuthClientProvider({
+      serverId: 93,
+      preregisteredClientId: "id",
+      preregisteredClientSecret: "sec",
+    });
+    expect(confidentialProvider.clientMetadata.token_endpoint_auth_method).toBe(
+      "client_secret_post",
+    );
+  });
+
+  it("addClientAuthentication sends both client_id and client_secret via client_secret_post when the secret is seeded", async () => {
+    // End-to-end sanity: the seeded confidential clientInformation
+    // flows through to the request body the SDK fires at the token
+    // endpoint. No PKCE-only path here because the server is a
+    // confidential client.
+    const p = new DyadOAuthClientProvider({
+      serverId: 94,
+      preregisteredClientId: "cid",
+      preregisteredClientSecret: "sec",
+    });
+    // Drive a clientInformation() so the cache populates the way the
+    // real auth flow does before addClientAuthentication is called.
+    await p.clientInformation();
+    const headers = new Headers();
+    const params = new URLSearchParams();
+    p.addClientAuthentication(headers, params);
+    expect(params.get("client_id")).toBe("cid");
+    expect(params.get("client_secret")).toBe("sec");
+    expect(headers.get("Authorization")).toBeNull();
+  });
+
   it("persists saveClientInformation and skips reseeding from preregistered id", async () => {
     const p = new DyadOAuthClientProvider({
       serverId: 11,

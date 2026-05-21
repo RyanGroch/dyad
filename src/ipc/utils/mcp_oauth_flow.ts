@@ -7,6 +7,7 @@ import { mcpServers } from "../../db/schema";
 import {
   DEFAULT_OAUTH_CALLBACK_PORT,
   DyadOAuthClientProvider,
+  decryptFromString,
 } from "./mcp_oauth_provider";
 import { mcpManager } from "./mcp_manager";
 
@@ -53,17 +54,36 @@ function generateState(): string {
 // browser's resolver picks.
 const LOOPBACK_BIND_HOSTS = ["127.0.0.1", "::1"] as const;
 
-function startCallbackListener(
+async function startCallbackListener(
   port: number,
   expectedState: string,
 ): Promise<string> {
-  // Refuse to start a second listener on the same port -- the second
-  // would fail at bind time anyway and we'd lose the original flow's
-  // promise. Surface a clean error instead.
-  if (pendingFlows.has(port)) {
-    return Promise.reject(
-      new Error(
-        `An OAuth flow is already in progress on port ${port}. Cancel it before starting another.`,
+  // Supersede any flow already pending on this port -- the user has
+  // visibly clicked Connect again, so the older flow is dead from
+  // their perspective. Reject the old promise so its `runOAuthFlow`
+  // catches cleanly and disposes its provider state, then WAIT for
+  // the sockets to actually finish closing before binding the new
+  // listener (otherwise the new bind would race the old close and
+  // either silently inherit the dangling socket or EADDRINUSE).
+  const existing = pendingFlows.get(port);
+  if (existing) {
+    logger.info(
+      `Superseding stale OAuth flow on port ${port} (new Connect attempt)`,
+    );
+    clearTimeout(existing.timeout);
+    pendingFlows.delete(port);
+    existing.reject(
+      new Error("OAuth flow superseded by a new Connect attempt."),
+    );
+    await Promise.all(
+      existing.servers.map(
+        (s) =>
+          new Promise<void>((resolveClose) => {
+            // `close` won't fire if the server already errored / never
+            // bound -- guard against indefinite hang.
+            s.close(() => resolveClose());
+            setTimeout(() => resolveClose(), 500);
+          }),
       ),
     );
   }
@@ -244,12 +264,20 @@ export async function runOAuthFlow(
   // configured scope from the row, fall back to the caller's override,
   // and finally to "read" as a conservative default.
   const scope = s.oauthScope ?? params.scope ?? "read";
+  // Decrypt the stored client_secret (if any) just in time so the
+  // plaintext value never lives in the row payload that crosses the
+  // IPC boundary. Empty string from decryptFromString means decryption
+  // failed -- treat as absent rather than passing junk to the SDK.
+  const decryptedClientSecret = s.oauthClientSecret
+    ? decryptFromString(s.oauthClientSecret) || undefined
+    : undefined;
   const expectedState = generateState();
   const provider = new DyadOAuthClientProvider({
     serverId: s.id,
     callbackPort,
     scope,
     preregisteredClientId: s.oauthClientId ?? undefined,
+    preregisteredClientSecret: decryptedClientSecret,
     // Per-flow CSRF state value. Surfaced via `provider.state()`;
     // verified on the loopback callback against the same value.
     flowState: expectedState,
@@ -264,6 +292,12 @@ export async function runOAuthFlow(
   // consent extremely quickly. We don't want a race where the
   // callback arrives before the listener is ready.
   const codePromise = startCallbackListener(callbackPort, expectedState);
+  // Attach a no-op handler synchronously so an early rejection (e.g.
+  // bind failure on both stacks) doesn't sit unhandled during the
+  // long `await auth()` that follows. The real rejection still
+  // propagates through `await codePromise` below; this side-handler
+  // exists only to silence Node's unhandledRejection warning.
+  codePromise.catch(() => undefined);
 
   try {
     // First call kicks off discovery / DCR if needed and opens the
@@ -332,6 +366,9 @@ export async function disconnectOAuth(
   const provider = new DyadOAuthClientProvider({
     serverId: s.id,
     preregisteredClientId: s.oauthClientId ?? undefined,
+    preregisteredClientSecret: s.oauthClientSecret
+      ? decryptFromString(s.oauthClientSecret) || undefined
+      : undefined,
   });
   await provider.invalidateCredentials("all");
   mcpManager.dispose(serverId);

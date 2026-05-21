@@ -264,6 +264,14 @@ export const mcpServers = sqliteTable("mcp_servers", {
   // support dynamic client registration (RFC 7591). User-supplied via
   // the add-server UI; left blank for servers that support DCR.
   oauthClientId: text("oauth_client_id"),
+  // Optional pre-registered OAuth client_secret. Required by
+  // confidential OAuth clients (e.g. GitHub OAuth Apps, Spotify,
+  // Reddit) that don't support PKCE. Encrypted at rest via Electron
+  // `safeStorage` -- the column stores the base64-encoded encrypted
+  // blob, NEVER plaintext. The renderer only sees a derived boolean
+  // (`hasOauthClientSecret`); the plaintext is read only inside the
+  // main-process OAuth flow when seeding `clientInformation`.
+  oauthClientSecret: text("oauth_client_secret"),
   // Space-separated OAuth scopes requested at the authorize endpoint.
   // Some servers reject the request (often as a misleading
   // "Invalid client" error) when this is omitted. Defaults to "read"

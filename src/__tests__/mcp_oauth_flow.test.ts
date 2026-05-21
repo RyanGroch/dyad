@@ -245,6 +245,50 @@ describe("OAuth loopback listener (state CSRF check)", () => {
     expect(result.success).toBe(false);
   });
 
+  it("supersedes a stale flow when Connect is clicked again on the same port", async () => {
+    // Regression for the user-visible failure where: (1) the user
+    // clicks Connect, (2) the OAuth window is open but they get
+    // pulled away (e.g. needing to create an account upstream),
+    // (3) they return, navigate within Dyad which resets the local
+    // "Connecting" React state, (4) they click Connect a second time.
+    // The second attempt previously failed with "An OAuth flow is
+    // already in progress on port 53682"; the supersede behavior
+    // tears the stale listener down and lets the new flow proceed.
+    seedRow({ id: 11, transport: "http", url: "https://example.com/mcp" });
+    seedRow({ id: 12, transport: "http", url: "https://example.com/mcp" });
+    // First flow: stays in REDIRECT (listener bound, awaiting code).
+    authMock.mockResolvedValueOnce("REDIRECT");
+    // Second flow (after supersede): also REDIRECT so we can probe
+    // the listener directly without driving a full code exchange.
+    authMock.mockResolvedValueOnce("REDIRECT");
+
+    const callbackPort = 53697;
+    const firstPromise = runOAuthFlow({ serverId: 11, callbackPort });
+    // Let the first flow's listener bind.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second click on the same port: must NOT reject with port-busy.
+    const secondPromise = runOAuthFlow({ serverId: 12, callbackPort });
+    // Give supersede + bind a moment.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // The new listener must be reachable -- probe via a malformed
+    // state callback that the listener will 400 (proving the new
+    // listener is bound), then the second flow rejects with CSRF.
+    const probe = await fetch(
+      `http://127.0.0.1:${callbackPort}/callback?code=x&state=wrong`,
+    );
+    expect(probe.status).toBe(400);
+
+    // First flow must surface a clean error result (not a hang).
+    const firstResult = await firstPromise;
+    expect(firstResult.success).toBe(false);
+    expect(firstResult.error ?? "").toMatch(/superseded/i);
+
+    const secondResult = await secondPromise;
+    expect(secondResult.success).toBe(false);
+  });
+
   it("rejects callbacks whose `state` does not match the expected value", async () => {
     seedRow({ id: 7, transport: "http", url: "https://example.com/mcp" });
     // Make auth() request a redirect (so the listener stays open).

@@ -9,7 +9,10 @@ import { eq } from "drizzle-orm";
 
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import { DyadOAuthClientProvider } from "./mcp_oauth_provider";
+import {
+  DyadOAuthClientProvider,
+  decryptFromString,
+} from "./mcp_oauth_provider";
 
 class McpManager {
   private static _instance: McpManager;
@@ -59,6 +62,12 @@ class McpManager {
             // the user hasn't customized the per-server value.
             scope: s.oauthScope ?? "read",
             preregisteredClientId: s.oauthClientId ?? undefined,
+            // Decrypted client_secret (if any). Confidential clients
+            // need the secret on refresh-token grants the transport
+            // drives silently after 401s.
+            preregisteredClientSecret: s.oauthClientSecret
+              ? decryptFromString(s.oauthClientSecret) || undefined
+              : undefined,
           })
         : undefined;
       client = await createMCPClient({

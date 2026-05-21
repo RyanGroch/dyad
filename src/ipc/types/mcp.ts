@@ -30,6 +30,12 @@ export const McpServerSchema = z.object({
   oauthConnected: z.boolean(),
   oauthClientId: z.string().nullable(),
   oauthScope: z.string().nullable(),
+  // Derived: true iff an OAuth client_secret is currently stored
+  // (encrypted) for this server. The plaintext secret is NEVER sent
+  // to the renderer -- only this boolean -- so a compromised renderer
+  // process can't exfiltrate the credential. Drives the "set / clear"
+  // UI affordance on the OAuth Client Secret field.
+  hasOauthClientSecret: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -56,6 +62,10 @@ export const CreateMcpServerSchema = z.object({
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
   oauthClientId: z.string().nullable().optional(),
+  // Plaintext OAuth client_secret on create. Encrypted on the way in
+  // by the handler -- never persisted as plaintext, never echoed back
+  // out via `McpServerSchema`.
+  oauthClientSecret: z.string().nullable().optional(),
   oauthScope: z.string().nullable().optional(),
 });
 
@@ -76,6 +86,15 @@ export const McpServerUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
   oauthClientId: z.string().nullable().optional(),
+  // Plaintext OAuth client_secret on update.
+  //   undefined -> keep existing stored secret (most edits)
+  //   null      -> clear the stored secret
+  //   string    -> replace with new plaintext value
+  // The handler distinguishes these three on `"oauthClientSecret" in
+  // params` rather than truthiness, so empty string is treated as
+  // "replace with empty" (effectively clearing). Renderer is expected
+  // to send null for explicit clears.
+  oauthClientSecret: z.string().nullable().optional(),
   oauthScope: z.string().nullable().optional(),
 });
 

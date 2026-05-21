@@ -26,6 +26,7 @@ type Row = {
   oauthEnabled: boolean;
   oauthState: string | null;
   oauthClientId: string | null;
+  oauthClientSecret: string | null;
   oauthScope: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -33,6 +34,7 @@ type Row = {
 const dbStore = new Map<number, Row>();
 let lastUpdatePayload: Record<string, unknown> | null = null;
 let lastUpdateTargetId = 0;
+let lastInsertPayload: Record<string, unknown> | null = null;
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -96,8 +98,34 @@ vi.mock("../db", () => ({
       }),
     })),
     insert: vi.fn(() => ({
-      values: () => ({
-        returning: () => Promise.resolve([]),
+      values: (values: Record<string, unknown>) => ({
+        returning: () => {
+          lastInsertPayload = values;
+          // Hand back a synthetic row that looks like what drizzle
+          // would: input values + a numeric id + timestamps. The
+          // handler runs `toMcpServer` on this, so all schema-
+          // required fields must be present.
+          const synthetic: Row = {
+            id: 1000,
+            name: String(values.name ?? "synthetic"),
+            transport: String(values.transport ?? "http"),
+            command: (values.command as string | null) ?? null,
+            args: values.args ?? null,
+            envJson: values.envJson ?? null,
+            headersJson: values.headersJson ?? null,
+            url: (values.url as string | null) ?? null,
+            enabled: Boolean(values.enabled),
+            oauthEnabled: Boolean(values.oauthEnabled),
+            oauthState: (values.oauthState as string | null) ?? null,
+            oauthClientId: (values.oauthClientId as string | null) ?? null,
+            oauthClientSecret:
+              (values.oauthClientSecret as string | null) ?? null,
+            oauthScope: (values.oauthScope as string | null) ?? null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          return Promise.resolve([synthetic]);
+        },
       }),
     })),
     delete: vi.fn(() => ({
@@ -166,6 +194,7 @@ function seedRow(row: Partial<Row> & { id: number }): Row {
     oauthEnabled: row.oauthEnabled ?? true,
     oauthState: row.oauthState ?? null,
     oauthClientId: row.oauthClientId ?? null,
+    oauthClientSecret: row.oauthClientSecret ?? null,
     oauthScope: row.oauthScope ?? null,
     createdAt: row.createdAt ?? new Date(),
     updatedAt: row.updatedAt ?? new Date(),
@@ -231,6 +260,149 @@ describe("mcp updateServer handler", () => {
     seedRow({ id: 44 });
     await invoke("mcp:update-server", { id: 44, name: "renamed" });
     expect(disposeMock).toHaveBeenCalledWith(44);
+  });
+
+  it("encrypts oauthClientSecret on update (never persists plaintext) and clears oauthState", async () => {
+    // Confidential-client support: when the user supplies a new
+    // client_secret, the handler must (1) encrypt it via safeStorage
+    // before writing -- plaintext on disk is unacceptable, and (2)
+    // clear oauthState so the next flow re-seeds clientInformation
+    // with the new secret. The encryption mock here prefixes "enc:"
+    // before base64; the real implementation uses safeStorage.
+    seedRow({
+      id: 50,
+      oauthClientId: "cid",
+      oauthClientSecret: "OLD_ENCRYPTED",
+      oauthState: "enc:something-tokenlike",
+    });
+
+    await invoke("mcp:update-server", {
+      id: 50,
+      oauthClientSecret: "fresh-secret",
+    });
+
+    expect(lastUpdatePayload).not.toBeNull();
+    const stored = lastUpdatePayload!.oauthClientSecret;
+    expect(typeof stored).toBe("string");
+    // Stored value must NOT equal the plaintext input. It's the
+    // base64-encoded encrypted blob.
+    expect(stored).not.toBe("fresh-secret");
+    expect(stored).not.toContain("fresh-secret");
+    expect(lastUpdatePayload!.oauthState).toBeNull();
+  });
+
+  it("clears oauthClientSecret to null when params.oauthClientSecret is null", async () => {
+    // Tri-state semantics: null means "user wants to wipe the
+    // stored secret" (the explicit Clear-secret affordance). The
+    // handler must write NULL to the column, not encrypt the string
+    // "null" or skip the field entirely.
+    seedRow({
+      id: 51,
+      oauthClientId: "cid",
+      oauthClientSecret: "OLD_ENCRYPTED",
+    });
+
+    await invoke("mcp:update-server", {
+      id: 51,
+      oauthClientSecret: null,
+    });
+
+    expect(lastUpdatePayload).not.toBeNull();
+    expect(lastUpdatePayload!.oauthClientSecret).toBeNull();
+    expect("oauthClientSecret" in lastUpdatePayload!).toBe(true);
+  });
+
+  it("does NOT touch oauthClientSecret when omitted (keep-existing path)", async () => {
+    // Most edits (renaming, scope tweak, enabled toggle) come through
+    // without the secret field set. The handler must leave the
+    // stored encrypted blob alone -- without this, every save would
+    // silently wipe the user's credential.
+    seedRow({
+      id: 52,
+      oauthClientId: "cid",
+      oauthClientSecret: "STORED_BLOB",
+    });
+
+    await invoke("mcp:update-server", { id: 52, name: "renamed" });
+
+    expect(lastUpdatePayload).not.toBeNull();
+    expect("oauthClientSecret" in lastUpdatePayload!).toBe(false);
+  });
+});
+
+describe("mcp createServer handler (client_secret handling)", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    lastInsertPayload = null;
+    vi.clearAllMocks();
+  });
+
+  it("encrypts oauthClientSecret before insert (never persists plaintext)", async () => {
+    await invoke("mcp:create-server", {
+      name: "confidential-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+      oauthClientSecret: "plaintext-secret",
+    });
+
+    expect(lastInsertPayload).not.toBeNull();
+    const stored = lastInsertPayload!.oauthClientSecret;
+    expect(typeof stored).toBe("string");
+    expect(stored).not.toBe("plaintext-secret");
+    expect(stored).not.toContain("plaintext-secret");
+  });
+
+  it("inserts NULL for oauthClientSecret when the user didn't supply one", async () => {
+    await invoke("mcp:create-server", {
+      name: "public-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+    });
+
+    expect(lastInsertPayload).not.toBeNull();
+    expect(lastInsertPayload!.oauthClientSecret).toBeNull();
+  });
+});
+
+describe("mcp createServer / listServers (toMcpServer secret-redaction)", () => {
+  beforeEach(() => {
+    dbStore.clear();
+    lastInsertPayload = null;
+    vi.clearAllMocks();
+  });
+
+  it("does NOT include oauthClientSecret in the renderer-bound payload, only the derived hasOauthClientSecret boolean", async () => {
+    // Critical security boundary: a compromised renderer process
+    // must not be able to read the stored secret. toMcpServer
+    // strips the encrypted blob and exposes only a boolean so the
+    // UI can show "(set — leave blank to keep)" affordance.
+    const result = (await invoke("mcp:create-server", {
+      name: "confidential-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+      oauthClientSecret: "secret-value",
+    })) as Record<string, unknown>;
+
+    expect("oauthClientSecret" in result).toBe(false);
+    expect(result.hasOauthClientSecret).toBe(true);
+  });
+
+  it("returns hasOauthClientSecret=false for a server without a stored secret", async () => {
+    const result = (await invoke("mcp:create-server", {
+      name: "public-server",
+      transport: "http",
+      url: "https://example.com/mcp",
+      oauthEnabled: true,
+      oauthClientId: "id",
+    })) as Record<string, unknown>;
+
+    expect(result.hasOauthClientSecret).toBe(false);
   });
 });
 
