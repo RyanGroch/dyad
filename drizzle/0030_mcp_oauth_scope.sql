@@ -1,1 +1,0 @@
-ALTER TABLE `mcp_servers` ADD `oauth_scope` text;

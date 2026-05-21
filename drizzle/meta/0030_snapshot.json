@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b930ae3b-3bb4-406b-826b-e84a7db9d47e",
-  "prevId": "c0428b9f-5a07-4946-ab6e-eed923e36aa6",
+  "id": "da70de7e-b013-4963-9d43-d3a74306d1c0",
+  "prevId": "31831cd2-4a3d-47d6-9dfb-fbf97a6d1b6c",
   "tables": {
     "apps": {
       "name": "apps",
@@ -177,6 +177,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "needs_app_blueprint": {
+          "name": "needs_app_blueprint",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "0"
         }
       },
       "indexes": {},
@@ -561,6 +569,13 @@
         },
         "oauth_client_id": {
           "name": "oauth_client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "oauth_client_secret": {
+          "name": "oauth_client_secret",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
