@@ -531,8 +531,8 @@ export function ToolsMcpSettings() {
                     <Label>
                       OAuth Scope
                       <span className="ml-1 text-xs text-muted-foreground">
-                        Permissions to request, space-separated. Check the
-                        server's OAuth docs for valid values.
+                        Permissions to request, space-separated. Leave this
+                        blank to use the server's default.
                       </span>
                     </Label>
                     <Input
