@@ -1,5 +1,10 @@
 import { useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { ipc } from "@/ipc/types";
 import type {
   McpServer,
@@ -33,11 +38,30 @@ export function useMcp() {
     queryKey: queryKeys.mcp.toolsByServer.list({ serverIds }),
     enabled: serverIds.length > 0,
     queryFn: async () => {
-      const entries = await Promise.all(
+      // Promise.allSettled (not all) so one server's listTools
+      // rejection doesn't poison the batch. Without this, an
+      // unconnected OAuth-gated server (e.g. just-added Sentry whose
+      // transport hangs on the 401 -> auth() refusal loop) would
+      // hold all the other servers' tools hostage and the UI would
+      // render empty for every server until the slow one resolves.
+      // The handler-side timeout caps the worst case at a few
+      // seconds; this is the renderer-side safety net.
+      const settled = await Promise.allSettled(
         serverIds.map(async (id) => [id, await ipc.mcp.listTools(id)] as const),
+      );
+      const entries = settled.flatMap((r) =>
+        r.status === "fulfilled" ? [r.value] : [],
       );
       return Object.fromEntries(entries) as Record<number, McpTool[]>;
     },
+    // The query key includes the full list of `serverIds`, so adding
+    // (or removing) a server changes the key and React Query would
+    // otherwise treat it as a brand-new query -- with no cached data,
+    // the UI renders empty state for ALL servers until the new query
+    // resolves. `keepPreviousData` shows the prior key's results
+    // until the new key resolves, so the existing servers' tools
+    // stay visible while the newly-added server's tools load.
+    placeholderData: keepPreviousData,
     meta: { showErrorToast: true },
   });
 

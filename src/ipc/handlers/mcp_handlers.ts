@@ -192,19 +192,41 @@ export function registerMcpHandlers() {
 
   // Tools listing (dynamic)
   createTypedHandler(mcpContracts.listTools, async (_, serverId) => {
+    // Hard cap on how long we'll wait for a single server's tools
+    // listing. The MCP SSE transport can block indefinitely during
+    // its initialize handshake against an unconnected / unreachable
+    // OAuth-gated server; without this ceiling, the renderer's
+    // batched tool-listing query hangs and the UI shows empty tools
+    // for ALL servers until the slowest one settles.
+    const LIST_TOOLS_TIMEOUT_MS = 8_000;
     try {
-      const client = await mcpManager.getClient(serverId);
-      const remoteTools = await client.tools();
-      const tools = await Promise.all(
-        Object.entries(remoteTools).map(async ([name, mcpTool]) => ({
-          name,
-          description: mcpTool.description ?? null,
-          consent: (await getStoredConsent(serverId, name)) as
-            | McpConsentValue
-            | undefined,
-        })),
-      );
-      return tools;
+      const result = await Promise.race([
+        (async () => {
+          const client = await mcpManager.getClient(serverId);
+          const remoteTools = await client.tools();
+          return Promise.all(
+            Object.entries(remoteTools).map(async ([name, mcpTool]) => ({
+              name,
+              description: mcpTool.description ?? null,
+              consent: (await getStoredConsent(serverId, name)) as
+                | McpConsentValue
+                | undefined,
+            })),
+          );
+        })(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Timed out after ${LIST_TOOLS_TIMEOUT_MS / 1000}s waiting for tools from server ${serverId}.`,
+                ),
+              ),
+            LIST_TOOLS_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+      return result;
     } catch (e) {
       // Common cause for OAuth-gated servers: the transport built
       // before tokens were saved is still cached; surface the error

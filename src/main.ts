@@ -715,6 +715,20 @@ app.on("open-url", (event, url) => {
   deepLinkQueue.handle(url);
 });
 
+// Catch async rejections that escape SDK transports (mainly undici
+// `TypeError: terminated` from MCP's SSE/HTTP fetch when the cached
+// client is disposed mid-stream). Without this, every dispose leaves
+// a noisy "Unhandled rejection" stack in the logs even though the
+// rejection is benign -- the abort was intentional. Log at warn so
+// real escaped rejections are still visible; do NOT exit the process.
+process.on("unhandledRejection", (reason) => {
+  const message =
+    reason instanceof Error
+      ? `${reason.name}: ${reason.message}`
+      : String(reason);
+  log.scope("unhandled-rejection").warn(message);
+});
+
 function startAppWhenReady() {
   app.whenReady().then(onReady);
 }
