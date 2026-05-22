@@ -22,16 +22,14 @@ interface StoredOAuthState {
   clientInformation?: OAuthClientInformation;
 }
 
-// PKCE code verifiers are flow-scoped secrets that must never touch
-// disk -- holding them in a process-memory map keyed by serverId
-// ensures they die with the process even if the DB file leaks.
+// PKCE code verifiers are short-lived secrets. Kept in memory only,
+// never in the DB, so they're gone when the app exits.
 const codeVerifiers = new Map<number, string>();
 
 export function encryptToString(plaintext: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
-    // Platforms without a configured keyring (e.g. Linux without
-    // libsecret) fall through to plaintext rather than refusing,
-    // which would block OAuth entirely on those setups.
+    // No keyring available (e.g. Linux without libsecret): store as
+    // plaintext rather than blocking OAuth entirely on those setups.
     logger.warn(
       "safeStorage encryption unavailable; OAuth state written as plaintext",
     );
@@ -48,20 +46,18 @@ export function decryptFromString(stored: string): string {
   try {
     return safeStorage.decryptString(buf);
   } catch (err) {
-    // Most common cause: state written on a different machine /
-    // profile, or platform-keychain reset. Surfacing as "no stored
-    // state" forces a fresh OAuth flow rather than crashing.
+    // Usually means the data was written on another machine, or the
+    // keychain was reset. Treat as empty so the user just re-runs the
+    // OAuth flow instead of hitting a crash.
     logger.warn("Failed to decrypt OAuth state; treating as empty", err);
     return "";
   }
 }
 
-// Whether an encrypted oauth_state blob contains usable access tokens.
-// `oauthState` may be populated with only `clientInformation` (e.g.
-// after DCR succeeds during an ambient transport build but before the
-// interactive consent step runs), so a non-null column value is NOT
-// proof of a working connection. Callers use this to drive the
-// "OAuth: connected" UI badge.
+// True only if the stored OAuth state has an access token. A
+// non-empty `oauth_state` isn't enough -- it can hold just a
+// registered client ID with no tokens yet. Drives the
+// "OAuth: connected" badge.
 export function oauthStateHasTokens(stored: string | null): boolean {
   if (!stored) return false;
   const json = decryptFromString(stored);
@@ -94,10 +90,8 @@ async function writeState(
   serverId: number,
   state: StoredOAuthState,
 ): Promise<void> {
-  // When the state has no tokens AND no client info, write NULL
-  // rather than an encrypted empty object so the column reflects "no
-  // stored OAuth material at all" -- keeps DB inspection unambiguous
-  // and avoids storing meaningless encrypted blobs.
+  // No tokens and no client info: store NULL instead of an encrypted
+  // empty object, so the column clearly means "nothing stored".
   const isEmpty = !state.tokens && !state.clientInformation;
   const blob = isEmpty ? null : encryptToString(JSON.stringify(state));
   await db
@@ -110,28 +104,21 @@ interface ProviderConfig {
   serverId: number;
   callbackPort?: number;
   scope?: string;
-  // Pre-registered client_id for servers that do NOT support dynamic
-  // client registration (RFC 7591). When provided we seed
-  // `clientInformation` on first use so `auth()` skips the `/register`
-  // step entirely.
+  // Client ID the user registered by hand, for servers that don't
+  // support automatic registration. When set, the SDK skips its
+  // `/register` call.
   preregisteredClientId?: string;
   // Pre-registered client_secret for confidential OAuth clients. Only
   // meaningful alongside `preregisteredClientId`.
   preregisteredClientSecret?: string;
-  // Per-flow CSRF state. Surfaced via `state()` so the SDK puts it
-  // in the authorize URL; the loopback listener verifies the same
-  // value on callback. Optional because internal SDK auth calls
-  // (e.g. on transport connect) don't have an application-supplied
-  // state, in which case the SDK falls back to its own generation.
+  // Random anti-CSRF value put in the authorize URL and checked when
+  // the browser redirects back. When unset, `state()` returns "" and
+  // the SDK leaves `state=` off the URL.
   flowState?: string;
-  // Whether this provider instance is allowed to open the system
-  // browser for interactive OAuth consent. Only the explicit
-  // Connect-button flow sets this to true (because it also stands
-  // up the loopback callback listener). Providers constructed for
-  // ambient use -- e.g. `mcp_manager` building a transport for
-  // tool listing -- pass false so they fail closed with
-  // `UnauthorizedError` instead of opening a browser whose redirect
-  // would have nowhere to land.
+  // True only for the Connect-button flow, which also starts the
+  // callback listener. Other providers pass false: they throw instead
+  // of opening a browser, since no listener is running to catch the
+  // redirect.
   allowInteractive?: boolean;
 }
 
@@ -143,12 +130,10 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly preregisteredClientSecret: string | undefined;
   private readonly flowState: string | undefined;
   private readonly allowInteractive: boolean;
-  // In-memory mirror of the most recently-read clientInformation.
-  // The SDK's token-exchange / refresh paths call
-  // `addClientAuthentication` WITHOUT awaiting it, so it must read
-  // client info synchronously -- a DB round-trip there would let the
-  // token request fire before `client_id` is in the body. Both
-  // `clientInformation()` and `saveClientInformation()` populate this.
+  // Client info kept in memory. The SDK calls `addClientAuthentication`
+  // without awaiting it, so that method can't do an async DB read --
+  // it uses this instead. Set by `clientInformation()` and
+  // `saveClientInformation()`.
   private cachedClientInformation: OAuthClientInformation | undefined;
 
   constructor(config: ProviderConfig) {
@@ -161,9 +146,8 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     this.allowInteractive = config.allowInteractive ?? false;
   }
 
-  // Surfaced to the SDK when it builds the authorize URL. Returns ""
-  // when no flow state is configured, so the SDK's truthy check omits
-  // the `state=` parameter.
+  // The SDK reads this when building the authorize URL. Returns ""
+  // when no state is set, so the SDK leaves `state=` off.
   state(): string {
     return this.flowState ?? "";
   }
@@ -173,10 +157,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    // Auth method follows whether a client_secret was supplied:
-    // "client_secret_post" for confidential clients, public PKCE
-    // ("none") otherwise. Declaring the wrong one makes the server
-    // reject the token exchange with invalid_client.
+    // Pick the auth method from whether we have a client_secret:
+    // "client_secret_post" if so, "none" (plain PKCE) otherwise. The
+    // wrong choice makes the server reject the token exchange.
     const tokenEndpointAuthMethod = this.preregisteredClientSecret
       ? "client_secret_post"
       : "none";
@@ -207,12 +190,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       this.cachedClientInformation = state.clientInformation;
       return state.clientInformation;
     }
-    // First-use seed for pre-registered (non-DCR) servers. Returning
-    // a non-undefined value here is what tells the SDK to skip the
-    // `/register` round-trip. Persisting alongside the return so an
-    // eventual `saveClientInformation` from DCR (e.g. user later
-    // clears the column) lives in the same `oauth_state` blob and the
-    // read path doesn't have to branch on which source wins.
+    // If the user gave us a client ID, return it on first read so the
+    // SDK skips its `/register` call. Saved too, so later reads just
+    // load it from storage.
     if (this.preregisteredClientId) {
       const seeded: OAuthClientInformation = {
         client_id: this.preregisteredClientId,
@@ -231,10 +211,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   async saveClientInformation(
     clientInformation: OAuthClientInformation,
   ): Promise<void> {
-    // Cache synchronously BEFORE the DB write returns -- the SDK's
-    // exchangeAuthorization path may invoke addClientAuthentication
-    // without yielding, and that path needs `cachedClientInformation`
-    // populated.
+    // Update the in-memory copy before the DB write -- the SDK may
+    // call `addClientAuthentication` (which reads it) before this
+    // returns.
     this.cachedClientInformation = clientInformation;
     const state = await readState(this.serverId);
     state.clientInformation = clientInformation;
@@ -256,9 +235,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    // Ambient providers refuse here so the SDK surfaces
-    // `UnauthorizedError` instead of opening a browser whose redirect
-    // has no listener bound. See the `allowInteractive` config field.
+    // Only the Connect-button flow opens a browser. Other providers
+    // throw here -- no callback listener is running, so a redirect
+    // would have nowhere to land. See `allowInteractive`.
     if (!this.allowInteractive) {
       throw new Error(
         "OAuth not currently allowed (interactive consent required; click Connect on the server row).",
@@ -270,11 +249,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     await shell.openExternal(authorizationUrl.toString());
   }
 
-  // Synchronous arrow-function field. Arrow so `this` survives when
-  // the SDK passes it around as a bare function reference.
-  // Synchronous because the SDK invokes it without `await` -- yielding
-  // on a DB read here would let the token POST fire before `client_id`
-  // is in `params`, so it reads `cachedClientInformation` directly.
+  // Arrow field so `this` still works when the SDK calls it as a
+  // loose function. Stays synchronous: the SDK doesn't await it, so it
+  // reads `cachedClientInformation` instead of doing an async DB read.
   addClientAuthentication = (
     headers: Headers,
     params: URLSearchParams,
@@ -331,8 +308,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 }
 
-// Test seam: lets unit tests clear the per-process code-verifier map
-// without spinning up the whole provider lifecycle.
+// Test helper: clears the in-memory code-verifier map.
 export function _resetCodeVerifiersForTest(): void {
   codeVerifiers.clear();
 }

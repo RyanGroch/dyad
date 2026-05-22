@@ -52,13 +52,9 @@ export function useMcp() {
       );
       return Object.fromEntries(entries) as Record<number, McpTool[]>;
     },
-    // The query key includes the full list of `serverIds`, so adding
-    // (or removing) a server changes the key and React Query would
-    // otherwise treat it as a brand-new query -- with no cached data,
-    // the UI renders empty state for ALL servers until the new query
-    // resolves. `keepPreviousData` shows the prior key's results
-    // until the new key resolves, so the existing servers' tools
-    // stay visible while the newly-added server's tools load.
+    // `serverIds` is part of the query key, so adding/removing a
+    // server makes React Query see a brand-new query. keepPreviousData
+    // keeps existing servers' tools visible while the new key loads.
     placeholderData: keepPreviousData,
     meta: { showErrorToast: true },
   });

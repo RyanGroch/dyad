@@ -21,9 +21,8 @@ import {
 
 const logger = log.scope("mcp_handlers");
 
-// Project a DB row into the renderer-bound shape. Omits the encrypted
-// `oauthState` / `oauthClientSecret` columns; connection status is
-// surfaced as the derived `oauthConnected` boolean.
+// Convert a DB row into the shape sent to the UI. Drops the encrypted
+// `oauthState` / `oauthClientSecret`; sends `oauthConnected` instead.
 function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
   return {
     id: dbServer.id,
@@ -36,10 +35,9 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     url: dbServer.url,
     enabled: dbServer.enabled,
     oauthEnabled: dbServer.oauthEnabled,
-    // `oauthState` alone isn't enough: an ambient transport build can
-    // persist `clientInformation` (via DCR) before tokens land, which
-    // would otherwise flip this to true. `oauthStateHasTokens` checks
-    // for usable access tokens specifically.
+    // `oauthState` being set isn't enough -- it can hold just a
+    // registered client ID before any tokens exist.
+    // `oauthStateHasTokens` checks for a real access token.
     oauthConnected: oauthStateHasTokens(dbServer.oauthState),
     createdAt: dbServer.createdAt,
     updatedAt: dbServer.updatedAt,
@@ -99,9 +97,6 @@ export function registerMcpHandlers() {
         enabled: !!enabled,
         oauthEnabled: !!oauthEnabled,
         oauthClientId: oauthClientId ?? null,
-        // Encrypt the plaintext client_secret at the IPC boundary so
-        // it never lives in the row payload that gets logged /
-        // serialized later in this process.
         oauthClientSecret: oauthClientSecret
           ? encryptToString(oauthClientSecret)
           : null,
@@ -117,11 +112,7 @@ export function registerMcpHandlers() {
     if (params.transport !== undefined) update.transport = params.transport;
     if (params.command !== undefined) update.command = params.command;
     if (params.args !== undefined)
-      update.args = params.args
-        ? typeof params.args === "string"
-          ? JSON.parse(params.args)
-          : params.args
-        : null;
+      update.args = params.args ? JSON.parse(params.args) : null;
     if (params.envJson !== undefined)
       update.envJson = params.envJson
         ? typeof params.envJson === "string"
@@ -161,13 +152,10 @@ export function registerMcpHandlers() {
 
   // Tools listing (dynamic)
   createTypedHandler(mcpContracts.listTools, async (_, serverId) => {
-    // Bounded wait per server. The renderer batches all servers'
-    // listTools calls into one query and waits for every server to
-    // settle before rendering -- so any single hung server (commonly
-    // an unconnected OAuth-gated host whose transport doesn't error
-    // out promptly) would otherwise freeze the entire tools list.
-    // This ceiling caps the worst case at LIST_TOOLS_TIMEOUT_MS per
-    // server. Proper fix is per-server queries (follow-up).
+    // Bounded wait per server: the renderer waits for every server's
+    // listTools to settle before rendering, so one hung server (often
+    // an unconnected OAuth-gated host) would otherwise freeze the
+    // whole tools list. This ceiling caps the worst case.
     const LIST_TOOLS_TIMEOUT_MS = 8_000;
     try {
       const result = await Promise.race([

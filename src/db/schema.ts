@@ -255,20 +255,17 @@ export const mcpServers = sqliteTable("mcp_servers", {
   oauthEnabled: integer("oauth_enabled", { mode: "boolean" })
     .notNull()
     .default(sql`0`),
-  // Encrypted OAuth state (access token, refresh token, expiry, client
-  // info) for this server. Encrypted via Electron `safeStorage` before
-  // write; never holds plaintext at rest. Shape is opaque JSON; only
-  // the `DyadOAuthClientProvider` reads / writes it.
+  // OAuth state (tokens, expiry, client info). Encrypted via Electron
+  // `safeStorage`, or base64 plaintext where no keyring is available
+  // (see encryptToString). Read/written only by DyadOAuthClientProvider.
   oauthState: text("oauth_state"),
   // Optional pre-registered OAuth client_id for servers that do NOT
   // support dynamic client registration (RFC 7591). User-supplied via
   // the add-server UI; left blank for servers that support DCR.
   oauthClientId: text("oauth_client_id"),
   // Optional pre-registered OAuth client_secret for confidential
-  // clients. Encrypted at rest via Electron `safeStorage` -- the
-  // column stores the base64-encoded encrypted blob, NEVER plaintext.
-  // Never sent to the renderer; decrypted only inside the
-  // main-process OAuth flow.
+  // clients. Encrypted via `safeStorage` (base64 plaintext fallback
+  // where no keyring exists). Never sent to the renderer.
   oauthClientSecret: text("oauth_client_secret"),
   // Space-separated OAuth scopes requested at the authorize endpoint.
   // Server-defined values; check provider docs. Blank means omit the

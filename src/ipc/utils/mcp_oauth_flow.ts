@@ -13,11 +13,9 @@ import { mcpManager } from "./mcp_manager";
 
 const logger = log.scope("mcp_oauth_flow");
 
-// Hard cap on how long we'll keep the loopback listener open waiting
-// for the user to complete the browser-side consent. Beyond this we
-// tear the listener down and surface an error -- otherwise a user who
-// closes the tab silently would leak both the listener and the
-// pending promise indefinitely.
+// Cap on how long the loopback listener waits for browser-side
+// consent. Past this, tear it down and error out -- otherwise a
+// closed tab would leak the listener indefinitely.
 const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface PendingFlow {
@@ -47,16 +45,9 @@ function generateState(): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
-// The hosts we attempt to bind the callback listener to. We have to
-// bind BOTH IPv4 and IPv6 loopback addresses because modern OS
-// resolvers (and browsers) often return `::1` first for `localhost`
-// while the OAuth `redirect_uri` registered with the server is
-// `http://localhost:<port>/callback`. Binding only `127.0.0.1` then
-// has the browser hit `[::1]:<port>` -> nothing listening -> the user
-// sees "connection refused" right after consent. We accept partial
-// success (e.g. IPv6 disabled in the kernel) as long as at least one
-// stack bound; the redirect will then reach whichever one the
-// browser's resolver picks.
+// Bind both IPv4 and IPv6 loopback: `localhost` often resolves to
+// `::1` first, so a `127.0.0.1`-only listener would miss the browser's
+// callback. Partial success is fine -- one bound stack is enough.
 const LOOPBACK_BIND_HOSTS = ["127.0.0.1", "::1"] as const;
 
 async function startCallbackListener(
@@ -214,11 +205,9 @@ interface RunOAuthFlowParams {
 }
 
 /**
- * Drive the full OAuth dance against a configured MCP server. Returns
- * `{success: true}` when tokens land in storage and the `mcpServers`
- * row reflects the connection. Errors are surfaced as
- * `{success: false, error: <msg>}` rather than thrown so the renderer
- * can render them inline without crashing the IPC channel.
+ * Drive the full OAuth flow for a configured MCP server. Validation
+ * and flow failures return `{success: false, error}` so the renderer
+ * can show the message inline.
  */
 export async function runOAuthFlow(
   params: RunOAuthFlowParams,
