@@ -21,9 +21,9 @@ import {
 
 const logger = log.scope("mcp_handlers");
 
-// Project a DB row into the renderer-bound shape. Drops `oauthState`
-// and `oauthClientSecret`, replacing them with the derived booleans
-// the UI actually needs.
+// Project a DB row into the renderer-bound shape. Omits the encrypted
+// `oauthState` / `oauthClientSecret` columns; connection status is
+// surfaced as the derived `oauthConnected` boolean.
 function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
   return {
     id: dbServer.id,

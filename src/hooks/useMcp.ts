@@ -39,13 +39,11 @@ export function useMcp() {
     enabled: serverIds.length > 0,
     queryFn: async () => {
       // Promise.allSettled (not all) so one server's listTools
-      // rejection doesn't poison the batch. Without this, an
-      // unconnected OAuth-gated server (e.g. just-added Sentry whose
-      // transport hangs on the 401 -> auth() refusal loop) would
-      // hold all the other servers' tools hostage and the UI would
-      // render empty for every server until the slow one resolves.
-      // The handler-side timeout caps the worst case at a few
-      // seconds; this is the renderer-side safety net.
+      // rejection doesn't poison the batch -- an unconnected
+      // OAuth-gated server can hang on its 401 path, which would
+      // otherwise hold every other server's tools hostage. The
+      // handler-side timeout caps the worst case; this is the
+      // renderer-side safety net.
       const settled = await Promise.allSettled(
         serverIds.map(async (id) => [id, await ipc.mcp.listTools(id)] as const),
       );

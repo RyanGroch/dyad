@@ -263,12 +263,7 @@ export async function runOAuthFlow(
     scope,
     preregisteredClientId: s.oauthClientId ?? undefined,
     preregisteredClientSecret: decryptedClientSecret,
-    // Per-flow CSRF state value. Surfaced via `provider.state()`;
-    // verified on the loopback callback against the same value.
     flowState: expectedState,
-    // Only THIS flow path stood up a loopback listener, so it's the
-    // only one allowed to actually open the system browser. The
-    // `mcp_manager`-built providers default to non-interactive.
     allowInteractive: true,
   });
 
@@ -286,10 +281,9 @@ export async function runOAuthFlow(
 
   try {
     // First call kicks off discovery / DCR if needed and opens the
-    // browser via our provider's `redirectToAuthorization`. Returns
-    // 'REDIRECT' when interactive consent is required. The `scope`
-    // here lands in the authorize URL's `scope=` query parameter --
-    // load-bearing for providers that require it.
+    // browser via the provider's `redirectToAuthorization`. Returns
+    // 'REDIRECT' when interactive consent is required, 'AUTHORIZED'
+    // when a silent refresh already succeeded.
     const initial = await auth(provider, {
       serverUrl: s.url,
       scope,

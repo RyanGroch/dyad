@@ -12,10 +12,7 @@ import { mcpServers } from "../../db/schema";
 
 const logger = log.scope("mcp_oauth_provider");
 
-// Default loopback port for the OAuth callback listener. Overridable
-// per provider construction so users who pre-registered an OAuth app
-// against a different localhost port can configure it without code
-// changes.
+// Default loopback port for the OAuth callback listener.
 export const DEFAULT_OAUTH_CALLBACK_PORT = 53682;
 
 // Stored shape of `oauth_state` (after decryption). Both fields are
@@ -30,18 +27,11 @@ interface StoredOAuthState {
 // ensures they die with the process even if the DB file leaks.
 const codeVerifiers = new Map<number, string>();
 
-// Exported so `mcp_handlers` / `mcp_oauth_flow` can encrypt the
-// `oauth_client_secret` column at the boundary without re-implementing
-// the safeStorage fallback. Same byte shape as the `oauth_state`
-// column so existing diagnostics treat both consistently.
 export function encryptToString(plaintext: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     // Platforms without a configured keyring (e.g. Linux without
-    // libsecret) fall through to plaintext. We log a warning so the
-    // user knows their tokens are stored as plaintext; refusing
-    // outright would prevent OAuth from working at all on those
-    // setups, which is a worse UX. A future flag could let users
-    // opt out of the fallback.
+    // libsecret) fall through to plaintext rather than refusing,
+    // which would block OAuth entirely on those setups.
     logger.warn(
       "safeStorage encryption unavailable; OAuth state written as plaintext",
     );
@@ -125,13 +115,8 @@ interface ProviderConfig {
   // `clientInformation` on first use so `auth()` skips the `/register`
   // step entirely.
   preregisteredClientId?: string;
-  // Pre-registered client_secret for confidential OAuth clients (e.g.
-  // GitHub OAuth Apps, Spotify, Reddit). Only meaningful alongside
-  // `preregisteredClientId`. When present, `clientMetadata` declares
-  // `token_endpoint_auth_method: "client_secret_post"` and
-  // `addClientAuthentication` sends both id + secret on the token
-  // exchange; when absent, the provider behaves as a public PKCE
-  // client as before.
+  // Pre-registered client_secret for confidential OAuth clients. Only
+  // meaningful alongside `preregisteredClientId`.
   preregisteredClientSecret?: string;
   // Per-flow CSRF state. Surfaced via `state()` so the SDK puts it
   // in the authorize URL; the loopback listener verifies the same
@@ -158,17 +143,12 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly preregisteredClientSecret: string | undefined;
   private readonly flowState: string | undefined;
   private readonly allowInteractive: boolean;
-  // In-memory mirror of the most recently-read clientInformation so
-  // `addClientAuthentication` can be invoked SYNCHRONOUSLY without
-  // re-hitting the database. The SDK's exchangeAuthorization /
-  // refreshAuthorization paths call `addClientAuthentication(...)`
-  // WITHOUT awaiting its return value (see @ai-sdk/mcp index.js:807):
-  // if our method yields on a DB read, the SDK fires the token
-  // request with no client_id in the body, and the upstream OAuth
-  // server rejects with `invalid_client: "Client ID is required"`.
-  // Always populate this cache before `addClientAuthentication`
-  // could be called -- both `clientInformation()` and
-  // `saveClientInformation()` write to it.
+  // In-memory mirror of the most recently-read clientInformation.
+  // The SDK's token-exchange / refresh paths call
+  // `addClientAuthentication` WITHOUT awaiting it, so it must read
+  // client info synchronously -- a DB round-trip there would let the
+  // token request fire before `client_id` is in the body. Both
+  // `clientInformation()` and `saveClientInformation()` populate this.
   private cachedClientInformation: OAuthClientInformation | undefined;
 
   constructor(config: ProviderConfig) {
@@ -181,13 +161,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     this.allowInteractive = config.allowInteractive ?? false;
   }
 
-  // The SDK calls `provider.state()` (if present) when building the
-  // authorize URL. Real method on the prototype so it survives
-  // through any bundling -- earlier attempt to assign this property
-  // dynamically after construction silently failed in the prod
-  // bundle, producing URLs without a `state` parameter. Returns
-  // empty string when no flow state is configured so the SDK's
-  // truthy check skips the `state=` parameter in that case.
+  // Surfaced to the SDK when it builds the authorize URL. Returns ""
+  // when no flow state is configured, so the SDK's truthy check omits
+  // the `state=` parameter.
   state(): string {
     return this.flowState ?? "";
   }
@@ -197,14 +173,10 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
-    // Declare auth method based on whether the user supplied a
-    // `client_secret`. Default is public PKCE ("none"); declaring
-    // "client_secret_post" on a public client misleads DCR servers
-    // into expecting a secret on the token exchange and rejecting
-    // with invalid_client. For confidential clients (e.g. GitHub
-    // OAuth Apps) the opposite is true: declaring "none" while
-    // sending a secret would also confuse the server. Pick based
-    // on stored state.
+    // Auth method follows whether a client_secret was supplied:
+    // "client_secret_post" for confidential clients, public PKCE
+    // ("none") otherwise. Declaring the wrong one makes the server
+    // reject the token exchange with invalid_client.
     const tokenEndpointAuthMethod = this.preregisteredClientSecret
       ? "client_secret_post"
       : "none";
@@ -284,16 +256,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    // Only the explicit Connect-button flow (via `runOAuthFlow`)
-    // sets `allowInteractive: true`, because only that path stands
-    // up the loopback callback listener. Providers constructed by
-    // `mcp_manager` for ambient use (transport build during list-
-    // tools, on-demand tool calls, etc.) MUST NOT open a browser --
-    // any redirect would land at a localhost port with nothing
-    // listening, producing the user-facing "localhost can't connect"
-    // failure. Refuse the redirect here so the SDK surfaces an
-    // `UnauthorizedError` to the caller, which the UI renders as a
-    // "not connected" badge and prompts the user to click Connect.
+    // Ambient providers refuse here so the SDK surfaces
+    // `UnauthorizedError` instead of opening a browser whose redirect
+    // has no listener bound. See the `allowInteractive` config field.
     if (!this.allowInteractive) {
       throw new Error(
         "OAuth not currently allowed (interactive consent required; click Connect on the server row).",
@@ -305,19 +270,11 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     await shell.openExternal(authorizationUrl.toString());
   }
 
-  // SYNCHRONOUS arrow-function field. Two binding considerations
-  // baked in:
-  //   1. The SDK passes this around as a bare function reference
-  //      (`addClientAuthentication: provider.addClientAuthentication`)
-  //      and invokes it without going through the receiver. Arrow-
-  //      function field => `this` is captured lexically and survives.
-  //   2. The SDK invokes it WITHOUT `await`
-  //      (@ai-sdk/mcp index.js:807). If the function is async and
-  //      yields on a DB read, the SDK fires the token-endpoint POST
-  //      before client_id lands in `params`, and the upstream server
-  //      rejects with `invalid_client: Client ID is required`. So we
-  //      read `cachedClientInformation` synchronously instead of
-  //      awaiting `this.clientInformation()`.
+  // Synchronous arrow-function field. Arrow so `this` survives when
+  // the SDK passes it around as a bare function reference.
+  // Synchronous because the SDK invokes it without `await` -- yielding
+  // on a DB read here would let the token POST fire before `client_id`
+  // is in `params`, so it reads `cachedClientInformation` directly.
   addClientAuthentication = (
     headers: Headers,
     params: URLSearchParams,
@@ -349,7 +306,6 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
       return;
     }
 
-    // Public PKCE client: no secret to send, just the client_id.
     params.set("client_id", info.client_id);
   };
 
