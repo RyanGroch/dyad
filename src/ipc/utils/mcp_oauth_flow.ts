@@ -23,7 +23,14 @@ const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 interface PendingFlow {
   reject: (err: Error) => void;
   servers: Server[];
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
+}
+
+// Returned by startCallbackListener: the awaited code, plus a dispose
+// that tears down only this flow's own listener.
+interface CallbackListener {
+  code: Promise<string>;
+  dispose: () => void;
 }
 
 // At most one OAuth flow per port at a time. Concurrent flows on the
@@ -55,20 +62,14 @@ const LOOPBACK_BIND_HOSTS = ["127.0.0.1", "::1"] as const;
 async function startCallbackListener(
   port: number,
   expectedState: string,
-): Promise<string> {
-  // Supersede any flow already pending on this port -- the user has
-  // visibly clicked Connect again, so the older flow is dead from
-  // their perspective. Reject the old promise so its `runOAuthFlow`
-  // catches cleanly and disposes its provider state, then WAIT for
-  // the sockets to actually finish closing before binding the new
-  // listener (otherwise the new bind would race the old close and
-  // either silently inherit the dangling socket or EADDRINUSE).
+): Promise<CallbackListener> {
+  // Supersede any flow already pending on this port (user clicked
+  // Connect again). Reject the old promise, then wait for its sockets
+  // to finish closing before the new listener binds.
   const existing = pendingFlows.get(port);
   if (existing) {
-    logger.info(
-      `Superseding stale OAuth flow on port ${port} (new Connect attempt)`,
-    );
-    clearTimeout(existing.timeout);
+    logger.info(`Superseding stale OAuth flow on port ${port}`);
+    if (existing.timeout) clearTimeout(existing.timeout);
     pendingFlows.delete(port);
     existing.reject(
       new Error("OAuth flow superseded by a new Connect attempt."),
@@ -77,8 +78,6 @@ async function startCallbackListener(
       existing.servers.map(
         (s) =>
           new Promise<void>((resolveClose) => {
-            // `close` won't fire if the server already errored / never
-            // bound -- guard against indefinite hang.
             s.close(() => resolveClose());
             setTimeout(() => resolveClose(), 500);
           }),
@@ -86,20 +85,23 @@ async function startCallbackListener(
     );
   }
 
-  return new Promise<string>((resolve, reject) => {
-    const servers: Server[] = [];
+  const flow: PendingFlow = { reject: () => {}, servers: [], timeout: null };
+  let disposed = false;
 
-    const closeAll = () => {
-      for (const s of servers) s.close();
-    };
+  // Tears down only this flow's resources; drops the map entry only
+  // while it still belongs to this flow.
+  const dispose = (): void => {
+    disposed = true;
+    if (flow.timeout) clearTimeout(flow.timeout);
+    for (const s of flow.servers) s.close();
+    if (pendingFlows.get(port) === flow) pendingFlows.delete(port);
+  };
+
+  const code = new Promise<string>((resolve, reject) => {
+    flow.reject = reject;
 
     const settle = (fn: () => void) => {
-      const pending = pendingFlows.get(port);
-      if (pending) {
-        clearTimeout(pending.timeout);
-        pendingFlows.delete(port);
-      }
-      closeAll();
+      dispose();
       fn();
     };
 
@@ -173,6 +175,12 @@ async function startCallbackListener(
 
     Promise.all(LOOPBACK_BIND_HOSTS.map(tryBind)).then((bindResults) => {
       const bound = bindResults.filter((s): s is Server => s !== null);
+      // Disposed before the bind resolved (e.g. silent-refresh path):
+      // close the sockets and never register.
+      if (disposed) {
+        for (const s of bound) s.close();
+        return;
+      }
       if (bound.length === 0) {
         reject(
           new Error(
@@ -181,27 +189,23 @@ async function startCallbackListener(
         );
         return;
       }
-      servers.push(...bound);
-
-      const timeout = setTimeout(() => {
-        const pending = pendingFlows.get(port);
-        if (pending) {
-          pendingFlows.delete(port);
-          closeAll();
-          reject(
-            new Error(
-              `OAuth flow timed out after ${OAUTH_FLOW_TIMEOUT_MS / 1000}s. Did you close the browser tab?`,
-            ),
-          );
-        }
+      flow.servers.push(...bound);
+      flow.timeout = setTimeout(() => {
+        dispose();
+        reject(
+          new Error(
+            `OAuth flow timed out after ${OAUTH_FLOW_TIMEOUT_MS / 1000}s. Did you close the browser tab?`,
+          ),
+        );
       }, OAUTH_FLOW_TIMEOUT_MS);
-
-      pendingFlows.set(port, { reject, servers, timeout });
+      pendingFlows.set(port, flow);
       logger.info(
         `OAuth callback listener bound on http://localhost:${port} (${bound.length} stack${bound.length === 1 ? "" : "s"})`,
       );
     });
   });
+
+  return { code, dispose };
 }
 
 interface RunOAuthFlowParams {
@@ -267,41 +271,28 @@ export async function runOAuthFlow(
     allowInteractive: true,
   });
 
-  // Start the listener BEFORE calling `auth()` -- `auth()` opens the
-  // browser via `redirectToAuthorization`, and the user may complete
-  // consent extremely quickly. We don't want a race where the
-  // callback arrives before the listener is ready.
-  const codePromise = startCallbackListener(callbackPort, expectedState);
-  // Attach a no-op handler synchronously so an early rejection (e.g.
-  // bind failure on both stacks) doesn't sit unhandled during the
-  // long `await auth()` that follows. The real rejection still
-  // propagates through `await codePromise` below; this side-handler
-  // exists only to silence Node's unhandledRejection warning.
-  codePromise.catch(() => undefined);
+  // Start the listener before `auth()` -- `auth()` opens the browser
+  // and the callback can arrive before a later bind would be ready.
+  const listener = await startCallbackListener(callbackPort, expectedState);
+  // Side-handler so an early bind-failure rejection isn't unhandled
+  // during the long `await auth()`; the real rejection still
+  // propagates through `await listener.code` below.
+  listener.code.catch(() => undefined);
 
   try {
-    // First call kicks off discovery / DCR if needed and opens the
-    // browser via the provider's `redirectToAuthorization`. Returns
-    // 'REDIRECT' when interactive consent is required, 'AUTHORIZED'
-    // when a silent refresh already succeeded.
+    // First call kicks off discovery / DCR and opens the browser.
+    // Returns 'AUTHORIZED' when a silent refresh already succeeded.
     const initial = await auth(provider, {
       serverUrl: s.url,
       scope,
     });
     if (initial === "AUTHORIZED") {
-      // Tokens were still valid (refresh succeeded silently). Nothing
-      // more to do; tear the listener(s) down.
-      const pending = pendingFlows.get(callbackPort);
-      if (pending) {
-        clearTimeout(pending.timeout);
-        for (const sv of pending.servers) sv.close();
-        pendingFlows.delete(callbackPort);
-      }
+      listener.dispose();
       mcpManager.dispose(s.id);
       return { success: true, error: null };
     }
 
-    const code = await codePromise;
+    const code = await listener.code;
     const final = await auth(provider, {
       serverUrl: s.url,
       authorizationCode: code,
@@ -314,19 +305,11 @@ export async function runOAuthFlow(
       };
     }
 
-    // Force the cached MCP client to rebuild on next use so it picks
-    // up the new tokens via the provider.
+    // Rebuild the cached MCP client so it picks up the new tokens.
     mcpManager.dispose(s.id);
     return { success: true, error: null };
   } catch (err) {
-    // Clean up the listener(s) if `auth()` threw before the callback
-    // arrived (network failure, discovery 4xx, etc).
-    const pending = pendingFlows.get(callbackPort);
-    if (pending) {
-      clearTimeout(pending.timeout);
-      for (const sv of pending.servers) sv.close();
-      pendingFlows.delete(callbackPort);
-    }
+    listener.dispose();
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(`OAuth flow failed for server ${s.id}: ${message}`);
     return { success: false, error: message };

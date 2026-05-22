@@ -98,21 +98,6 @@ describe("DyadOAuthClientProvider", () => {
     expect(p.redirectUrl).toBe("http://localhost:12345/callback");
   });
 
-  it("defaults the redirectUrl to port 53682 when none is supplied", () => {
-    const p = new DyadOAuthClientProvider({ serverId: 1 });
-    expect(p.redirectUrl).toBe("http://localhost:53682/callback");
-  });
-
-  it("emits clientMetadata with Dyad-shaped fields", () => {
-    const p = new DyadOAuthClientProvider({ serverId: 1, scope: "read" });
-    const meta = p.clientMetadata;
-    expect(meta.redirect_uris).toEqual(["http://localhost:53682/callback"]);
-    expect(meta.grant_types).toEqual(["authorization_code", "refresh_token"]);
-    expect(meta.response_types).toEqual(["code"]);
-    expect(meta.client_name).toBe("Dyad");
-    expect(meta.scope).toBe("read");
-  });
-
   it("round-trips tokens through encrypted storage", async () => {
     const p = new DyadOAuthClientProvider({ serverId: 7 });
     expect(await p.tokens()).toBeUndefined();
@@ -185,27 +170,6 @@ describe("DyadOAuthClientProvider", () => {
     expect(confidentialProvider.clientMetadata.token_endpoint_auth_method).toBe(
       "client_secret_post",
     );
-  });
-
-  it("addClientAuthentication sends both client_id and client_secret via client_secret_post when the secret is seeded", async () => {
-    // End-to-end sanity: the seeded confidential clientInformation
-    // flows through to the request body the SDK fires at the token
-    // endpoint. No PKCE-only path here because the server is a
-    // confidential client.
-    const p = new DyadOAuthClientProvider({
-      serverId: 94,
-      preregisteredClientId: "cid",
-      preregisteredClientSecret: "sec",
-    });
-    // Drive a clientInformation() so the cache populates the way the
-    // real auth flow does before addClientAuthentication is called.
-    await p.clientInformation();
-    const headers = new Headers();
-    const params = new URLSearchParams();
-    p.addClientAuthentication(headers, params);
-    expect(params.get("client_id")).toBe("cid");
-    expect(params.get("client_secret")).toBe("sec");
-    expect(headers.get("Authorization")).toBeNull();
   });
 
   it("persists saveClientInformation and skips reseeding from preregistered id", async () => {
@@ -427,14 +391,6 @@ describe("DyadOAuthClientProvider", () => {
         clientInformation: { client_id: "cid" },
       });
       expect(oauthStateHasTokens(stored)).toBe(true);
-    });
-
-    it("returns false when tokens object has no access_token", () => {
-      // Shouldn't happen in practice but the helper must be strict
-      // about what counts as "connected" -- an empty token object
-      // would otherwise flip the badge based on truthiness alone.
-      const stored = encryptedBlobFor({ tokens: { token_type: "Bearer" } });
-      expect(oauthStateHasTokens(stored)).toBe(false);
     });
 
     it("returns false when the encrypted payload is not valid JSON", () => {

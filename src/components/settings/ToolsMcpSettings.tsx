@@ -400,9 +400,9 @@ export function ToolsMcpSettings() {
     try {
       const result = await startOAuth({ serverId });
       if (!result.success) {
-        showInfo(result.error ?? "OAuth flow failed");
+        showError(result.error ?? "OAuth flow failed");
       } else {
-        showInfo("OAuth connection successful");
+        showSuccess("OAuth connection successful");
       }
     } finally {
       setConnectingServerId(null);
@@ -410,11 +410,13 @@ export function ToolsMcpSettings() {
   };
 
   const onDisconnect = async (serverId: number) => {
-    await disconnectOAuth(serverId);
-    showInfo("Disconnected OAuth");
+    const result = await disconnectOAuth(serverId);
+    if (result.success) {
+      showSuccess("Disconnected OAuth");
+    } else {
+      showError("Failed to disconnect OAuth");
+    }
   };
-
-  // Removed activation toggling – tools are used dynamically with consent checks
 
   const onSetToolConsent = async (
     serverId: number,
@@ -594,7 +596,7 @@ export function ToolsMcpSettings() {
                   <Button
                     variant="default"
                     onClick={() => onConnect(s.id)}
-                    disabled={isStartingOAuth && connectingServerId === s.id}
+                    disabled={isStartingOAuth}
                   >
                     {isStartingOAuth && connectingServerId === s.id
                       ? "Connecting…"

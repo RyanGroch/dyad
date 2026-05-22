@@ -715,20 +715,6 @@ app.on("open-url", (event, url) => {
   deepLinkQueue.handle(url);
 });
 
-// Silence the specific undici `TypeError: terminated` rejection that
-// escapes MCP's SSE/HTTP fetch when we dispose the cached client
-// mid-stream. The abort is intentional; the rejection is benign but
-// otherwise pollutes the logs on every dispose. Anything else stays
-// at error level so real escaped rejections remain visible.
-process.on("unhandledRejection", (reason) => {
-  const logger = log.scope("unhandled-rejection");
-  if (reason instanceof TypeError && /terminated/i.test(reason.message)) {
-    logger.debug(`Suppressed benign undici abort: ${reason.message}`);
-    return;
-  }
-  logger.error(reason);
-});
-
 function startAppWhenReady() {
   app.whenReady().then(onReady);
 }

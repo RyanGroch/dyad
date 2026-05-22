@@ -112,7 +112,7 @@ export function registerMcpHandlers() {
   });
 
   createTypedHandler(mcpContracts.updateServer, async (_, params) => {
-    const update: any = {};
+    const update: Partial<typeof mcpServers.$inferInsert> = {};
     if (params.name !== undefined) update.name = params.name;
     if (params.transport !== undefined) update.transport = params.transport;
     if (params.command !== undefined) update.command = params.command;
@@ -122,7 +122,6 @@ export function registerMcpHandlers() {
           ? JSON.parse(params.args)
           : params.args
         : null;
-    if (params.cwd !== undefined) update.cwd = params.cwd;
     if (params.envJson !== undefined)
       update.envJson = params.envJson
         ? typeof params.envJson === "string"
@@ -143,7 +142,9 @@ export function registerMcpHandlers() {
       .set(update)
       .where(eq(mcpServers.id, params.id))
       .returning();
-    // If server config changed, dispose cached client to be recreated on next use
+    if (!result[0]) throw new Error(`MCP server not found: ${params.id}`);
+    // Config may have changed; dispose the cached client so the next
+    // use rebuilds the transport with the updated row.
     try {
       mcpManager.dispose(params.id);
     } catch {}
