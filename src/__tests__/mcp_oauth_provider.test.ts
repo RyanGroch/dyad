@@ -216,11 +216,9 @@ describe("DyadOAuthClientProvider", () => {
   });
 
   it("refuses to open the browser when allowInteractive is not set", async () => {
-    // Providers built by `mcp_manager` for ambient use must fail
-    // closed rather than open a browser whose redirect would land at
-    // a loopback port with nothing listening. The thrown error gets
-    // surfaced as `UnauthorizedError` by the SDK and rendered as
-    // "not connected" in the UI.
+    // Background providers (built by `mcp_manager`) must throw here
+    // instead of opening a browser whose redirect has nowhere to
+    // land. The error propagates out and the row shows "not connected".
     const p = new DyadOAuthClientProvider({ serverId: 1 });
     await expect(
       p.redirectToAuthorization(new URL("https://example.com/authorize")),
@@ -363,11 +361,9 @@ describe("DyadOAuthClientProvider", () => {
   });
 
   describe("oauthStateHasTokens", () => {
-    // The "OAuth: connected" UI badge derives from this helper. A
-    // non-null `oauth_state` column is NOT proof of a usable
-    // connection: ambient transport builds can persist
-    // `clientInformation` (via DCR) before tokens land, and a row
-    // carrying only client info would otherwise flip the badge.
+    // The "OAuth: connected" badge derives from this helper. A
+    // non-empty `oauth_state` is NOT proof of a connection -- it can
+    // hold just a registered client ID with no tokens yet.
     function encryptedBlobFor(payload: object): string {
       return Buffer.from(`enc:${JSON.stringify(payload)}`, "utf8").toString(
         "base64",

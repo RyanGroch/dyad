@@ -285,7 +285,6 @@ export async function runOAuthFlow(
     const final = await auth(provider, {
       serverUrl: s.url,
       authorizationCode: code,
-      scope,
     });
     if (final !== "AUTHORIZED") {
       return {

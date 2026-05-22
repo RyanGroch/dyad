@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // --- ipcMain capture ----------------------------------------------------
 const handlers = new Map<string, (event: unknown, input: unknown) => unknown>();
 
-// --- DB mock (mcp_servers rows + the last update() payload) -------------
+// --- DB mock (in-memory mcp_servers rows) ------------------------------
 type Row = {
   id: number;
   name: string;
@@ -25,9 +25,6 @@ type Row = {
   enabled: boolean;
   oauthEnabled: boolean;
   oauthState: string | null;
-  oauthClientId: string | null;
-  oauthClientSecret: string | null;
-  oauthScope: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -44,18 +41,11 @@ vi.mock("electron", () => ({
       handlers.set(channel, fn);
     },
   },
-  // `mcp_oauth_provider` is imported transitively (for
-  // `oauthStateHasTokens`). Provide enough of the electron surface to
-  // satisfy that module even though we never drive the OAuth flow
-  // from these handler tests.
-  shell: { openExternal: vi.fn() },
+  // The createServer client-secret tests call `encryptToString` (in
+  // mcp_oauth_provider), which needs safeStorage.
   safeStorage: {
     isEncryptionAvailable: vi.fn(() => true),
     encryptString: vi.fn((s: string) => Buffer.from(`enc:${s}`, "utf8")),
-    decryptString: vi.fn((buf: Buffer) => {
-      const s = buf.toString("utf8");
-      return s.startsWith("enc:") ? s.slice(4) : s;
-    }),
   },
 }));
 
@@ -72,17 +62,6 @@ vi.mock("electron-log", () => ({
 
 vi.mock("../db", () => ({
   db: {
-    select: vi.fn(() => ({
-      from: () => ({
-        where: () => {
-          // For the few selects the handlers under test perform.
-          // The integration test below doesn't drive them, but
-          // returning an empty array is safe enough not to crash
-          // the other contracts registered at module load.
-          return Promise.resolve([]);
-        },
-      }),
-    })),
     update: vi.fn(() => ({
       set: (values: Record<string, unknown>) => ({
         where: () => ({
@@ -115,10 +94,6 @@ vi.mock("../db", () => ({
             enabled: Boolean(values.enabled),
             oauthEnabled: Boolean(values.oauthEnabled),
             oauthState: (values.oauthState as string | null) ?? null,
-            oauthClientId: (values.oauthClientId as string | null) ?? null,
-            oauthClientSecret:
-              (values.oauthClientSecret as string | null) ?? null,
-            oauthScope: (values.oauthScope as string | null) ?? null,
             createdAt: new Date(),
             updatedAt: new Date(),
           };
@@ -126,15 +101,11 @@ vi.mock("../db", () => ({
         },
       }),
     })),
-    delete: vi.fn(() => ({
-      where: () => Promise.resolve([]),
-    })),
   },
 }));
 
 vi.mock("../db/schema", () => ({
-  mcpServers: { id: "id", oauthState: "oauth_state" },
-  mcpToolConsents: { id: "id" },
+  mcpServers: { id: "id" },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -142,12 +113,8 @@ vi.mock("drizzle-orm", () => ({
     lastUpdateTargetId = value;
     return { _col, value };
   },
-  and: (..._args: unknown[]) => ({}),
 }));
 
-// The handlers under test reach into the manager (for dispose) and
-// the OAuth flow (for start/disconnect). Keep both as no-op fakes --
-// we only assert on the DB shape the handlers produce.
 const getClientMock = vi.fn();
 const disposeMock = vi.fn();
 vi.mock("../ipc/utils/mcp_manager", () => ({
@@ -155,16 +122,6 @@ vi.mock("../ipc/utils/mcp_manager", () => ({
     getClient: getClientMock,
     dispose: disposeMock,
   },
-}));
-
-vi.mock("../ipc/utils/mcp_oauth_flow", () => ({
-  runOAuthFlow: vi.fn(),
-  disconnectOAuth: vi.fn(),
-}));
-
-vi.mock("../ipc/utils/mcp_consent", () => ({
-  resolveConsent: vi.fn(),
-  getStoredConsent: vi.fn(),
 }));
 
 // Trigger module load AFTER mocks resolve so the handlers are
@@ -178,7 +135,7 @@ function invoke<T>(channel: string, input: unknown): Promise<T> {
   return Promise.resolve(fn({}, input)) as Promise<T>;
 }
 
-function seedRow(row: Partial<Row> & { id: number }): Row {
+function seedRow(row: Partial<Row> & { id: number }): void {
   const full: Row = {
     id: row.id,
     name: row.name ?? `srv${row.id}`,
@@ -191,14 +148,10 @@ function seedRow(row: Partial<Row> & { id: number }): Row {
     enabled: row.enabled ?? true,
     oauthEnabled: row.oauthEnabled ?? true,
     oauthState: row.oauthState ?? null,
-    oauthClientId: row.oauthClientId ?? null,
-    oauthClientSecret: row.oauthClientSecret ?? null,
-    oauthScope: row.oauthScope ?? null,
     createdAt: row.createdAt ?? new Date(),
     updatedAt: row.updatedAt ?? new Date(),
   };
   dbStore.set(full.id, full);
-  return full;
 }
 
 describe("mcp updateServer handler", () => {

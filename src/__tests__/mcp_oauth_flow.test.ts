@@ -19,12 +19,8 @@ const dbStore = new Map<number, Row>();
 let currentTargetId = 0;
 
 vi.mock("electron", () => ({
-  shell: {
-    openExternal: vi.fn().mockResolvedValue(undefined),
-  },
   safeStorage: {
     isEncryptionAvailable: vi.fn(() => true),
-    encryptString: vi.fn((s: string) => Buffer.from(`enc:${s}`, "utf8")),
     decryptString: vi.fn((buf: Buffer) => {
       const s = buf.toString("utf8");
       return s.startsWith("enc:") ? s.slice(4) : s;
@@ -206,7 +202,6 @@ describe("OAuth loopback listener (state CSRF check)", () => {
     // checks the listener receives it, proving IPv6 is bound.
     seedRow({ id: 10, transport: "http", url: "https://example.com/mcp" });
     authMock.mockResolvedValueOnce("REDIRECT");
-    authMock.mockResolvedValueOnce("AUTHORIZED");
 
     const callbackPort = 53693;
     const flowPromise = runOAuthFlow({ serverId: 10, callbackPort });
