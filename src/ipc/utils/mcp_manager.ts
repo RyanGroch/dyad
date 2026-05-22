@@ -53,19 +53,8 @@ class McpManager {
       const authProvider = s.oauthEnabled
         ? new DyadOAuthClientProvider({
             serverId: s.id,
-            // Scope MUST flow into the provider here, not only in the
-            // explicit OAuth-start path -- the SDK also drives auth
-            // internally when the transport hits a 401 (or on first
-            // connect), and at those entry points the scope can only
-            // come from `provider.clientMetadata.scope`. Pass undefined
-            // when the user hasn't configured a value so the server
-            // applies its own default; a hard-coded fallback would be
-            // wrong for the majority of OAuth providers.
             scope: s.oauthScope ?? undefined,
             preregisteredClientId: s.oauthClientId ?? undefined,
-            // Decrypted client_secret (if any). Confidential clients
-            // need the secret on refresh-token grants the transport
-            // drives silently after 401s.
             preregisteredClientSecret: s.oauthClientSecret
               ? decryptFromString(s.oauthClientSecret) || undefined
               : undefined,

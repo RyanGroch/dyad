@@ -21,11 +21,9 @@ const logger = log.scope("mcp_oauth_flow");
 const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface PendingFlow {
-  resolve: (code: string) => void;
   reject: (err: Error) => void;
   servers: Server[];
   timeout: NodeJS.Timeout;
-  expectedState: string | null;
 }
 
 // At most one OAuth flow per port at a time. Concurrent flows on the
@@ -91,13 +89,8 @@ async function startCallbackListener(
   return new Promise<string>((resolve, reject) => {
     const servers: Server[] = [];
 
-    const closeAllDeferred = () => {
-      // Defer close so the browser receives the response body before
-      // the listener tears down. Without this, some browsers show a
-      // connection-reset error to the user.
-      for (const s of servers) {
-        setTimeout(() => s.close(), 100);
-      }
+    const closeAll = () => {
+      for (const s of servers) s.close();
     };
 
     const settle = (fn: () => void) => {
@@ -106,7 +99,7 @@ async function startCallbackListener(
         clearTimeout(pending.timeout);
         pendingFlows.delete(port);
       }
-      closeAllDeferred();
+      closeAll();
       fn();
     };
 
@@ -194,7 +187,7 @@ async function startCallbackListener(
         const pending = pendingFlows.get(port);
         if (pending) {
           pendingFlows.delete(port);
-          closeAllDeferred();
+          closeAll();
           reject(
             new Error(
               `OAuth flow timed out after ${OAUTH_FLOW_TIMEOUT_MS / 1000}s. Did you close the browser tab?`,
@@ -203,13 +196,7 @@ async function startCallbackListener(
         }
       }, OAUTH_FLOW_TIMEOUT_MS);
 
-      pendingFlows.set(port, {
-        resolve,
-        reject,
-        servers,
-        timeout,
-        expectedState,
-      });
+      pendingFlows.set(port, { reject, servers, timeout });
       logger.info(
         `OAuth callback listener bound on http://localhost:${port} (${bound.length} stack${bound.length === 1 ? "" : "s"})`,
       );
@@ -220,7 +207,6 @@ async function startCallbackListener(
 interface RunOAuthFlowParams {
   serverId: number;
   callbackPort?: number;
-  scope?: string;
 }
 
 /**
@@ -258,11 +244,11 @@ export async function runOAuthFlow(
   }
 
   const callbackPort = params.callbackPort ?? DEFAULT_OAUTH_CALLBACK_PORT;
-  // Scope is server-defined and there is no universal default value that
-  // works across providers (bare "read" is Linear-flavored; most others
-  // reject it). Pass through what the user configured, otherwise omit
-  // the `scope` parameter entirely so the server applies its own default.
-  const scope = s.oauthScope ?? params.scope ?? undefined;
+  // Scope values are defined by each OAuth server; there is no
+  // universal default that works across providers. Pass through
+  // whatever the user configured, otherwise omit the `scope`
+  // parameter entirely so the server applies its own default.
+  const scope = s.oauthScope ?? undefined;
   // Decrypt the stored client_secret (if any) just in time so the
   // plaintext value never lives in the row payload that crosses the
   // IPC boundary. Empty string from decryptFromString means decryption

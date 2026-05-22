@@ -24,18 +24,10 @@ export const McpServerSchema = z.object({
   url: z.string().nullable(),
   enabled: z.boolean(),
   oauthEnabled: z.boolean(),
-  // Whether OAuth tokens are currently stored. Derived (not the
-  // encrypted blob itself) so the renderer can render a Connected /
-  // Not connected badge without ever seeing token material.
+  // Derived: true iff usable OAuth tokens are stored for this server.
+  // Drives the Connected / Not connected badge in the settings UI
+  // without sending the encrypted token blob to the renderer.
   oauthConnected: z.boolean(),
-  oauthClientId: z.string().nullable(),
-  oauthScope: z.string().nullable(),
-  // Derived: true iff an OAuth client_secret is currently stored
-  // (encrypted) for this server. The plaintext secret is NEVER sent
-  // to the renderer -- only this boolean -- so a compromised renderer
-  // process can't exfiltrate the credential. Drives the "set / clear"
-  // UI affordance on the OAuth Client Secret field.
-  hasOauthClientSecret: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -202,13 +194,6 @@ export const mcpContracts = {
     channel: "mcp:start-oauth",
     input: z.object({
       serverId: z.number(),
-      // Override the default loopback port (53682). Must match the
-      // redirect URI registered with the OAuth provider for servers
-      // that pre-register; ignored if the server supports DCR.
-      callbackPort: z.number().optional(),
-      // Space-separated OAuth scopes. Most servers infer from the
-      // registered client when omitted; some require an explicit value.
-      scope: z.string().optional(),
     }),
     output: z.object({
       success: z.boolean(),

@@ -122,25 +122,15 @@ export function useMcp() {
   });
 
   const startOAuthMutation = useMutation({
-    mutationFn: async (params: {
-      serverId: number;
-      callbackPort?: number;
-      scope?: string;
-    }) => {
+    mutationFn: async (params: { serverId: number }) => {
       return ipc.mcp.startOAuth(params);
     },
     onSuccess: async () => {
-      // `refetchQueries` (vs invalidateQueries) forces the active
-      // queries to refetch synchronously rather than scheduling a
-      // background refresh. Without this the Connect button can
-      // appear to do nothing until the user navigates away and back
-      // and the queries refetch on remount.
       await Promise.all([
-        queryClient.refetchQueries({ queryKey: queryKeys.mcp.servers }),
-        queryClient.refetchQueries({
+        queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
+        queryClient.invalidateQueries({
           queryKey: queryKeys.mcp.toolsByServer.all,
         }),
-        queryClient.refetchQueries({ queryKey: queryKeys.mcp.consents }),
       ]);
     },
     meta: { showErrorToast: true },
@@ -152,11 +142,10 @@ export function useMcp() {
     },
     onSuccess: async () => {
       await Promise.all([
-        queryClient.refetchQueries({ queryKey: queryKeys.mcp.servers }),
-        queryClient.refetchQueries({
+        queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
+        queryClient.invalidateQueries({
           queryKey: queryKeys.mcp.toolsByServer.all,
         }),
-        queryClient.refetchQueries({ queryKey: queryKeys.mcp.consents }),
       ]);
     },
     meta: { showErrorToast: true },
@@ -194,11 +183,8 @@ export function useMcp() {
     consent: McpToolConsent["consent"],
   ) => setConsentMutation.mutateAsync({ serverId, toolName, consent });
 
-  const startOAuth = async (params: {
-    serverId: number;
-    callbackPort?: number;
-    scope?: string;
-  }) => startOAuthMutation.mutateAsync(params);
+  const startOAuth = async (params: { serverId: number }) =>
+    startOAuthMutation.mutateAsync(params);
 
   const disconnectOAuth = async (serverId: number) =>
     disconnectOAuthMutation.mutateAsync(serverId);

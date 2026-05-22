@@ -21,9 +21,9 @@ import {
 
 const logger = log.scope("mcp_handlers");
 
-// Helper to cast DB server to typed server. Strips `oauthState`
-// (encrypted token blob) before returning -- the renderer never needs
-// the encrypted material and exposing it would be a footgun.
+// Project a DB row into the renderer-bound shape. Drops `oauthState`
+// and `oauthClientSecret`, replacing them with the derived booleans
+// the UI actually needs.
 function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
   return {
     id: dbServer.id,
@@ -36,18 +36,11 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     url: dbServer.url,
     enabled: dbServer.enabled,
     oauthEnabled: dbServer.oauthEnabled,
-    // Reflects whether usable access tokens are stored. `oauthState`
-    // alone is not enough: an ambient transport build can persist
-    // `clientInformation` (via DCR) without tokens, which would
-    // otherwise flip this to true.
+    // `oauthState` alone isn't enough: an ambient transport build can
+    // persist `clientInformation` (via DCR) before tokens land, which
+    // would otherwise flip this to true. `oauthStateHasTokens` checks
+    // for usable access tokens specifically.
     oauthConnected: oauthStateHasTokens(dbServer.oauthState),
-    oauthClientId: dbServer.oauthClientId,
-    // Never expose the encrypted blob (or, worse, plaintext) to the
-    // renderer. Send only the boolean so the UI can render
-    // "(set — leave blank to keep)" placeholder text without the
-    // process ever holding the secret.
-    hasOauthClientSecret: dbServer.oauthClientSecret !== null,
-    oauthScope: dbServer.oauthScope,
     createdAt: dbServer.createdAt,
     updatedAt: dbServer.updatedAt,
   };
@@ -167,12 +160,13 @@ export function registerMcpHandlers() {
 
   // Tools listing (dynamic)
   createTypedHandler(mcpContracts.listTools, async (_, serverId) => {
-    // Hard cap on how long we'll wait for a single server's tools
-    // listing. The MCP SSE transport can block indefinitely during
-    // its initialize handshake against an unconnected / unreachable
-    // OAuth-gated server; without this ceiling, the renderer's
-    // batched tool-listing query hangs and the UI shows empty tools
-    // for ALL servers until the slowest one settles.
+    // Bounded wait per server. The renderer batches all servers'
+    // listTools calls into one query and waits for every server to
+    // settle before rendering -- so any single hung server (commonly
+    // an unconnected OAuth-gated host whose transport doesn't error
+    // out promptly) would otherwise freeze the entire tools list.
+    // This ceiling caps the worst case at LIST_TOOLS_TIMEOUT_MS per
+    // server. Proper fix is per-server queries (follow-up).
     const LIST_TOOLS_TIMEOUT_MS = 8_000;
     try {
       const result = await Promise.race([
@@ -203,9 +197,6 @@ export function registerMcpHandlers() {
       ]);
       return result;
     } catch (e) {
-      // Common cause for OAuth-gated servers: the transport built
-      // before tokens were saved is still cached; surface the error
-      // shape so the user sees more than a silent empty list.
       logger.error(
         `Failed to list tools for server ${serverId}: ${
           e instanceof Error ? `${e.name}: ${e.message}` : String(e)
@@ -276,11 +267,7 @@ export function registerMcpHandlers() {
   // `@ai-sdk/mcp` `auth()` function drives PKCE + token exchange, and
   // tokens land in the encrypted `oauth_state` column.
   createTypedHandler(mcpContracts.startOAuth, async (_, params) => {
-    return await runOAuthFlow({
-      serverId: params.serverId,
-      callbackPort: params.callbackPort,
-      scope: params.scope,
-    });
+    return await runOAuthFlow({ serverId: params.serverId });
   });
 
   // OAuth disconnect: clear stored tokens + client info. Forces the

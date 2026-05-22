@@ -255,18 +255,17 @@ describe("mcp createServer handler (client_secret handling)", () => {
   });
 });
 
-describe("mcp createServer / listServers (toMcpServer secret-redaction)", () => {
+describe("mcp createServer (toMcpServer secret-redaction)", () => {
   beforeEach(() => {
     dbStore.clear();
     lastInsertPayload = null;
     vi.clearAllMocks();
   });
 
-  it("does NOT include oauthClientSecret in the renderer-bound payload, only the derived hasOauthClientSecret boolean", async () => {
-    // Critical security boundary: a compromised renderer process
-    // must not be able to read the stored secret. toMcpServer
-    // strips the encrypted blob and exposes only a boolean so the
-    // UI can show "(set — leave blank to keep)" affordance.
+  it("does NOT include oauthClientSecret in the renderer-bound payload", async () => {
+    // Security boundary: the stored (encrypted) secret must never
+    // cross to the renderer. toMcpServer projects only the fields the
+    // UI needs and omits the secret entirely.
     const result = (await invoke("mcp:create-server", {
       name: "confidential-server",
       transport: "http",
@@ -277,19 +276,6 @@ describe("mcp createServer / listServers (toMcpServer secret-redaction)", () => 
     })) as Record<string, unknown>;
 
     expect("oauthClientSecret" in result).toBe(false);
-    expect(result.hasOauthClientSecret).toBe(true);
-  });
-
-  it("returns hasOauthClientSecret=false for a server without a stored secret", async () => {
-    const result = (await invoke("mcp:create-server", {
-      name: "public-server",
-      transport: "http",
-      url: "https://example.com/mcp",
-      oauthEnabled: true,
-      oauthClientId: "id",
-    })) as Record<string, unknown>;
-
-    expect(result.hasOauthClientSecret).toBe(false);
   });
 });
 
