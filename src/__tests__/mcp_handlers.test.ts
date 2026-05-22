@@ -32,7 +32,6 @@ type Row = {
   updatedAt: Date;
 };
 const dbStore = new Map<number, Row>();
-let lastUpdatePayload: Record<string, unknown> | null = null;
 let lastUpdateTargetId = 0;
 let lastInsertPayload: Record<string, unknown> | null = null;
 
@@ -88,7 +87,6 @@ vi.mock("../db", () => ({
       set: (values: Record<string, unknown>) => ({
         where: () => ({
           returning: () => {
-            lastUpdatePayload = values;
             const existing = dbStore.get(lastUpdateTargetId);
             const merged = { ...existing, ...values } as Row;
             if (existing) dbStore.set(existing.id, merged);
@@ -206,7 +204,6 @@ function seedRow(row: Partial<Row> & { id: number }): Row {
 describe("mcp updateServer handler", () => {
   beforeEach(() => {
     dbStore.clear();
-    lastUpdatePayload = null;
     vi.clearAllMocks();
   });
 
@@ -264,8 +261,8 @@ describe("mcp createServer (toMcpServer secret-redaction)", () => {
 
   it("does NOT include oauthClientSecret in the renderer-bound payload", async () => {
     // Security boundary: the stored (encrypted) secret must never
-    // cross to the renderer. toMcpServer projects only the fields the
-    // UI needs and omits the secret entirely.
+    // reach the renderer. toMcpServer returns only the fields the UI
+    // needs and leaves the secret out entirely.
     const result = (await invoke("mcp:create-server", {
       name: "confidential-server",
       transport: "http",
@@ -286,11 +283,11 @@ describe("mcp listTools handler", () => {
   });
 
   it("returns an empty list (not a crash) when getClient throws", async () => {
-    // This is the ambient-failure shape the user sees while OAuth is
-    // disconnected: `mcp_manager.getClient` throws because the
-    // provider refuses to open a browser without an explicit Connect
-    // click. The IPC handler must swallow the throw and surface
-    // [] so the renderer renders "no tools" instead of crashing.
+    // What the user hits while an OAuth server isn't connected:
+    // `mcp_manager.getClient` throws because the provider won't open a
+    // browser without an explicit Connect click. The handler must
+    // catch the throw and return [] so the renderer shows "no tools"
+    // instead of crashing.
     getClientMock.mockRejectedValueOnce(
       new Error(
         "OAuth not currently allowed (interactive consent required; click Connect on the server row).",

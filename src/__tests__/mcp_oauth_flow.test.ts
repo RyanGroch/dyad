@@ -88,8 +88,8 @@ vi.mock("@ai-sdk/mcp", () => ({
 }));
 
 // mcp_manager.dispose is called after a successful flow to force the
-// cached client to rebuild. Mock to a no-op so we don't drag the
-// whole manager into the test surface.
+// cached client to rebuild. Mock it to a no-op so the test doesn't
+// pull in the whole manager.
 vi.mock("../ipc/utils/mcp_manager", () => ({
   mcpManager: { dispose: vi.fn() },
 }));
@@ -199,12 +199,11 @@ describe("OAuth loopback listener (state CSRF check)", () => {
   });
 
   it("accepts the OAuth callback over the IPv6 loopback address (`[::1]`)", async () => {
-    // Regression test for the IPv4-only-bind footgun. Modern OS
-    // resolvers often return `::1` first for `localhost`, so a
-    // listener bound only to `127.0.0.1` would refuse the browser's
-    // callback connection right after consent. This test sends the
-    // callback to `[::1]` directly and asserts the listener receives
-    // it, proving the IPv6 stack is bound.
+    // Regression test for binding only IPv4. Modern OS resolvers often
+    // return `::1` first for `localhost`, so a listener bound only to
+    // `127.0.0.1` would refuse the browser's callback right after
+    // consent. This test sends the callback to `[::1]` directly and
+    // checks the listener receives it, proving IPv6 is bound.
     seedRow({ id: 10, transport: "http", url: "https://example.com/mcp" });
     authMock.mockResolvedValueOnce("REDIRECT");
     authMock.mockResolvedValueOnce("AUTHORIZED");

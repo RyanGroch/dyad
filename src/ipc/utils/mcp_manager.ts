@@ -1,10 +1,6 @@
 import { db } from "../../db";
 import { mcpServers } from "../../db/schema";
-import {
-  createMCPClient,
-  type MCPClient,
-  type MCPTransport,
-} from "@ai-sdk/mcp";
+import { createMCPClient, type MCPClient } from "@ai-sdk/mcp";
 import { eq } from "drizzle-orm";
 
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -43,11 +39,7 @@ class McpManager {
         args,
         env,
       });
-      // `MCPTransport` is the SDK's transport interface. The raw stdio
-      // transport class from `@modelcontextprotocol/sdk` satisfies it
-      // at runtime; cast keeps the types honest without dragging the
-      // SDK's larger surface into our import graph.
-      client = await createMCPClient({ transport: stdio as MCPTransport });
+      client = await createMCPClient({ transport: stdio });
     } else if (s.transport === "http" || s.transport === "sse") {
       if (!s.url) throw new Error(`${s.transport} MCP requires url`);
       const authProvider = s.oauthEnabled

@@ -24,9 +24,9 @@ export const McpServerSchema = z.object({
   url: z.string().nullable(),
   enabled: z.boolean(),
   oauthEnabled: z.boolean(),
-  // Derived: true iff usable OAuth tokens are stored for this server.
-  // Drives the Connected / Not connected badge in the settings UI
-  // without sending the encrypted token blob to the renderer.
+  // True if usable OAuth tokens are stored for this server. Drives the
+  // Connected / Not connected badge without sending the token blob to
+  // the renderer.
   oauthConnected: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -54,9 +54,8 @@ export const CreateMcpServerSchema = z.object({
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
   oauthClientId: z.string().nullable().optional(),
-  // Plaintext OAuth client_secret on create. Encrypted on the way in
-  // by the handler -- never persisted as plaintext, never echoed back
-  // out via `McpServerSchema`.
+  // Plaintext OAuth client_secret on create. The handler encrypts it
+  // before storing and never returns it via `McpServerSchema`.
   oauthClientSecret: z.string().nullable().optional(),
   oauthScope: z.string().nullable().optional(),
 });
@@ -196,8 +195,8 @@ export const mcpContracts = {
     }),
     output: z.object({
       success: z.boolean(),
-      // Populated when `success` is false. Surfaced to the user via UI
-      // toast / inline message in `ToolsMcpSettings`.
+      // Set when `success` is false; shown to the user as a toast in
+      // `ToolsMcpSettings`.
       error: z.string().nullable(),
     }),
   }),
