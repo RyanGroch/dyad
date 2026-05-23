@@ -259,7 +259,7 @@ export const mcpServers = sqliteTable("mcp_servers", {
   // `safeStorage`, or base64 plaintext where no keyring is available
   // (see encryptToString). Read/written only by DyadOAuthClientProvider.
   oauthState: text("oauth_state"),
-  // Optional pre-registered OAuth client_id for servers that do NOT
+  // Optional pre-registered OAuth client_id for servers that don't
   // support dynamic client registration (RFC 7591). User-supplied via
   // the add-server UI; left blank for servers that support DCR.
   oauthClientId: text("oauth_client_id"),

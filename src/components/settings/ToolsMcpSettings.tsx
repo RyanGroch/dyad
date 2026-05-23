@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useMcp, type Transport } from "@/hooks/useMcp";
+import { DEFAULT_OAUTH_CALLBACK_PORT } from "@/ipc/types/mcp";
 import { showError, showInfo, showSuccess } from "@/lib/toast";
 import { Edit2, Plus, Save, Trash2, X } from "lucide-react";
 import { useDeepLink } from "@/contexts/DeepLinkContext";
@@ -474,21 +475,19 @@ export function ToolsMcpSettings() {
             </>
           )}
           {(transport === "http" || transport === "sse") && (
-            <div className="col-span-2">
-              <Label>URL</Label>
-              <Input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder={
-                  transport === "sse"
-                    ? "https://mcp.example.com/sse"
-                    : "http://localhost:3000"
-                }
-              />
-            </div>
-          )}
-          {(transport === "http" || transport === "sse") && (
             <>
+              <div className="col-span-2">
+                <Label>URL</Label>
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder={
+                    transport === "sse"
+                      ? "https://mcp.example.com/sse"
+                      : "http://localhost:3000"
+                  }
+                />
+              </div>
               <div className="flex items-center gap-2 col-span-2">
                 <Switch
                   aria-label="Use OAuth"
@@ -504,8 +503,13 @@ export function ToolsMcpSettings() {
                       OAuth Client ID
                       <span className="ml-1 text-xs text-muted-foreground">
                         If the MCP server's setup requires you to register an
-                        app, paste the Client ID of your app here. Otherwise
-                        leave this blank.
+                        app, paste the Client ID of your app here — and use{" "}
+                        <code>
+                          http://localhost:{DEFAULT_OAUTH_CALLBACK_PORT}
+                          /callback
+                        </code>{" "}
+                        as the redirect URI when registering. Otherwise leave
+                        this blank.
                       </span>
                     </Label>
                     <Input

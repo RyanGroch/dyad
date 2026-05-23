@@ -190,7 +190,7 @@ describe("DyadOAuthClientProvider", () => {
     const p = new DyadOAuthClientProvider({ serverId: 3 });
     await p.saveCodeVerifier("the-verifier");
     expect(await p.codeVerifier()).toBe("the-verifier");
-    // Storage row must NOT contain the verifier — that's the whole
+    // Storage row must not contain the verifier — that's the whole
     // point of keeping PKCE verifiers in-memory.
     expect(dbStore.get(3) ?? "").not.toContain("the-verifier");
   });
@@ -290,7 +290,7 @@ describe("DyadOAuthClientProvider", () => {
     it("sets client_id synchronously (the SDK does not await this method)", async () => {
       // The SDK's `exchangeAuthorization` invokes
       // `addClientAuthentication(headers, params, url, metadata)`
-      // WITHOUT awaiting its return value, then immediately fires
+      // without awaiting its return value, then immediately fires
       // the token-endpoint POST with `params` as the body. If our
       // method yielded on a DB read, the POST would go out before
       // `params.set("client_id", ...)` ran and the upstream OAuth
@@ -324,22 +324,6 @@ describe("DyadOAuthClientProvider", () => {
       expect(await p.codeVerifier()).toBe("v");
     });
 
-    it("clears only client info for scope=client", async () => {
-      const p = await seedFull(31);
-      await p.invalidateCredentials("client");
-      expect((await p.tokens())?.access_token).toBe("t");
-      expect(await p.clientInformation()).toBeUndefined();
-      expect(await p.codeVerifier()).toBe("v");
-    });
-
-    it("clears only the in-memory verifier for scope=verifier", async () => {
-      const p = await seedFull(32);
-      await p.invalidateCredentials("verifier");
-      expect((await p.tokens())?.access_token).toBe("t");
-      expect((await p.clientInformation())?.client_id).toBe("c");
-      await expect(p.codeVerifier()).rejects.toThrow();
-    });
-
     it("clears everything for scope=all", async () => {
       const p = await seedFull(33);
       await p.invalidateCredentials("all");
@@ -362,7 +346,7 @@ describe("DyadOAuthClientProvider", () => {
 
   describe("oauthStateHasTokens", () => {
     // The "OAuth: connected" badge derives from this helper. A
-    // non-empty `oauth_state` is NOT proof of a connection -- it can
+    // non-empty `oauth_state` isn't proof of a connection -- it can
     // hold just a registered client ID with no tokens yet.
     function encryptedBlobFor(payload: object): string {
       return Buffer.from(`enc:${JSON.stringify(payload)}`, "utf8").toString(

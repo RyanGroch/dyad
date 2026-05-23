@@ -6,6 +6,15 @@ import {
   createEventClient,
 } from "../contracts/core";
 
+// Arbitrary loopback port for the OAuth callback listener -- not from
+// the OAuth or MCP specs. Must stay stable: users pre-registering an
+// OAuth app at a provider (non-DCR servers) put
+// `http://localhost:<this-port>/callback` into the redirect-URI field;
+// changing this number invalidates their setup. Cost of one fixed
+// port: only one OAuth flow at a time system-wide (the supersede in
+// mcp_oauth_flow.ts handles concurrent attempts).
+export const DEFAULT_OAUTH_CALLBACK_PORT = 53682;
+
 // =============================================================================
 // MCP Schemas
 // =============================================================================

@@ -9,11 +9,9 @@ import type {
 } from "@ai-sdk/mcp";
 import { db } from "../../db";
 import { mcpServers } from "../../db/schema";
+import { DEFAULT_OAUTH_CALLBACK_PORT } from "../types/mcp";
 
 const logger = log.scope("mcp_oauth_provider");
-
-// Default loopback port for the OAuth callback listener.
-export const DEFAULT_OAUTH_CALLBACK_PORT = 53682;
 
 // Stored shape of `oauth_state` (after decryption). Both fields are
 // optional because the SDK fills them at different points in the flow.
@@ -292,15 +290,18 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     logger.debug(
       `invalidateCredentials(${scope}) for MCP server ${this.serverId}`,
     );
-    if (scope === "all" || scope === "verifier") {
-      codeVerifiers.delete(this.serverId);
+    // The SDK only ever calls with "all" or "tokens"; warn (rather
+    // than silently no-op) if that ever changes so we notice.
+    if (scope !== "all" && scope !== "tokens") {
+      logger.warn(
+        `invalidateCredentials(${scope}) is unhandled; SDK only calls 'all'/'tokens'`,
+      );
+      return;
     }
-    if (scope === "verifier") return;
     const state = await readState(this.serverId);
-    if (scope === "all" || scope === "tokens") {
-      delete state.tokens;
-    }
-    if (scope === "all" || scope === "client") {
+    delete state.tokens;
+    if (scope === "all") {
+      codeVerifiers.delete(this.serverId);
       delete state.clientInformation;
       this.cachedClientInformation = undefined;
     }

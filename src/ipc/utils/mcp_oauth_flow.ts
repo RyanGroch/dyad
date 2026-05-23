@@ -5,10 +5,10 @@ import { eq } from "drizzle-orm";
 import { db } from "../../db";
 import { mcpServers } from "../../db/schema";
 import {
-  DEFAULT_OAUTH_CALLBACK_PORT,
   DyadOAuthClientProvider,
   decryptFromString,
 } from "./mcp_oauth_provider";
+import { DEFAULT_OAUTH_CALLBACK_PORT } from "../types/mcp";
 import { mcpManager } from "./mcp_manager";
 
 const logger = log.scope("mcp_oauth_flow");

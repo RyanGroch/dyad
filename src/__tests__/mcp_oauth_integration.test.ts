@@ -2,7 +2,7 @@
 //
 // End-to-end OAuth flow integration test against the fake OAuth MCP
 // server (`testing/fake-oauth-mcp-server.mjs`). Unlike the unit tests
-// in mcp_oauth_flow.test.ts, this file does NOT mock @ai-sdk/mcp's
+// in mcp_oauth_flow.test.ts, this file does not mock @ai-sdk/mcp's
 // `auth()` -- it lets the real SDK drive discovery, DCR (or static
 // client lookup), PKCE, the authorize redirect, and the token
 // exchange. The only fakery is on the Electron surface (safeStorage,
@@ -35,6 +35,7 @@ type Row = {
   oauthEnabled: boolean;
   oauthClientId: string | null;
   oauthClientSecret: string | null;
+  oauthScope: string | null;
   oauthState: string | null;
 };
 const dbStore = new Map<number, Row>();
@@ -135,12 +136,14 @@ const DCR_SERVER_PORT = 47002;
 const STATIC_SERVER_PORT = 47003;
 const REFRESH_SERVER_PORT = 47004;
 const CONFIDENTIAL_SERVER_PORT = 47005;
+const SCOPE_SERVER_PORT = 47006;
 // Fixed, deterministic callback port ranges per describe block so the
 // suite repeats identically across runs.
 const DCR_CALLBACK_PORT_BASE = 53700;
 const STATIC_CALLBACK_PORT_BASE = 53800;
 const REFRESH_CALLBACK_PORT_BASE = 53900;
 const CONFIDENTIAL_CALLBACK_PORT_BASE = 54000;
+const SCOPE_CALLBACK_PORT_BASE = 54100;
 
 async function waitForReady(baseUrl: string, attempts = 40): Promise<void> {
   for (let i = 0; i < attempts; i++) {
@@ -193,6 +196,7 @@ function seedRow(row: Partial<Row> & { id: number; url: string }): void {
     oauthEnabled: row.oauthEnabled ?? true,
     oauthClientId: row.oauthClientId ?? null,
     oauthClientSecret: row.oauthClientSecret ?? null,
+    oauthScope: row.oauthScope ?? null,
     oauthState: row.oauthState ?? null,
   });
 }
@@ -251,7 +255,7 @@ describe("OAuth integration: DCR mode against fake server", () => {
 
   it("reuses persisted clientInformation on a second flow (skips a second /register)", async () => {
     // First flow registers a client via DCR; second flow against the
-    // same row should NOT register again because clientInformation is
+    // same row should not register again because clientInformation is
     // already persisted. We tee /register hits via a fetch wrapper.
     const serverId = 2;
     seedRow({ id: serverId, url: `${base}/mcp` });
@@ -294,7 +298,7 @@ describe("OAuth integration: DCR mode against fake server", () => {
         callbackPort: nextCallbackPort++,
       });
       expect(second.success).toBe(true);
-      // Critical: the second flow must NOT have hit /register again
+      // Critical: the second flow must not have hit /register again
       // because clientInformation was already persisted from flow #1.
       expect(registerHits).toBe(1);
     } finally {
@@ -429,7 +433,7 @@ describe("OAuth integration: refresh-token rotation against fake server", () => 
       callbackPort: nextCallbackPort++,
     });
     expect(second.success).toBe(true);
-    // Critical: refresh must NOT have opened a second browser. If
+    // Critical: refresh must not have opened a second browser. If
     // this assertion ever fails, the SDK is no longer driving the
     // refresh grant and the user would see a surprise consent
     // prompt every time their token expired.
@@ -522,5 +526,60 @@ describe("OAuth integration: confidential client (client_secret) against fake se
     expect(result.success).toBe(false);
     // No tokens persisted on a failed exchange.
     expect(rowIsConnected(serverId)).toBe(false);
+  });
+});
+
+describe("OAuth integration: scope passthrough against fake server", () => {
+  // Fake server is configured with FAKE_REQUIRED_SCOPE; its /authorize
+  // returns 400 unless the client requests that scope. So a successful
+  // flow here proves the row's `oauthScope` flows through to the
+  // authorize URL the SDK builds.
+  let child: ChildProcess;
+  const port = SCOPE_SERVER_PORT;
+  const base = `http://localhost:${port}`;
+  const REQUIRED_SCOPE = "read";
+  let nextCallbackPort = SCOPE_CALLBACK_PORT_BASE;
+
+  beforeAll(async () => {
+    child = spawnFakeServer({
+      PORT: String(port),
+      FAKE_DCR: "1",
+      FAKE_REQUIRED_SCOPE: REQUIRED_SCOPE,
+    });
+    await waitForReady(base);
+  }, 15000);
+
+  afterAll(async () => {
+    child?.kill();
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  beforeEach(() => {
+    dbStore.clear();
+    _resetCodeVerifiersForTest();
+    vi.clearAllMocks();
+    stubOpenExternalToAutoComplete();
+  });
+
+  it("threads the row's oauthScope through to the authorize URL", async () => {
+    const serverId = 1;
+    seedRow({
+      id: serverId,
+      url: `${base}/mcp`,
+      oauthScope: REQUIRED_SCOPE,
+    });
+
+    const result = await runOAuthFlow({
+      serverId,
+      callbackPort: nextCallbackPort++,
+    });
+
+    // Success here is load-bearing: the fake's /authorize 400s when
+    // the required scope is missing, so reaching tokens means we
+    // actually sent `scope=read` in the URL.
+    expect(result.success).toBe(true);
+    expect(rowIsConnected(serverId)).toBe(true);
+    const authorizeCall = vi.mocked(shell.openExternal).mock.calls[0]?.[0];
+    expect(authorizeCall).toContain(`scope=${REQUIRED_SCOPE}`);
   });
 });

@@ -242,7 +242,7 @@ describe("OAuth loopback listener (state CSRF check)", () => {
     // Let the first flow's listener bind.
     await new Promise((r) => setTimeout(r, 50));
 
-    // Second click on the same port: must NOT reject with port-busy.
+    // Second click on the same port: must not reject with port-busy.
     const secondPromise = runOAuthFlow({ serverId: 12, callbackPort });
     // Give supersede + bind a moment.
     await new Promise((r) => setTimeout(r, 200));
