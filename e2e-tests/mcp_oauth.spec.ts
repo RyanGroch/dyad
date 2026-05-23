@@ -18,9 +18,30 @@ testSkipIfWindows("mcp - oauth connects and calls a tool", async ({ po }) => {
     stdio: "pipe",
   });
 
-  // The fake server doesn't print a single ready line we can grep
-  // for; poll its discovery endpoint until it responds.
-  await waitForReady(base);
+  // Wait for the fake server to be ready by checking stdout for the
+  // ready message. Mirrors the pattern in mcp.spec.ts.
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("fake-oauth-mcp-server failed to start within timeout"));
+    }, 10000);
+
+    fake.stdout?.on("data", (data: Buffer) => {
+      console.log("fake-oauth-mcp-server stdout:", data.toString());
+      if (data.toString().includes("Fake OAuth MCP server listening")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+
+    fake.stderr?.on("data", (data: Buffer) => {
+      console.error("fake-oauth-mcp-server stderr:", data.toString());
+    });
+
+    fake.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
 
   try {
     await po.setUp();
@@ -75,16 +96,3 @@ testSkipIfWindows("mcp - oauth connects and calls a tool", async ({ po }) => {
     });
   }
 });
-
-async function waitForReady(base: string, attempts = 40): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const r = await fetch(`${base}/.well-known/oauth-authorization-server`);
-      if (r.ok) return;
-    } catch {
-      // ECONNREFUSED until the fake's listener binds.
-    }
-    await new Promise((res) => setTimeout(res, 100));
-  }
-  throw new Error(`fake-oauth-mcp-server at ${base} never came up`);
-}

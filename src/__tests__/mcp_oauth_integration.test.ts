@@ -207,30 +207,39 @@ function rowIsConnected(id: number): boolean {
   return oauthStateHasTokens(dbStore.get(id)?.oauthState ?? null);
 }
 
-describe("OAuth integration: DCR mode against fake server", () => {
+// Each describe block spawns a differently-configured fake server.
+// `env` is the per-block config (FAKE_DCR / FAKE_CLIENT_ID / etc.);
+// `port` is the SERVER_PORT constant for that block. Registers the
+// standard beforeAll/afterAll/beforeEach hooks for the surrounding
+// describe and returns the base URL.
+function setupFakeServer(
+  env: Record<string, string>,
+  port: number,
+): { base: string } {
   let child: ChildProcess;
-  const port = DCR_SERVER_PORT;
   const base = `http://localhost:${port}`;
-  // Each test uses a unique loopback callback port to avoid the
-  // "OAuth flow already in progress" guard in startCallbackListener.
-  let nextCallbackPort = DCR_CALLBACK_PORT_BASE;
-
   beforeAll(async () => {
-    child = spawnFakeServer({ PORT: String(port), FAKE_DCR: "1" });
+    child = spawnFakeServer({ PORT: String(port), ...env });
     await waitForReady(base);
   }, 15000);
-
   afterAll(async () => {
     child?.kill();
     await new Promise((r) => setTimeout(r, 100));
   });
-
   beforeEach(() => {
     dbStore.clear();
     _resetCodeVerifiersForTest();
     vi.clearAllMocks();
     stubOpenExternalToAutoComplete();
   });
+  return { base };
+}
+
+describe("OAuth integration: DCR mode against fake server", () => {
+  const { base } = setupFakeServer({ FAKE_DCR: "1" }, DCR_SERVER_PORT);
+  // Each test uses a unique loopback callback port to avoid the
+  // "OAuth flow already in progress" guard in startCallbackListener.
+  let nextCallbackPort = DCR_CALLBACK_PORT_BASE;
 
   it("runs the full DCR flow and lands access + refresh tokens in encrypted state", async () => {
     const serverId = 1;
@@ -308,32 +317,12 @@ describe("OAuth integration: DCR mode against fake server", () => {
 });
 
 describe("OAuth integration: static client_id mode against fake server", () => {
-  let child: ChildProcess;
-  const port = STATIC_SERVER_PORT;
-  const base = `http://localhost:${port}`;
   const STATIC_ID = "test-static-app-001";
+  const { base } = setupFakeServer(
+    { FAKE_DCR: "0", FAKE_CLIENT_ID: STATIC_ID },
+    STATIC_SERVER_PORT,
+  );
   let nextCallbackPort = STATIC_CALLBACK_PORT_BASE;
-
-  beforeAll(async () => {
-    child = spawnFakeServer({
-      PORT: String(port),
-      FAKE_DCR: "0",
-      FAKE_CLIENT_ID: STATIC_ID,
-    });
-    await waitForReady(base);
-  }, 15000);
-
-  afterAll(async () => {
-    child?.kill();
-    await new Promise((r) => setTimeout(r, 100));
-  });
-
-  beforeEach(() => {
-    dbStore.clear();
-    _resetCodeVerifiersForTest();
-    vi.clearAllMocks();
-    stubOpenExternalToAutoComplete();
-  });
 
   it("uses the pre-registered client_id (no /register hit) when DCR is disabled", async () => {
     const serverId = 1;
@@ -381,31 +370,11 @@ describe("OAuth integration: refresh-token rotation against fake server", () => 
   // `auth()` call. Refresh rotation (old refresh_token dies, new one
   // is issued) is verified by checking the stored token blob between
   // the two flows.
-  let child: ChildProcess;
-  const port = REFRESH_SERVER_PORT;
-  const base = `http://localhost:${port}`;
+  const { base } = setupFakeServer(
+    { FAKE_DCR: "1", FAKE_TOKEN_TTL_SEC: "1" },
+    REFRESH_SERVER_PORT,
+  );
   let nextCallbackPort = REFRESH_CALLBACK_PORT_BASE;
-
-  beforeAll(async () => {
-    child = spawnFakeServer({
-      PORT: String(port),
-      FAKE_DCR: "1",
-      FAKE_TOKEN_TTL_SEC: "1",
-    });
-    await waitForReady(base);
-  }, 15000);
-
-  afterAll(async () => {
-    child?.kill();
-    await new Promise((r) => setTimeout(r, 100));
-  });
-
-  beforeEach(() => {
-    dbStore.clear();
-    _resetCodeVerifiersForTest();
-    vi.clearAllMocks();
-    stubOpenExternalToAutoComplete();
-  });
 
   it("silently refreshes when tokens have expired (no second browser open)", async () => {
     const serverId = 1;
@@ -455,34 +424,17 @@ describe("OAuth integration: confidential client (client_secret) against fake se
   // the encrypted secret in the DB; Dyad decrypts it just-in-time
   // and the SDK posts both id + secret to /token via the
   // `client_secret_post` auth method.
-  let child: ChildProcess;
-  const port = CONFIDENTIAL_SERVER_PORT;
-  const base = `http://localhost:${port}`;
   const STATIC_ID = "confidential-app-001";
   const STATIC_SECRET = "supersecret-007";
-  let nextCallbackPort = CONFIDENTIAL_CALLBACK_PORT_BASE;
-
-  beforeAll(async () => {
-    child = spawnFakeServer({
-      PORT: String(port),
+  const { base } = setupFakeServer(
+    {
       FAKE_DCR: "0",
       FAKE_CLIENT_ID: STATIC_ID,
       FAKE_CLIENT_SECRET: STATIC_SECRET,
-    });
-    await waitForReady(base);
-  }, 15000);
-
-  afterAll(async () => {
-    child?.kill();
-    await new Promise((r) => setTimeout(r, 100));
-  });
-
-  beforeEach(() => {
-    dbStore.clear();
-    _resetCodeVerifiersForTest();
-    vi.clearAllMocks();
-    stubOpenExternalToAutoComplete();
-  });
+    },
+    CONFIDENTIAL_SERVER_PORT,
+  );
+  let nextCallbackPort = CONFIDENTIAL_CALLBACK_PORT_BASE;
 
   it("sends client_id + client_secret on token exchange and lands tokens (confidential client path)", async () => {
     const serverId = 1;
@@ -534,32 +486,12 @@ describe("OAuth integration: scope passthrough against fake server", () => {
   // returns 400 unless the client requests that scope. So a successful
   // flow here proves the row's `oauthScope` flows through to the
   // authorize URL the SDK builds.
-  let child: ChildProcess;
-  const port = SCOPE_SERVER_PORT;
-  const base = `http://localhost:${port}`;
   const REQUIRED_SCOPE = "read";
+  const { base } = setupFakeServer(
+    { FAKE_DCR: "1", FAKE_REQUIRED_SCOPE: REQUIRED_SCOPE },
+    SCOPE_SERVER_PORT,
+  );
   let nextCallbackPort = SCOPE_CALLBACK_PORT_BASE;
-
-  beforeAll(async () => {
-    child = spawnFakeServer({
-      PORT: String(port),
-      FAKE_DCR: "1",
-      FAKE_REQUIRED_SCOPE: REQUIRED_SCOPE,
-    });
-    await waitForReady(base);
-  }, 15000);
-
-  afterAll(async () => {
-    child?.kill();
-    await new Promise((r) => setTimeout(r, 100));
-  });
-
-  beforeEach(() => {
-    dbStore.clear();
-    _resetCodeVerifiersForTest();
-    vi.clearAllMocks();
-    stubOpenExternalToAutoComplete();
-  });
 
   it("threads the row's oauthScope through to the authorize URL", async () => {
     const serverId = 1;
