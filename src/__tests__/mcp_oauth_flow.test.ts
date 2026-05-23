@@ -226,14 +226,9 @@ describe("OAuth loopback listener (state CSRF check)", () => {
   });
 
   it("supersedes a stale flow when Connect is clicked again on the same port", async () => {
-    // Regression for the user-visible failure where: (1) the user
-    // clicks Connect, (2) the OAuth window is open but they get
-    // pulled away (e.g. needing to create an account upstream),
-    // (3) they return, navigate within Dyad which resets the local
-    // "Connecting" React state, (4) they click Connect a second time.
-    // The second attempt previously failed with "An OAuth flow is
-    // already in progress on port 53682"; the supersede behavior
-    // tears the stale listener down and lets the new flow proceed.
+    // Two flows on the same callback port: the second must take over
+    // (not fail with port-busy), and the first must surface a clean
+    // `superseded` error.
     seedRow({ id: 11, transport: "http", url: "https://example.com/mcp" });
     seedRow({ id: 12, transport: "http", url: "https://example.com/mcp" });
     // First flow: stays in REDIRECT (listener bound, awaiting code).

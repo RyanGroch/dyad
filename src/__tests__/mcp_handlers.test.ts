@@ -124,8 +124,9 @@ vi.mock("../ipc/utils/mcp_manager", () => ({
   },
 }));
 
-// Trigger module load AFTER mocks resolve so the handlers are
-// captured against our fake `ipcMain.handle`.
+// Import the module under test last -- the vi.mock factories close
+// over file-scope variables (handlers, getClientMock, ...) that must
+// exist first. A static import would load too early and crash them.
 const handlersModule = await import("../ipc/handlers/mcp_handlers");
 handlersModule.registerMcpHandlers();
 

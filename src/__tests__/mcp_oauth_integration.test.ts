@@ -370,17 +370,6 @@ describe("OAuth integration: static client_id mode against fake server", () => {
       globalThis.fetch = originalFetch;
     }
   });
-
-  // NOTE: the "server rejects an unknown client_id" path is left
-  // uncovered here on purpose. A real browser would render the
-  // server's 400 page and the user would close the tab; the flow
-  // then waits for OAUTH_FLOW_TIMEOUT_MS (5 minutes) before giving
-  // up. Reproducing that in a unit test would either require making
-  // the timeout configurable (production code change just for tests)
-  // or wiring the stub to forge a callback with `error=...` (would
-  // exercise a code path that the real provider doesn't drive).
-  // Manual verification against Linear's "Invalid client" page
-  // already covers the user-visible behavior.
 });
 
 describe("OAuth integration: refresh-token rotation against fake server", () => {
