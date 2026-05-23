@@ -1,4 +1,9 @@
-import { createServer, type Server } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import log from "electron-log";
 import { auth } from "@ai-sdk/mcp";
 import { eq } from "drizzle-orm";
@@ -31,9 +36,9 @@ interface CallbackListener {
   dispose: () => void;
 }
 
-// At most one OAuth flow per port at a time. Concurrent flows on the
-// same port can't bind the listener, so we serialize by port. Map key
-// is the port number.
+// At most one OAuth flow per port at a time. A second Connect on the
+// same port supersedes the first (which rejects with "superseded")
+// rather than queueing. Map key is the port number.
 const pendingFlows = new Map<number, PendingFlow>();
 
 function generateState(): string {
@@ -96,7 +101,7 @@ async function startCallbackListener(
       fn();
     };
 
-    const handler = (req: any, res: any): void => {
+    const handler = (req: IncomingMessage, res: ServerResponse): void => {
       if (!req.url) {
         res.writeHead(400).end("Bad request");
         return;
@@ -136,11 +141,13 @@ async function startCallbackListener(
         return;
       }
 
+      const safeErr = (errParam ?? "missing code").replace(
+        /[&<>"']/g,
+        (c) => `&#${c.charCodeAt(0)};`,
+      );
       res
         .writeHead(400, { "Content-Type": "text/html" })
-        .end(
-          `<html><body><h1>OAuth error</h1><p>${errParam ?? "Missing code"}</p></body></html>`,
-        );
+        .end(`<html><body><h1>OAuth error</h1><p>${safeErr}</p></body></html>`);
       settle(() =>
         reject(
           new Error(`OAuth callback error: ${errParam ?? "missing code"}`),
@@ -242,10 +249,6 @@ export async function runOAuthFlow(
   // whatever the user configured, otherwise omit the `scope`
   // parameter entirely so the server applies its own default.
   const scope = s.oauthScope ?? undefined;
-  // Decrypt the stored client_secret (if any) just in time so the
-  // plaintext value never lives in the row payload that crosses the
-  // IPC boundary. Empty string from decryptFromString means decryption
-  // failed -- treat as absent rather than passing junk to the SDK.
   const decryptedClientSecret = s.oauthClientSecret
     ? decryptFromString(s.oauthClientSecret) || undefined
     : undefined;

@@ -176,10 +176,9 @@ describe("disconnectOAuth", () => {
     expect(result.success).toBe(true);
     const row = dbStore.get(5);
     expect(row).toBeDefined();
-    // After disconnect the row's oauthState should hold an encrypted
-    // empty object, not the prior token blob.
-    const stored = row!.oauthState ?? "";
-    expect(stored.includes("access_token")).toBe(false);
+    // After disconnect the row's oauthState is cleared to NULL --
+    // the column is the UI's source of truth for "connected".
+    expect(row!.oauthState).toBeNull();
   });
 
   it("returns success=false for an unknown server id", async () => {

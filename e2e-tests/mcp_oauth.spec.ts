@@ -63,7 +63,7 @@ testSkipIfWindows("mcp - oauth connects and calls a tool", async ({ po }) => {
 
     await po.page
       .getByRole("textbox", { name: "My MCP Server" })
-      .fill("oauth-test-server");
+      .fill("testing-mcp-server");
     await po.page.getByTestId("mcp-transport-select").selectOption("http");
     await po.page.getByPlaceholder("http://localhost:3000").fill(`${base}/mcp`);
     await po.page.getByRole("switch", { name: "Use OAuth" }).click();
@@ -80,7 +80,9 @@ testSkipIfWindows("mcp - oauth connects and calls a tool", async ({ po }) => {
     await po.sendPrompt("[call_tool=calculator_add]", {
       skipWaitForCompletion: true,
     });
+    await po.agentConsent.waitForAgentConsentBanner();
     await po.snapshotMessages();
+    await po.agentConsent.clickAgentConsentAlwaysAllow();
     await po.approveProposal();
 
     await po.sendPrompt("[dump]");
