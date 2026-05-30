@@ -1,8 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Select,
   SelectContent,
@@ -11,11 +19,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useMcp, type Transport } from "@/hooks/useMcp";
+import { ipc } from "@/ipc/types";
+import { DEFAULT_OAUTH_CALLBACK_PORT } from "@/ipc/types/mcp";
 import { showError, showInfo, showSuccess } from "@/lib/toast";
 import { Edit2, Plus, Save, Trash2, X } from "lucide-react";
 import { useDeepLink } from "@/contexts/DeepLinkContext";
 import { AddMcpServerDeepLinkData } from "@/ipc/deep_link_data";
 import { useTranslation } from "react-i18next";
+
+type ConnectFeedback = {
+  serverId: number;
+  kind: "discovery_failed" | "unauthorized" | "other";
+  message: string;
+};
 
 type KeyValue = { key: string; value: string };
 
@@ -309,6 +325,10 @@ export function ToolsMcpSettings() {
     setToolConsent: updateToolConsent,
     updateServer,
     isUpdatingServer,
+    startOAuth,
+    disconnectOAuth,
+    isStartingOAuth,
+    isDisconnectingOAuth,
   } = useMcp();
   const [consents, setConsents] = useState<Record<string, any>>({});
   const [name, setName] = useState("");
@@ -317,6 +337,47 @@ export function ToolsMcpSettings() {
   const [args, setArgs] = useState<string>("");
   const [url, setUrl] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [oauthEnabled, setOauthEnabled] = useState(true);
+  const [oauthClientId, setOauthClientId] = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
+  const [oauthScope, setOauthScope] = useState("");
+  const [connectingServerId, setConnectingServerId] = useState<number | null>(
+    null,
+  );
+  const [disconnectingServerId, setDisconnectingServerId] = useState<
+    number | null
+  >(null);
+  const [connectFeedback, setConnectFeedback] =
+    useState<ConnectFeedback | null>(null);
+
+  // Falls back to the default port on probe failure so the UI
+  // doesn't show "…" forever; the OAuth flow uses the same default.
+  // Short staleTime so the redirect-URI hint stays close to a port
+  // the listener can still bind (another process may have grabbed it).
+  const callbackPortQuery = useQuery({
+    queryKey: ["mcp", "callbackPort"],
+    queryFn: () =>
+      ipc.mcp
+        .probeCallbackPort()
+        .then((r) => r.port)
+        .catch(() => DEFAULT_OAUTH_CALLBACK_PORT),
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
+  });
+  const callbackPort = callbackPortQuery.data ?? null;
+
+  // Assume encrypted on probe failure — a false-positive banner is
+  // worse than going silent on a transient IPC hiccup.
+  const oauthStorageEncryptedQuery = useQuery({
+    queryKey: ["mcp", "isOauthStorageEncrypted"],
+    queryFn: () =>
+      ipc.mcp
+        .isOauthStorageEncrypted()
+        .then((r) => r.available)
+        .catch(() => true),
+    staleTime: 5 * 60 * 1000,
+  });
+  const oauthStorageEncrypted = oauthStorageEncryptedQuery.data ?? null;
   const { lastDeepLink, clearLastDeepLink } = useDeepLink();
   console.log("lastDeepLink!!!", lastDeepLink);
   useEffect(() => {
@@ -345,7 +406,36 @@ export function ToolsMcpSettings() {
     setConsents(consentsMap);
   }, [consentsMap]);
 
+  const [isAdding, setIsAdding] = useState(false);
+
   const onCreate = async () => {
+    if (isAdding) return;
+    setIsAdding(true);
+    try {
+      await runOnCreate();
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
+  const runOnCreate = async () => {
+    if (transport === "http") {
+      const trimmedUrl = url.trim();
+      if (!trimmedUrl) {
+        showError("URL is required for HTTP MCP servers.");
+        return;
+      }
+      try {
+        const parsed = new URL(trimmedUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          showError("URL must use http:// or https://");
+          return;
+        }
+      } catch {
+        showError(`Invalid URL: "${trimmedUrl}"`);
+        return;
+      }
+    }
     const parsedArgs = (() => {
       const trimmed = args.trim();
       if (!trimmed) return null;
@@ -361,22 +451,127 @@ export function ToolsMcpSettings() {
       }
       return trimmed.split(" ").filter(Boolean);
     })();
-    await createServer({
+    const wantsOAuth = oauthEnabled && transport === "http";
+    const created = await createServer({
       name,
       transport,
       command: command || null,
       args: parsedArgs,
       url: url || null,
       enabled,
+      oauthEnabled: wantsOAuth,
+      // Skip OAuth fields if the user turned the toggle off — no
+      // stray client secret in the DB (especially not as plaintext).
+      oauthClientId: wantsOAuth ? oauthClientId.trim() || null : null,
+      oauthClientSecret: wantsOAuth ? oauthClientSecret.trim() || null : null,
+      oauthScope: wantsOAuth ? oauthScope.trim() || null : null,
+      oauthCallbackPort:
+        wantsOAuth && typeof callbackPort === "number" ? callbackPort : null,
     });
     setName("");
     setCommand("");
     setArgs("");
     setUrl("");
     setEnabled(true);
+    setOauthEnabled(true);
+    setOauthClientId("");
+    setOauthClientSecret("");
+    setOauthScope("");
+    setConnectFeedback(null);
+
+    if (transport === "http" && created) {
+      if (wantsOAuth) {
+        // Bridge the gap until the new row arrives in `serversQuery`
+        // and shows its own "Connecting…" state.
+        showInfo(`Connecting OAuth for "${created.name}"…`);
+        await runAutoConnect(created.id);
+      } else {
+        await runProbe(created.id);
+      }
+    }
   };
 
-  // Removed activation toggling – tools are used dynamically with consent checks
+  const runAutoConnect = async (serverId: number) => {
+    // Clear any prior feedback so a stale "discovery_failed" alert
+    // can't sit next to a fresh error toast on the retry path.
+    setConnectFeedback(null);
+    setConnectingServerId(serverId);
+    try {
+      // Pass the probed port so rows with `oauthCallbackPort = null`
+      // (e.g. enabled via "Enable OAuth & retry") get the same
+      // fallback the session already settled on.
+      const result = await startOAuth({
+        serverId,
+        callbackPort:
+          typeof callbackPort === "number" ? callbackPort : undefined,
+      });
+      if (result.success) {
+        setConnectFeedback(null);
+        showSuccess("OAuth connection successful");
+        return;
+      }
+      const message = result.error ?? "OAuth flow failed";
+      if (result.errorKind === "discovery_failed") {
+        setConnectFeedback({
+          serverId,
+          kind: "discovery_failed",
+          message,
+        });
+      } else {
+        showError(message);
+      }
+    } finally {
+      setConnectingServerId(null);
+    }
+  };
+
+  const runProbe = async (serverId: number) => {
+    try {
+      const result = await ipc.mcp.probeConnection(serverId);
+      if (result.status === "unauthorized") {
+        setConnectFeedback({
+          serverId,
+          kind: "unauthorized",
+          message:
+            "This server requires authentication. Enable OAuth and try again.",
+        });
+      } else {
+        setConnectFeedback(null);
+      }
+    } catch {
+      // Best-effort probe; swallow on failure.
+    }
+  };
+
+  const onConnect = async (serverId: number) => {
+    await runAutoConnect(serverId);
+  };
+
+  const onEnableOAuthAndRetry = async (serverId: number) => {
+    await updateServer({ id: serverId, oauthEnabled: true });
+    setConnectFeedback(null);
+    await runAutoConnect(serverId);
+  };
+
+  const onDisableOAuthAndRetry = async (serverId: number) => {
+    await updateServer({ id: serverId, oauthEnabled: false });
+    setConnectFeedback(null);
+    await runProbe(serverId);
+  };
+
+  const onDisconnect = async (serverId: number) => {
+    setDisconnectingServerId(serverId);
+    try {
+      await disconnectOAuth(serverId);
+      showSuccess("Disconnected OAuth");
+    } catch (err) {
+      showError(
+        err instanceof Error ? err.message : "Failed to disconnect OAuth",
+      );
+    } finally {
+      setDisconnectingServerId(null);
+    }
+  };
 
   const onSetToolConsent = async (
     serverId: number,
@@ -387,8 +582,38 @@ export function ToolsMcpSettings() {
     setConsents((prev) => ({ ...prev, [`${serverId}:${toolName}`]: consent }));
   };
 
+  const hasOauthServer = useMemo(
+    () => (servers || []).some((s) => s.transport === "http" && s.oauthEnabled),
+    [servers],
+  );
+  // Surface the no-keyring warning as soon as the user is about to
+  // commit an OAuth secret (form has HTTP + OAuth toggle on), not
+  // only after a server already exists.
+  const willPersistOauthSecret =
+    transport === "http" && oauthEnabled && oauthClientSecret.trim().length > 0;
+  const showPlaintextBanner =
+    oauthStorageEncrypted === false &&
+    (hasOauthServer || willPersistOauthSecret);
+
   return (
     <div className="space-y-6">
+      {showPlaintextBanner && (
+        <Alert variant="destructive">
+          <AlertTitle>
+            OAuth tokens and client secrets stored without OS encryption
+          </AlertTitle>
+          <AlertDescription>
+            Your OS keyring is unavailable (on Linux this usually means
+            <code className="mx-1">libsecret</code>/<code>gnome-keyring</code>
+            is not installed), so OAuth tokens and pre-registered client secrets
+            for HTTP MCP servers are written to the local database without
+            encryption. Any process with read access to the Dyad data directory
+            can decode them. Client secrets are especially sensitive because
+            they don't expire. Install a keyring service and reconnect (and
+            re-enter any pre-registered client secret) to upgrade.
+          </AlertDescription>
+        </Alert>
+      )}
       <div className="space-y-2">
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -433,14 +658,100 @@ export function ToolsMcpSettings() {
             </>
           )}
           {transport === "http" && (
-            <div className="col-span-2">
-              <Label>URL</Label>
-              <Input
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="http://localhost:3000"
-              />
-            </div>
+            <>
+              <div className="col-span-2">
+                <Label>URL</Label>
+                <Input
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="http://localhost:3000"
+                />
+              </div>
+              <div className="col-span-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    aria-label="Use OAuth"
+                    checked={oauthEnabled}
+                    onCheckedChange={setOauthEnabled}
+                  />
+                  <Label>Use OAuth</Label>
+                </div>
+                <div className="ml-10 mt-1 text-xs text-muted-foreground">
+                  Required for most remote servers.
+                </div>
+              </div>
+              {oauthEnabled && (
+                <div className="col-span-2">
+                  <Accordion>
+                    <AccordionItem value="advanced">
+                      <AccordionTrigger className="py-2 text-sm">
+                        Advanced OAuth options
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-3">
+                        <div>
+                          <Label>
+                            OAuth Client ID
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              If the MCP server's setup requires you to register
+                              an app, paste the Client ID of your app here.
+                              Otherwise leave this blank.
+                            </span>
+                          </Label>
+                          <Input
+                            value={oauthClientId}
+                            onChange={(e) => setOauthClientId(e.target.value)}
+                            placeholder="Pre-registered client ID"
+                          />
+                        </div>
+                        <div>
+                          <Label>
+                            OAuth Client Secret
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              Include this only if the MCP server gave you a
+                              secret alongside the Client ID.
+                            </span>
+                          </Label>
+                          <Input
+                            type="password"
+                            value={oauthClientSecret}
+                            onChange={(e) =>
+                              setOauthClientSecret(e.target.value)
+                            }
+                            placeholder="Pre-registered client secret"
+                          />
+                        </div>
+                        <div>
+                          <Label>
+                            OAuth Scope
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              Permissions to request, space-separated. Leave
+                              this blank to use the server's default.
+                            </span>
+                          </Label>
+                          <Input
+                            value={oauthScope}
+                            onChange={(e) => setOauthScope(e.target.value)}
+                            placeholder=""
+                          />
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          If you include a Client ID, make sure that you
+                          register{" "}
+                          <code>
+                            http://localhost:
+                            {callbackPort ?? "…"}
+                            /callback
+                          </code>{" "}
+                          as a redirect URI for your MCP server. Your MCP server
+                          most likely provides a dashboard where you can do
+                          this.
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
+                </div>
+              )}
+            </>
           )}
           <div className="flex items-center gap-2">
             <Switch
@@ -452,8 +763,8 @@ export function ToolsMcpSettings() {
           </div>
         </div>
         <div>
-          <Button onClick={onCreate} disabled={!name.trim()}>
-            Add Server
+          <Button onClick={onCreate} disabled={!name.trim() || isAdding}>
+            {isAdding ? "Adding…" : "Add Server"}
           </Button>
         </div>
       </div>
@@ -463,7 +774,20 @@ export function ToolsMcpSettings() {
           <div key={s.id} className="border rounded-lg p-3">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium">{s.name}</div>
+                <div className="font-medium flex items-center gap-2">
+                  {s.name}
+                  {s.oauthEnabled && (
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded ${
+                        s.oauthConnected
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-100"
+                      }`}
+                    >
+                      OAuth: {s.oauthConnected ? "connected" : "not connected"}
+                    </span>
+                  )}
+                </div>
                 <div className="text-xs text-muted-foreground">
                   {s.transport}
                   {s.url ? ` · ${s.url}` : ""}
@@ -474,6 +798,30 @@ export function ToolsMcpSettings() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {s.oauthEnabled && !s.oauthConnected && (
+                  <Button
+                    variant="default"
+                    onClick={() => onConnect(s.id)}
+                    disabled={isStartingOAuth && connectingServerId === s.id}
+                  >
+                    {isStartingOAuth && connectingServerId === s.id
+                      ? "Connecting…"
+                      : "Connect"}
+                  </Button>
+                )}
+                {s.oauthEnabled && s.oauthConnected && (
+                  <Button
+                    variant="outline"
+                    onClick={() => onDisconnect(s.id)}
+                    disabled={
+                      isDisconnectingOAuth && disconnectingServerId === s.id
+                    }
+                  >
+                    {isDisconnectingOAuth && disconnectingServerId === s.id
+                      ? "Disconnecting…"
+                      : "Disconnect"}
+                  </Button>
+                )}
                 <Switch
                   aria-label={`Toggle ${s.name}`}
                   checked={!!s.enabled}
@@ -501,6 +849,40 @@ export function ToolsMcpSettings() {
                     });
                   }}
                 />
+              </div>
+            )}
+            {connectFeedback && connectFeedback.serverId === s.id && (
+              <div className="mt-3">
+                <Alert variant="destructive">
+                  <AlertTitle>
+                    {connectFeedback.kind === "unauthorized"
+                      ? "Server requires authentication"
+                      : connectFeedback.kind === "discovery_failed"
+                        ? "Server doesn't support OAuth"
+                        : "Connection failed"}
+                  </AlertTitle>
+                  <AlertDescription className="gap-2">
+                    <span>{connectFeedback.message}</span>
+                    {connectFeedback.kind === "unauthorized" && (
+                      <Button
+                        size="sm"
+                        onClick={() => onEnableOAuthAndRetry(s.id)}
+                        disabled={isUpdatingServer || isStartingOAuth}
+                      >
+                        Enable OAuth & retry
+                      </Button>
+                    )}
+                    {connectFeedback.kind === "discovery_failed" && (
+                      <Button
+                        size="sm"
+                        onClick={() => onDisableOAuthAndRetry(s.id)}
+                        disabled={isUpdatingServer}
+                      >
+                        Disable OAuth & retry
+                      </Button>
+                    )}
+                  </AlertDescription>
+                </Alert>
               </div>
             )}
             {s.transport === "http" && (
