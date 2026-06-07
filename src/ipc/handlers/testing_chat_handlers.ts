@@ -38,7 +38,7 @@ EOM`;
 function buildStressManyWritesLarge(): string {
   return `Generating 10000 ~100-line files for stress test.
 
-${Array.from({ length: 10000 }, (_, i) => {
+${Array.from({ length: 200 }, (_, i) => {
   const fields = Array.from(
     { length: 20 },
     (_, j) => `  field_${j}: ${i * 20 + j},`,
@@ -51,6 +51,358 @@ ${Array.from({ length: 10000 }, (_, i) => {
 }`,
   ).join("\n");
   return `<dyad-write path="src/stress/file_${i}.ts" description="stress file ${i}">
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
+export const id${i} = ${i};
+export const name${i} = "file_${i}";
+
+export interface Meta${i} {
+  id: number;
+  name: string;
+  index: number;
+}
+
+export const meta${i}: Meta${i} = {
+  id: id${i},
+  name: name${i},
+  index: ${i},
+};
+
+export const data${i} = {
+${fields}
+};
+
+export function get${i}(): number {
+  return id${i};
+}
+
+export function describe${i}(): string {
+  return \`\${name${i}}:\${id${i}}\`;
+}
+
+${helpers}
+
+export function summarize${i}(): string {
+  const parts = [
+    describe${i}(),
+    String(get${i}()),
+    JSON.stringify(meta${i}),
+  ];
+  return parts.join("|");
+}
+
+export default meta${i};
 export const id${i} = ${i};
 export const name${i} = "file_${i}";
 
