@@ -194,22 +194,19 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     <>
       {contentPieces.map((piece, index) => (
         <React.Fragment key={index}>
-          {piece.type === "markdown" ? (
-            piece.content && <MemoMarkdown content={piece.content} />
-          ) : (
-            <MemoCustomTag tagInfo={piece.tagInfo} isStreaming={isStreaming} />
-          )}
-          {index === lastErrorIndex &&
-            errorCount > 1 &&
-            !isStreaming &&
-            chatId && (
-              <div className="mt-3 w-full flex">
-                <FixAllErrorsButton
-                  errorMessages={errorMessages}
-                  chatId={chatId}
-                />
-              </div>
-            )}
+             {piece.type === "markdown"
+            ? piece.content && (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code: CodeHighlight,
+                    a: customLink,
+                  }}
+                >
+                  {piece.content}
+                </ReactMarkdown>
+              )
+            : renderCustomTag(piece.tagInfo, { isStreaming })}
         </React.Fragment>
       ))}
     </>
