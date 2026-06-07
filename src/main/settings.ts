@@ -66,7 +66,12 @@ const DEFAULT_SETTINGS: UserSettings = {
 
 const CRASH_SENTINEL_FILE = "session.lock";
 const RENDERER_CRASH_FILE = "renderer-crash.json";
+const MAIN_EXCEPTION_FILE = "main-exception.json";
 const SETTINGS_FILE = "user-settings.json";
+
+const MAX_MAIN_EXCEPTIONS = 5;
+const MAX_EXCEPTION_MESSAGE_LEN = 1_000;
+const MAX_EXCEPTION_STACK_LEN = 4_000;
 const RESTORE_SETTINGS_DOCS_URL =
   "https://www.dyad.sh/docs/guides/migrate-restore#restoring-settings-from-backup";
 let initialLoadIsFirstSession = false;
@@ -228,6 +233,131 @@ function parseRendererCrashPerformance(
     systemMemoryTotalMB: optionalNumber("systemMemoryTotalMB"),
     systemCpuPercent: optionalNumber("systemCpuPercent"),
   };
+}
+
+export interface MainException {
+  name: string;
+  message?: string;
+  stack?: string;
+  origin: "uncaughtException" | "unhandledRejection";
+  timestamp: number;
+}
+
+export interface MainExceptionRecord {
+  // Exceptions we could not send live (no renderer was alive); replayed on the
+  // next launch. Oldest-to-newest, capped at MAX_MAIN_EXCEPTIONS.
+  exceptions: MainException[];
+}
+
+function getMainExceptionPath(): string {
+  return path.join(getUserDataPath(), MAIN_EXCEPTION_FILE);
+}
+
+function truncate(value: string | undefined, max: number): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value.length > max ? `${value.slice(0, max)}…[truncated]` : value;
+}
+
+export function buildMainException(detail: {
+  name: string;
+  message?: string;
+  stack?: string;
+  origin: MainException["origin"];
+  timestamp?: number;
+}): MainException {
+  return {
+    name: detail.name,
+    message: truncate(detail.message, MAX_EXCEPTION_MESSAGE_LEN),
+    stack: truncate(detail.stack, MAX_EXCEPTION_STACK_LEN),
+    origin: detail.origin,
+    timestamp: detail.timestamp ?? Date.now(),
+  };
+}
+
+// Stash an exception we couldn't send live so it can be replayed next launch.
+export function recordMainException(exception: MainException): void {
+  try {
+    const previous = readMainExceptionRecord();
+    const exceptions = [...(previous?.exceptions ?? []), exception].slice(
+      -MAX_MAIN_EXCEPTIONS,
+    );
+    writeMainExceptionRecord({ exceptions });
+  } catch (error) {
+    logger.error("Error writing main exception record:", error);
+  }
+}
+
+function writeMainExceptionRecord(record: MainExceptionRecord): void {
+  const filePath = getMainExceptionPath();
+  const tmpPath = `${filePath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2));
+  fs.renameSync(tmpPath, filePath);
+}
+
+export function readMainExceptionRecord(): MainExceptionRecord | null {
+  try {
+    const filePath = getMainExceptionPath();
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (typeof raw !== "object" || raw === null) {
+      return null;
+    }
+    const exceptions = parseMainExceptions(raw.exceptions);
+    if (exceptions.length === 0) {
+      return null;
+    }
+    return { exceptions };
+  } catch (error) {
+    logger.error("Error reading main exception record:", error);
+    return null;
+  }
+}
+
+export function clearMainExceptionRecord(): void {
+  try {
+    fs.unlinkSync(getMainExceptionPath());
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.error("Error clearing main exception record:", error);
+    }
+  }
+}
+
+// Lenient parse: drop malformed entries rather than throwing, since the record
+// may have been written by an older build.
+function parseMainExceptions(raw: unknown): MainException[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const result: MainException[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.name !== "string") {
+      continue;
+    }
+    if (typeof candidate.timestamp !== "number") {
+      continue;
+    }
+    result.push({
+      name: candidate.name,
+      message:
+        typeof candidate.message === "string" ? candidate.message : undefined,
+      stack: typeof candidate.stack === "string" ? candidate.stack : undefined,
+      origin:
+        candidate.origin === "unhandledRejection"
+          ? "unhandledRejection"
+          : "uncaughtException",
+      timestamp: candidate.timestamp,
+    });
+  }
+  return result;
 }
 
 export function readSettings(): UserSettings {

@@ -25,6 +25,11 @@ import {
   recordRendererCrash,
   readRendererCrashRecord,
   clearRendererCrashRecord,
+  buildMainException,
+  recordMainException,
+  readMainExceptionRecord,
+  clearMainExceptionRecord,
+  type MainException,
   setInitialLoadIsFirstSession,
 } from "./main/settings";
 import { sendTelemetryEvent } from "./ipc/utils/telemetry";
@@ -244,6 +249,7 @@ export async function onReady() {
   }
 
   writeCrashSentinel();
+  registerMainExceptionHandlers();
 
   // Start performance monitoring
   startPerformanceMonitoring();
@@ -375,6 +381,77 @@ let mainWindow: BrowserWindow | null = null;
 let pendingForceCloseData: any = null;
 let pendingCrashDetected = false;
 let isAppQuitting = false;
+let mainExceptionHandlersRegistered = false;
+
+// Send a main:exception event if a renderer is alive to forward it; returns
+// false when there is no window (so the caller can stash it for replay).
+function emitMainException(exception: MainException): boolean {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    return false;
+  }
+  sendTelemetryEvent("main:exception", {
+    // Bypass renderer PostHog sampling (see src/renderer.tsx).
+    error: true,
+    exception_name: exception.name,
+    exception_message: exception.message,
+    exception_stack: exception.stack,
+    exception_origin: exception.origin,
+    exception_timestamp: exception.timestamp,
+  });
+  return true;
+}
+
+// Report main-process unhandled exceptions/rejections. Emits immediately when a
+// renderer is alive; otherwise stashes to disk and replays on the next launch.
+// electron-log owns logging and exit — we only report.
+function registerMainExceptionHandlers(): void {
+  if (mainExceptionHandlersRegistered) {
+    return;
+  }
+  mainExceptionHandlersRegistered = true;
+
+  const report = (exception: MainException) => {
+    if (!emitMainException(exception)) {
+      recordMainException(exception);
+    }
+  };
+
+  process.on("uncaughtException", (error) => {
+    report(
+      buildMainException({
+        name: error?.name ?? "Error",
+        message: error?.message,
+        stack: error?.stack,
+        origin: "uncaughtException",
+      }),
+    );
+  });
+  process.on("unhandledRejection", (reason) => {
+    const error =
+      reason instanceof Error ? reason : new Error(String(reason ?? "unknown"));
+    report(
+      buildMainException({
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        origin: "unhandledRejection",
+      }),
+    );
+  });
+}
+
+// Replay any exceptions stashed while no renderer was alive (this session's
+// pre-window errors or a prior session's). Call once the renderer has loaded.
+function flushStashedMainExceptions(): void {
+  const record = readMainExceptionRecord();
+  if (!record) {
+    return;
+  }
+  for (const exception of record.exceptions) {
+    emitMainException(exception);
+  }
+  clearMainExceptionRecord();
+}
 
 const createWindow = () => {
   // Create the browser window.
@@ -504,6 +581,9 @@ const createWindow = () => {
       });
       clearRendererCrashRecord();
     }
+
+    // Forward any main-process exceptions stashed while no renderer was alive.
+    flushStashedMainExceptions();
   });
 
   // Persist any non-clean renderer-process termination so we can report it on
