@@ -363,9 +363,10 @@ export async function onReady() {
   // DEBUG: remove before commit — native crash-test trigger.
   ipcMain.handle("debug:native-crash", (_event, kind: string) => {
     if (kind === "main") {
-      // Native crash of the MAIN/browser process (SIGABRT) → full app crash:
-      // browser dump + sentinel trip. This is the real target.
-      process.abort();
+      // Native crash of the main/browser process via a real access violation →
+      // full app crash: browser dump + sentinel trip. process.crash() is caught
+      // by Crashpad on every platform (process.abort/SIGABRT is not, on Windows).
+      (process as NodeJS.Process & { crash: () => void }).crash();
     } else if (kind === "v8-oom") {
       // Exhaust the main process V8 heap → V8 fatal abort → browser dump.
       const leak: unknown[] = [];
