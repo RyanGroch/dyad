@@ -4,6 +4,7 @@ import { ThemeProvider } from "../contexts/ThemeContext";
 import { DeepLinkProvider } from "../contexts/DeepLinkContext";
 import { Toaster } from "sonner";
 import { TitleBar } from "./TitleBar";
+import { DebugCrashButtons } from "@/components/DebugCrashButtons"; // DEBUG: remove before commit
 import { useEffect, type ReactNode } from "react";
 import { useRunApp, useAppOutputSubscription } from "@/hooks/useRunApp";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -139,6 +140,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               expand
               duration={settings?.isTestMode ? 500 : undefined}
             />
+            <DebugCrashButtons /> {/* DEBUG: remove before commit */}
           </SidebarProvider>
         </DeepLinkProvider>
       </ThemeProvider>

@@ -7,6 +7,8 @@ import {
   net,
   session,
   crashReporter,
+  ipcMain, // DEBUG: remove before commit (native crash-test trigger)
+  shell, // DEBUG: remove before commit (open crash dumps folder)
 } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/ipc_host";
@@ -357,6 +359,33 @@ export async function onReady() {
     logger.warn("Could not read GPU status for crash context:", error);
   }
   logger.info("Crash dumps directory:", app.getPath("crashDumps"));
+
+  // DEBUG: remove before commit — native crash-test trigger.
+  ipcMain.handle("debug:native-crash", (_event, kind: string) => {
+    if (kind === "main") {
+      // Native crash of the MAIN/browser process (SIGABRT) → full app crash:
+      // browser dump + sentinel trip. This is the real target.
+      process.abort();
+    } else if (kind === "v8-oom") {
+      // Exhaust the main process V8 heap → V8 fatal abort → browser dump.
+      const leak: unknown[] = [];
+      while (leak.length >= 0) {
+        leak.push(Array.from({ length: 1e7 }, () => 0));
+      }
+    } else if (kind === "renderer") {
+      // Renderer-only crash (real SIGSEGV → renderer dump). App survives.
+      BrowserWindow.getFocusedWindow()
+        ?.webContents.loadURL("chrome://crash")
+        .catch(() => {});
+    } else if (kind === "gpu") {
+      // Crashes the GPU process via a hidden window so the main UI survives.
+      const w = new BrowserWindow({ show: false });
+      w.loadURL("chrome://gpucrash").catch(() => {});
+      setTimeout(() => !w.isDestroyed() && w.destroy(), 2000);
+    } else if (kind === "open-dumps") {
+      shell.openPath(app.getPath("crashDumps"));
+    }
+  });
 
   // Start performance monitoring
   startPerformanceMonitoring();

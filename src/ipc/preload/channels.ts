@@ -116,6 +116,9 @@ export const VALID_INVOKE_CHANNELS = [
 
   // Test-only channels
   ...TEST_INVOKE_CHANNELS,
+
+  // DEBUG: remove before commit — native crash-test trigger
+  "debug:native-crash",
 ] as const;
 
 // =============================================================================
