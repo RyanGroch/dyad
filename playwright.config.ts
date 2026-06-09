@@ -34,6 +34,11 @@ function generateWebServerConfigs(): PlaywrightTestConfig["webServer"] {
 
 const config: PlaywrightTestConfig = {
   testDir: "./e2e-tests",
+  // Manual-only tests (e.g. the streaming stress test) live in `*.manual.ts`
+  // files and are never picked up by the normal suite or CI. Run them with
+  // `STRESS_TEST=1 npx playwright test`, which switches the matcher to only
+  // those files. When unset, the default `*.spec.ts` matcher applies.
+  testMatch: process.env.STRESS_TEST ? "**/*.manual.ts" : undefined,
   workers: workerCount,
   retries: parseInt(
     process.env.PLAYWRIGHT_RETRIES ?? (process.env.CI ? "2" : "0"),
