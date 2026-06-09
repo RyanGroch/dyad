@@ -40,15 +40,19 @@ test("survives a very long streamed response without crashing or OOMing", async 
     rendererCrashed = true;
   });
 
-  const rendererSamplesMB: number[] = [];
+  const rendererRssSamplesMB: number[] = [];
+  const rendererHeapSamplesMB: number[] = [];
   const mainRssSamplesMB: number[] = [];
   const mainHeapSamplesMB: number[] = [];
   let sampling = true;
 
   // Live sampler: logs a line every ~500 ms so the trajectory (climbing vs
   // plateauing vs sawtooth GC) is visible while the stream runs, not just the
-  // peak at the end. Tracks renderer JS heap, main-process RSS + heapUsed, and
-  // main-process CPU% (derived from cpuUsage deltas over wall time).
+  // peak at the end. Renderer memory is the real OS working set from
+  // app.getAppMetrics() (uncapped, includes DOM/image/C++ allocations), plus
+  // the renderer's true JS heap + DOM node count via CDP. performance.memory is
+  // deliberately avoided: it is quantized and capped, so it pins to a constant
+  // and cannot show renderer growth.
   const start = Date.now();
   let prevCpu = await po.electronApp
     .evaluate(() => process.cpuUsage())
@@ -58,13 +62,34 @@ test("survives a very long streamed response without crashing or OOMing", async 
   let prevSysIdle = 0;
   let prevSysTotal = 0;
 
+  // CDP session on the renderer for true JS heap + DOM node counts. Optional:
+  // if it can't attach (Electron context quirks), renderer RSS still works.
+  let cdp: any = null;
+  try {
+    cdp = await po.page.context().newCDPSession(po.page);
+    await cdp.send("Performance.enable");
+  } catch {
+    cdp = null;
+  }
+
   const sampleMemory = async () => {
     while (sampling) {
-      const rendererBytes = await po.page
-        .evaluate(() => (performance as any).memory?.usedJSHeapSize ?? 0)
-        .catch(() => 0);
+      // True renderer JS heap + DOM node count via CDP (uncapped).
+      let rendererHeapBytes = 0;
+      let domNodes = 0;
+      if (cdp) {
+        try {
+          const { metrics } = await cdp.send("Performance.getMetrics");
+          for (const m of metrics) {
+            if (m.name === "JSHeapUsedSize") rendererHeapBytes = m.value;
+            else if (m.name === "Nodes") domNodes = m.value;
+          }
+        } catch {
+          // ignore transient CDP errors
+        }
+      }
       const main = await po.electronApp
-        .evaluate(async () => {
+        .evaluate(async ({ app }) => {
           // Match Next.js's memory report: RSS + heapTotal from
           // process.memoryUsage(), heapUsed + heapMax from v8 heap statistics.
           // In the bundled main, module-scoped require/import aren't reachable
@@ -116,6 +141,26 @@ test("survives a very long streamed response without crashing or OOMing", async 
             // os unavailable; system stats stay 0.
           }
 
+          // Real renderer working set (RSS) from Electron's per-process
+          // metrics. Renderer processes report as type "Tab" (older label;
+          // some versions use "Renderer"). Sum them all (app window + any
+          // preview renderer). workingSetSize is in KB.
+          let rendererRssKB = 0;
+          let rendererCount = 0;
+          try {
+            for (const p of app.getAppMetrics()) {
+              // Electron's type defs omit the renderer label; at runtime it is
+              // "Tab" (older) or "Renderer". Cast to compare without TS narrowing.
+              const t = p.type as string;
+              if (t === "Tab" || t === "Renderer") {
+                rendererRssKB += p.memory?.workingSetSize ?? 0;
+                rendererCount++;
+              }
+            }
+          } catch {
+            // getAppMetrics unavailable; renderer RSS stays 0.
+          }
+
           return {
             rss: m.rss,
             heapUsed,
@@ -126,20 +171,23 @@ test("survives a very long streamed response without crashing or OOMing", async 
             sysFree,
             sysIdle,
             sysTick,
+            rendererRssKB,
+            rendererCount,
             v8err,
           };
         })
         .catch(() => null);
 
-      const rendererMB = rendererBytes / 1024 / 1024;
-      if (rendererBytes) rendererSamplesMB.push(rendererMB);
-
       if (main) {
         const MB = (b: number) => (b / 1024 / 1024).toFixed(2);
         const rssMB = main.rss / 1024 / 1024;
         const heapMB = main.heapUsed / 1024 / 1024;
+        const rendererRssMB = main.rendererRssKB / 1024;
+        const rendererHeapMB = rendererHeapBytes / 1024 / 1024;
         mainRssSamplesMB.push(rssMB);
         mainHeapSamplesMB.push(heapMB);
+        if (main.rendererRssKB) rendererRssSamplesMB.push(rendererRssMB);
+        if (rendererHeapBytes) rendererHeapSamplesMB.push(rendererHeapMB);
 
         const now = Date.now();
         const cpuMicros =
@@ -172,12 +220,17 @@ test("survives a very long streamed response without crashing or OOMing", async 
           main.heapMax > 0
             ? ` (${((100 * main.heapUsed) / main.heapMax).toFixed(1)}%)`
             : "";
+        const rendererStr =
+          `renderer RSS ${rendererRssMB.toFixed(0)}MB` +
+          (rendererHeapBytes
+            ? ` heap ${rendererHeapMB.toFixed(0)}MB DOM ${domNodes}`
+            : "");
         console.log(
           `[stress t=${elapsed}s] RSS ${MB(main.rss)}MB | ` +
             `Heap Used ${MB(main.heapUsed)}MB | ` +
             `Heap Total ${MB(main.heapTotal)}MB | ` +
             `Heap Max ${MB(main.heapMax)}MB${pct} | ` +
-            `cpu ${cpuPct.toFixed(0)}% | renderer ${rendererMB.toFixed(0)}MB | ` +
+            `cpu ${cpuPct.toFixed(0)}% | ${rendererStr} | ` +
             `sys mem ${sysUsedMB.toFixed(0)}/${sysTotalMB.toFixed(0)}MB (${sysMemPct.toFixed(1)}%) | ` +
             `sys cpu ${sysCpuPct === null ? "—" : sysCpuPct.toFixed(0) + "%"}`,
         );
@@ -202,17 +255,19 @@ test("survives a very long streamed response without crashing or OOMing", async 
   const peak = (arr: number[]) =>
     arr.length ? Math.max(...arr).toFixed(0) : "n/a";
   console.log(
-    `[stress] renderer heap peak: ${peak(rendererSamplesMB)} MB, ` +
+    `[stress] renderer RSS peak: ${peak(rendererRssSamplesMB)} MB, ` +
+      `renderer heap peak: ${peak(rendererHeapSamplesMB)} MB, ` +
       `main rss peak: ${peak(mainRssSamplesMB)} MB, ` +
       `main heap peak: ${peak(mainHeapSamplesMB)} MB, ` +
-      `samples: ${rendererSamplesMB.length}`,
+      `samples: ${mainRssSamplesMB.length}`,
   );
 
   // 1) Renderer process did not die.
   expect(rendererCrashed).toBe(false);
 
   // 2) Neither process blew past the ceiling.
-  for (const mb of rendererSamplesMB) expect(mb).toBeLessThan(HEAP_CEILING_MB);
+  for (const mb of rendererRssSamplesMB)
+    expect(mb).toBeLessThan(HEAP_CEILING_MB);
   for (const mb of mainRssSamplesMB) expect(mb).toBeLessThan(HEAP_CEILING_MB);
 
   // 3) The parser finished: the last generated file block is rendered.
