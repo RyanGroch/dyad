@@ -107,6 +107,28 @@ This will return a 429 status code with the following response:
 }
 ```
 
+### Streaming Stress Content
+
+To generate a large multi-file response on the fly (for stress testing the
+streaming pipeline and renderer without committing a huge fixture), include both
+the `[stress-files=N]` and `[stress-lines=M]` markers in the user message. N is
+the number of files, M the line count per file.
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "[stress-files=300] [stress-lines=500]" }
+  ],
+  "model": "any-model"
+}
+```
+
+The server emits N `<dyad-write>` blocks of M lines, streamed in the same SSE
+format and at the same rate (~3200 chars/s) as any other response, so the load
+mimics a fast-but-real provider. See `e2e-tests/stress_streaming.manual.ts` for
+the local-only test that drives it (run with `STRESS_TEST=1 npx playwright
+test`; override scale with `STRESS_FILES` / `STRESS_LINES` env vars).
+
 ## Configuration
 
 You can configure the server by modifying the `PORT` variable in the code.

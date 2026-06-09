@@ -493,12 +493,36 @@ export default Index;
       ? parseInt(highTokensMatch[1], 10)
       : null;
 
+    // Stress marker: [stress-files=N] [stress-lines=M] generates a large
+    // multi-file response on the fly so we can stress the streaming pipeline
+    // and renderer without committing a huge fixture. Both numbers are required;
+    // the only caller is the manual stress test, which always supplies them.
+    // When the marker is absent, behaviour is unchanged.
+    const stressFilesMatch =
+      typeof lastMessage?.content === "string" &&
+      lastMessage.content.match(/\[stress-files=(\d+)\]/);
+    const stressLinesMatch =
+      typeof lastMessage?.content === "string" &&
+      lastMessage.content.match(/\[stress-lines=(\d+)\]/);
+    const isStress = !!(stressFilesMatch && stressLinesMatch);
+    if (isStress) {
+      const stressFiles = parseInt(stressFilesMatch[1], 10);
+      const stressLines = parseInt(stressLinesMatch[1], 10);
+      messageContent = generateStressContent(stressFiles, stressLines);
+      console.error(
+        `* Stress mode: ${stressFiles} files x ${stressLines} lines (${messageContent.length} bytes)`,
+      );
+    }
+
     // Split the message into characters to simulate streaming
     const messageChars = messageContent.split("");
 
-    // Stream each character with a delay
+    // Stream each character with a delay. The stress path uses this same rate
+    // (32 chars / 10 ms ~= 850 tok/s) so the load looks like a fast-but-real
+    // provider rather than an artificial firehose.
     let index = 0;
     const batchSize = 32;
+    const intervalMs = 10;
 
     // Send role first
     res.write(createStreamChunk("", "assistant"));
@@ -522,8 +546,50 @@ export default Index;
         clearInterval(interval);
         res.end();
       }
-    }, 10);
+    }, intervalMs);
   };
+
+// Build a large, plausible multi-file response for stress testing. Each file is
+// a real <dyad-write> block of TSX so the markdown/dyad parser and the file
+// writer are exercised exactly as they would be for a real model response.
+export function generateStressContent(files: number, lines: number): string {
+  const blocks: string[] = [`I'll scaffold a ${files}-file feature for you.\n`];
+  for (let f = 1; f <= files; f++) {
+    const num = String(f).padStart(3, "0");
+    const name = `StressFile${num}`;
+    const body: string[] = [
+      `import React, { useState, useCallback } from "react";`,
+      ``,
+      `interface ${name}Props {`,
+      `  id: string;`,
+      `  label: string;`,
+      `}`,
+      ``,
+      `export function ${name}({ id, label }: ${name}Props) {`,
+      `  const [count, setCount] = useState(0);`,
+      `  const onClick = useCallback(() => setCount((c) => c + 1), []);`,
+    ];
+    // Pad to the requested line count with deterministic filler lines.
+    let i = body.length;
+    while (i < lines - 4) {
+      body.push(
+        `  // line ${i} of ${name}: stress filler content for the renderer`,
+      );
+      i++;
+    }
+    body.push(`  return (`);
+    body.push(
+      `    <button data-id={id} onClick={onClick}>{label}: {count}</button>`,
+    );
+    body.push(`  );`);
+    body.push(`}`);
+    blocks.push(
+      `<dyad-write path="src/stress/${name}.tsx">\n${body.join("\n")}\n</dyad-write>`,
+    );
+  }
+  blocks.push(`\nDone. Generated ${files} files.`);
+  return blocks.join("\n\n");
+}
 
 export function generateDump(req: Request) {
   const timestamp = Date.now();
