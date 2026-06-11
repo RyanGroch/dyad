@@ -14,6 +14,7 @@ import { writeFileTool } from "@/pro/main/ipc/handlers/local_agent/tools/write_f
 import { grepTool } from "@/pro/main/ipc/handlers/local_agent/tools/grep";
 import type { AgentContext } from "@/pro/main/ipc/handlers/local_agent/tools/types";
 import type { McpEvalCase } from "./cases";
+import { getEvalMcpDefs } from "./mcp_registry";
 
 // Bridges the eval harness to the production `execute_sandbox_script`
 // tool. The tool's `execute` is reused as-is — we only build an
@@ -154,6 +155,13 @@ export function buildMcpAgentContext(
     requireConsent: async () => true,
     appendUserMessage: () => {},
     onUpdateTodos: () => {},
+    // Production injects MCP host functions into the sandbox from these
+    // two fields (set by `local_agent_handler`), gating on
+    // `mcpToolsEnabled`. The eval always runs the MCP-in-sandbox path
+    // (never read-only / plan mode), so enable it and supply the same
+    // defs the registry feeds to the mocked `collectMcpToolDefs`.
+    mcpToolsEnabled: true,
+    mcpToolDefs: getEvalMcpDefs(),
     abortSignal,
   };
 }
@@ -214,11 +222,20 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
   state: McpRunState;
   ctx: AgentContext;
 }): Promise<{ tool: Tool; description: string }> {
-  const description = await buildExecuteSandboxScriptDescription();
+  // Match production's default path: pass the per-turn defs and inline
+  // the type declarations (search mode is the `enableMcpToolSearch`
+  // experiment, off by default, so the model sees the full MCP surface
+  // rather than being pointed at `search_mcp_tools`).
+  const description = await buildExecuteSandboxScriptDescription(
+    getEvalMcpDefs(),
+    { useSearch: false },
+  );
   const tool: Tool = {
     description,
     inputSchema: executeSandboxScriptTool.inputSchema,
-    execute: async (args: { script: string; description?: string }) => {
+    execute: async (
+      args: Parameters<typeof executeSandboxScriptTool.execute>[0],
+    ) => {
       const index = params.state.sandboxScripts.length;
       const startMcpCount = params.state.mcpCalls.length;
       const startedAt = Date.now();

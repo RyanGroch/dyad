@@ -1,5 +1,7 @@
 import { mcpManager } from "@/ipc/utils/mcp_manager";
 import type { MCPClient } from "@ai-sdk/mcp";
+import type { JSONSchema7 } from "@ai-sdk/provider";
+import { asSchema } from "@ai-sdk/provider-utils";
 import type { McpToolDef } from "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs";
 import { sanitizeMcpName } from "@/ipc/utils/mcp_tool_utils";
 
@@ -66,11 +68,23 @@ export async function buildEvalMcpEnvironment(params: {
   const { serverId, serverName, client } = params;
   const toolSet = await client.tools();
   const sanitizedServerName = sanitizeMcpName(serverName);
-  const defs: McpToolDef[] = Object.entries(toolSet).map(
-    ([toolName, mcpTool]) => {
+  const defs: McpToolDef[] = await Promise.all(
+    Object.entries(toolSet).map(async ([toolName, mcpTool]) => {
       const sanitizedToolName = sanitizeMcpName(toolName);
       const toolKey = `${sanitizedServerName}__${sanitizedToolName}`;
       const jsName = toolKey.replace(/[^A-Za-z0-9_$]/g, "_");
+      // Normalize to JSON Schema exactly as production `collectMcpToolDefs`
+      // does, so the type declarations the model sees match prod.
+      let inputSchema: JSONSchema7;
+      try {
+        inputSchema = await asSchema(mcpTool.inputSchema).jsonSchema;
+      } catch {
+        inputSchema = {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        };
+      }
       return {
         jsName: /^[0-9]/.test(jsName) ? `_${jsName}` : jsName,
         toolKey,
@@ -78,9 +92,9 @@ export async function buildEvalMcpEnvironment(params: {
         serverName,
         toolName,
         description: (mcpTool as { description?: string }).description,
-        inputSchema: (mcpTool as { inputSchema?: unknown }).inputSchema,
+        inputSchema,
       };
-    },
+    }),
   );
 
   return {
