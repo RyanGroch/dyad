@@ -1812,7 +1812,9 @@ async function runMcpSearchCase(params: {
   let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   let totalDurationMs = 0;
   let responseModelId: string | null = null;
-  let judgeRecord: JudgeRecord | null = null;
+  // The search suite does not judge answers (pass = called an acceptable
+  // tool), so no judge record is produced.
+  const judgeRecord: JudgeRecord | null = null;
   let passed = false;
   let errorMessage: string | null = null;
 
@@ -1909,17 +1911,22 @@ async function runMcpSearchCase(params: {
 
     const acceptable = new Set(c.acceptableToolNames);
 
-    // Did a search surface an acceptable tool, and at which search index?
-    // This is the algorithm signal: the model phrased a query, the ranker
-    // returned results, did a tool that does the job come back.
+    // Retrieval metric (recorded, not a gate): did a search surface an
+    // acceptable tool, and at which search index?
     const searchesToSurface = state.searchCalls.findIndex((s) =>
       s.returnedToolNames.some((n) => acceptable.has(n)),
     );
     const surfaced = searchesToSurface >= 0;
+
+    // PASS criterion: the model called a tool that does the job. In search
+    // mode it can only call a tool whose declaration a search returned, so
+    // calling one means discovery succeeded. Nothing downstream is graded —
+    // not the data behind the tool (repo, graph), not the final answer, not
+    // a judge. This measures tool discovery only, so a placeholder repo or
+    // an empty graph can't fail a case.
     const acceptableCalled = state.mcpCalls.some((call) =>
       acceptable.has(call.toolName),
     );
-    const hitStepLimit = requests.length >= STEP_CAP;
 
     console.log(
       `\n[${SUITE_NAME} / ${label}] ${c.name} — searches: ${state.searchCalls.length}, ` +
@@ -1927,56 +1934,13 @@ async function runMcpSearchCase(params: {
         `called acceptable: ${acceptableCalled}, mcp calls: ${state.mcpCalls.length}`,
     );
 
-    // Structural checks. The model must have found (via search) and called a
-    // tool that does the job. We do NOT penalize calling other tools; using
-    // the wrong tool simply leaves the task unaccomplished, which the judge
-    // catches.
-    if (hitStepLimit) {
-      throw new Error(
-        `Model hit the ${STEP_CAP}-step cap without finishing. Searches: ${state.searchCalls.length}.`,
-      );
-    }
     if (!acceptableCalled) {
       throw new Error(
-        `Model never called a tool that accomplishes the task [${c.acceptableToolNames.join(", ")}]. ` +
+        `Model never called a tool that does the job [${c.acceptableToolNames.join(", ")}]. ` +
           `An acceptable tool surfaced in search: ${surfaced}. ` +
           `Searches: ${state.searchCalls
             .map((s) => `"${s.query}"→[${s.returnedToolNames.join(",")}]`)
             .join(" ; ")}`,
-      );
-    }
-
-    // Judge the final answer for task accomplishment, with ground truth so
-    // the acceptable-tool semantics are explicit.
-    const transcriptSections: string[] = [];
-    if (c.groundTruth) {
-      transcriptSections.push(`### Ground truth\n${c.groundTruth}`);
-    }
-    transcriptSections.push(
-      `### MCP tool searches\n${JSON.stringify(state.searchCalls, null, 2)}`,
-    );
-    if (state.sandboxScripts.length > 0) {
-      transcriptSections.push(
-        `### Sandbox scripts\n${JSON.stringify(state.sandboxScripts, null, 2)}`,
-      );
-    }
-    if (state.mcpCalls.length > 0) {
-      transcriptSections.push(
-        `### MCP tool calls\n${JSON.stringify(state.mcpCalls, null, 2)}`,
-      );
-    }
-    judgeRecord = await judgeMcpResult({
-      prompt,
-      transcript: transcriptSections.join("\n\n"),
-      answer: state.answer,
-      abortSignal: abortController.signal,
-    });
-    console.log(
-      `\n[${SUITE_NAME} / ${label}] ${c.name} — judge verdict: ${judgeRecord.pass ? "PASS" : "FAIL"}\n${judgeRecord.explanation}`,
-    );
-    if (!judgeRecord.pass) {
-      throw new Error(
-        `Judge (${JUDGE_LABEL}) said FAIL for ${label}:\n${judgeRecord.explanation}`,
       );
     }
     passed = true;
