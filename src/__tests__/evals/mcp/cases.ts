@@ -509,7 +509,92 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   },
 ];
 
+// Stripe's hosted MCP (@stripe/mcp) exposes a small, meta-tool catalog. The
+// star cluster is its THREE search tools with distinct intents
+// (documentation vs live resources vs API operations) plus generic
+// read/write meta-tools — good for testing whether the model picks the
+// right "search" for the task. Needs a test-mode STRIPE_API_KEY to spawn.
+const STRIPE_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
+  // The three-way search cluster (documentation / resources / api operations).
+  {
+    name: "stripe: search the documentation",
+    prompt:
+      "I want to understand how Stripe signs webhook payloads. Look it up in " +
+      "Stripe's documentation and tell me which HTTP header carries the " +
+      "signature.",
+    acceptableToolNames: ["search_stripe_documentation"],
+    goldQueries: [
+      "search stripe documentation",
+      "how to verify stripe webhooks",
+      "stripe docs about webhook signatures",
+    ],
+  },
+  {
+    name: "stripe: find a customer object",
+    prompt:
+      "Find the Stripe customer whose email is jenny@example.com and report " +
+      "their customer ID.",
+    acceptableToolNames: ["search_stripe_resources"],
+    goldQueries: [
+      "search stripe customers by email",
+      "find a stripe customer object",
+      "query stripe resources",
+    ],
+  },
+  {
+    name: "stripe: find an API operation",
+    prompt:
+      "I need to programmatically create a subscription. Find the Stripe API " +
+      "operation that creates a subscription.",
+    acceptableToolNames: ["stripe_api_search"],
+    goldQueries: [
+      "find a stripe api operation",
+      "search stripe api endpoints",
+      "which stripe api creates a subscription",
+    ],
+  },
+  // Specific action vs generic write.
+  {
+    name: "stripe: refund a payment",
+    prompt: "Refund the payment for payment intent pi_123 in full.",
+    acceptableToolNames: ["create_refund"],
+    goldQueries: ["refund a payment", "issue a refund for a payment intent"],
+  },
+  {
+    name: "stripe: write via the API",
+    prompt:
+      "Update the metadata on customer cus_789 to set plan=premium using the " +
+      "Stripe API.",
+    acceptableToolNames: ["stripe_api_write"],
+    goldQueries: [
+      "write to a stripe api endpoint",
+      "update a stripe object via the api",
+    ],
+  },
+  // Retrieve by ID — two meta-tools can do it.
+  {
+    name: "stripe: retrieve an object by ID",
+    prompt:
+      "Retrieve the full details of the Stripe charge with ID ch_456 and " +
+      "report its amount and status.",
+    acceptableToolNames: ["fetch_stripe_resources", "stripe_api_read"],
+    goldQueries: ["retrieve a stripe object by id", "get charge details by id"],
+  },
+  {
+    name: "stripe: plan a payments integration",
+    prompt:
+      "I'm building a checkout flow to sell a one-time product. Help me plan " +
+      "how to integrate Stripe payments.",
+    acceptableToolNames: ["stripe_implementation_planner"],
+    goldQueries: [
+      "plan a stripe payments integration",
+      "how to accept payments with stripe",
+    ],
+  },
+];
+
 export const MCP_SEARCH_CASES: McpSearchCase[] = [
   ...MEMORY_SEARCH_CASES.map((c) => ({ ...c, server: "memory" as const })),
   ...GITHUB_SEARCH_CASES.map((c) => ({ ...c, server: "github" as const })),
+  ...STRIPE_SEARCH_CASES.map((c) => ({ ...c, server: "stripe" as const })),
 ];
