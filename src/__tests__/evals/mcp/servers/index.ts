@@ -4,6 +4,7 @@ import { linearServerSpec } from "./linear";
 import { filesystemServerSpec } from "./filesystem";
 import { memoryServerSpec } from "./memory";
 import { everythingServerSpec } from "./everything";
+import { githubServerSpec } from "./github";
 import type { McpServerSpec } from "./types";
 
 export type { McpServerSpec } from "./types";
@@ -23,6 +24,7 @@ export const MCP_SERVER_SPECS: McpServerSpec[] = [
   filesystemServerSpec,
   memoryServerSpec,
   everythingServerSpec,
+  githubServerSpec,
 ];
 
 export function getMcpServerSpec(key: string): McpServerSpec | undefined {
