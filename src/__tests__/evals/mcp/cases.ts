@@ -271,76 +271,235 @@ export const MCP_CASES: McpEvalCase[] = [
   ...LINEAR_CASES,
 ];
 
-// ── mcp_search suite (Type-B: near-miss tool discovery) ──────────
+// ── mcp_search suite (tool discovery via search) ─────────────────
 //
 // These cases run in search mode: the model is NOT shown MCP tool
-// declarations up front. It must call `search_mcp_tools` (BM25) to find
-// the tool it needs, then call it from `execute_sandbox_script`. The point
-// is to measure whether the model can craft queries that surface the right
-// tool when lexically-similar distractors exist — `search_mcp_tools`
-// returns only the top 5, so a sloppy query over a dense cluster pushes the
-// target out and forces refinement.
+// declarations up front. It must call `search_mcp_tools` (BM25 today) to
+// find a tool that does the job, then call it from `execute_sandbox_script`.
 //
-// The catalog is the union of the servers spawned for the suite (default:
-// the no-cred npx servers; GitHub is added in a later phase). A case is
-// SKIPPED (not failed) when none of its `targetToolNames` are present in
-// the spawned catalog, so a server that didn't connect or a tool renamed by
-// a version bump degrades cleanly instead of red-failing.
+// This is a RETRIEVAL eval. It measures whether the search algorithm
+// surfaces a tool that accomplishes the task given how the model phrases its
+// query — NOT whether the model follows tricky instructions. So a case
+// lists every tool that genuinely satisfies the task in `acceptableToolNames`
+// (pass = the model surfaced and called any one of them); there is no
+// blocklist. The discriminating cases are vocabulary-gap ones where the
+// prompt's wording does not lexically match the tool's name/description —
+// that is where a lexical algorithm like BM25 is stressed and where a
+// semantic ranker would differ.
+//
+// The catalog is the union of the servers spawned for the suite. A case is
+// SKIPPED (not failed) when none of its `acceptableToolNames` are present in
+// the spawned catalog, so an un-spawned server (e.g. GitHub before it is
+// wired) or a tool renamed by a version bump degrades cleanly.
 export interface McpSearchCase {
   name: string;
-  /** User prompt describing a task solvable by exactly one catalog tool. */
+  /**
+   * User prompt phrased in intent terms (ideally NOT echoing the tool's
+   * name), describing a task that at least one catalog tool accomplishes.
+   */
   prompt: string;
   /**
-   * Raw MCP `toolName`(s) that correctly satisfy the task. The model passes
-   * if it surfaces one of these via search AND calls it. Matched exactly
-   * against recorded `toolName`s (not substrings) so near-miss distractors
-   * like `update_pull_request` vs `update_pull_request_branch` don't
-   * collide.
+   * Raw MCP `toolName`(s) that genuinely accomplish the task. The model
+   * passes if it surfaces one of these via search AND calls it. Matched
+   * exactly against recorded `toolName`s. Include every tool that does the
+   * job — do not over-constrain.
    */
-  targetToolNames: string[];
+  acceptableToolNames: string[];
   /**
-   * Near-miss `toolName`s that count as a wrong choice. Calling any of
-   * these fails the case. Optional.
+   * Canonical queries a reasonable model might issue for this task, fed
+   * directly to the ranker by the model-independent BM25 benchmark
+   * (`mcp_search_bm25`) to measure the algorithm in isolation. Each query
+   * should surface an acceptable tool in the top results. Omit to skip the
+   * algorithm benchmark for this case.
    */
-  forbiddenToolNames?: string[];
+  goldQueries?: string[];
   /**
-   * Ground truth handed to the judge (what the right tool is and why the
-   * distractors are wrong), so cosmetic answer phrasing doesn't flip the
-   * verdict.
+   * Ground truth handed to the judge (what accomplishes the task), so
+   * cosmetic answer phrasing doesn't flip the verdict.
    */
   groundTruth?: string;
 }
 
-// Provisional no-cred cases that exercise the search machinery end to end.
-// The authoritative GitHub near-miss cases land once that server is wired
-// and its pinned toolset enumerated. Tool names here are best-effort for
-// the pinned server versions and degrade to SKIP if they don't match.
+// Memory-server cases run with no credentials today. GitHub cases are the
+// richer set but stay SKIPPED until the GitHub server is wired and added to
+// the catalog (run them then via EVAL_MCP_SEARCH_SERVERS=github,...). Tool
+// names are the pinned servers' real names; a mismatch degrades to SKIP.
+const MEMORY_SEARCH_CASES: McpSearchCase[] = [
+  {
+    name: "memory: find stored notes about a topic",
+    prompt:
+      "Find anything you have stored in memory related to 'database " +
+      "migrations' and report what you find. If there is nothing, say so.",
+    acceptableToolNames: ["search_nodes"],
+    goldQueries: [
+      "find stored entities about a topic",
+      "search memory for notes",
+      "query knowledge graph by keyword",
+    ],
+    groundTruth:
+      "`search_nodes` queries the knowledge graph by keyword, which is what " +
+      "finding stored items about a topic requires.",
+  },
+  {
+    name: "memory: save a note about the user",
+    prompt:
+      "Remember, for later, that the user prefers TypeScript over " +
+      "JavaScript. Store this so it can be recalled in a future session.",
+    acceptableToolNames: ["create_entities", "add_observations"],
+    goldQueries: [
+      "save a note to remember later",
+      "store a fact about the user",
+      "add information to memory",
+    ],
+    groundTruth:
+      "Storing a new fact is done with `create_entities` (new entity) or " +
+      "`add_observations` (attach to an existing one); either accomplishes " +
+      "saving the preference.",
+  },
+  {
+    name: "memory: dump everything stored",
+    prompt:
+      "Show me everything currently stored in your memory — the full " +
+      "contents of the knowledge graph.",
+    acceptableToolNames: ["read_graph"],
+    goldQueries: [
+      "show everything in memory",
+      "read the entire knowledge graph",
+      "dump all stored data",
+    ],
+    groundTruth:
+      "`read_graph` returns the entire knowledge graph, which is what " +
+      "'everything stored' asks for.",
+  },
+];
+
+// GitHub cases (skipped until the GitHub server is in the catalog). Ordered
+// roughly by retrieval difficulty: lexical baselines, then vocabulary-gap
+// cases (prompt wording != tool wording), then dense-cluster discrimination,
+// then multi-acceptable.
+const GITHUB_SEARCH_CASES: McpSearchCase[] = [
+  // Baseline: prompt words match the tool directly.
+  {
+    name: "github: find repositories about a topic",
+    prompt:
+      "Find popular GitHub repositories about WebAssembly runtimes and list " +
+      "a few of them.",
+    acceptableToolNames: ["search_repositories"],
+    goldQueries: ["search repositories", "find github repos by topic"],
+    groundTruth: "`search_repositories` finds repos by name/description/topic.",
+  },
+  {
+    name: "github: search code across repositories",
+    prompt:
+      "Search GitHub for code that imports the tensorflow library and show " +
+      "a few matches.",
+    acceptableToolNames: ["search_code"],
+    goldQueries: ["search code", "find code matching a pattern on github"],
+    groundTruth: "`search_code` searches code across GitHub repositories.",
+  },
+  // Vocabulary gap: intent words differ from the tool's name.
+  {
+    name: "github: who am I (authenticated user)",
+    prompt:
+      "Who am I logged in as on GitHub? Report my username and profile " +
+      "details.",
+    acceptableToolNames: ["get_me"],
+    goldQueries: [
+      "who am I",
+      "current authenticated user profile",
+      "my github account details",
+    ],
+    groundTruth:
+      "`get_me` returns the authenticated user's profile — i.e. who you are " +
+      "logged in as.",
+  },
+  {
+    name: "github: open a new issue (tool named issue_write)",
+    prompt:
+      "Open a new issue in the repository owner/repo titled 'Flaky test' " +
+      "describing an intermittently failing test.",
+    acceptableToolNames: ["issue_write"],
+    goldQueries: ["create a new issue", "open a github issue", "file an issue"],
+    groundTruth:
+      "`issue_write` creates (or updates) an issue. Its name lacks " +
+      "'create'/'open', so the model must rely on the description to find it.",
+  },
+  {
+    name: "github: most recent release",
+    prompt:
+      "What is the most recent released version of the repository " +
+      "owner/repo?",
+    acceptableToolNames: ["get_latest_release"],
+    goldQueries: [
+      "latest release",
+      "newest released version",
+      "most recent release of a repo",
+    ],
+    groundTruth: "`get_latest_release` returns the latest release of a repo.",
+  },
+  {
+    name: "github: commit history of a branch",
+    prompt:
+      "Show me the commit history of the main branch in the repository " +
+      "owner/repo.",
+    acceptableToolNames: ["list_commits"],
+    goldQueries: ["commit history", "list commits on a branch"],
+    groundTruth: "`list_commits` returns the commits of a branch.",
+  },
+  {
+    name: "github: read a file's contents",
+    prompt:
+      "Get the contents of the README.md file in the repository owner/repo " +
+      "and summarize it.",
+    acceptableToolNames: ["get_file_contents"],
+    goldQueries: ["read a file from a repo", "get file contents"],
+    groundTruth:
+      "`get_file_contents` returns the contents of a file in a repository.",
+  },
+  {
+    name: "github: sync a PR branch with its base",
+    prompt:
+      "Bring pull request #42 in owner/repo up to date by merging the latest " +
+      "changes from its base branch into it.",
+    acceptableToolNames: ["update_pull_request_branch"],
+    goldQueries: [
+      "update pull request branch with base",
+      "sync PR branch with the latest base changes",
+    ],
+    groundTruth:
+      "`update_pull_request_branch` updates a PR's branch with the latest " +
+      "changes from the base branch (distinct from `update_pull_request`, " +
+      "which edits PR metadata).",
+  },
+  // Dense-cluster discrimination: many list_* tools share the verb.
+  {
+    name: "github: list tags",
+    prompt: "List the git tags in the repository owner/repo.",
+    acceptableToolNames: ["list_tags"],
+    goldQueries: ["list tags", "git tags in a repository"],
+    groundTruth: "`list_tags` lists a repository's git tags.",
+  },
+  {
+    name: "github: list branches",
+    prompt: "List the branches in the repository owner/repo.",
+    acceptableToolNames: ["list_branches"],
+    goldQueries: ["list branches", "branches in a repository"],
+    groundTruth: "`list_branches` lists a repository's branches.",
+  },
+  // Multiple acceptable answers: don't over-constrain.
+  {
+    name: "github: find issues mentioning a phrase",
+    prompt:
+      "Find issues in the repository owner/repo that mention 'memory leak'.",
+    acceptableToolNames: ["search_issues", "list_issues"],
+    goldQueries: ["search issues for a phrase", "find issues mentioning text"],
+    groundTruth:
+      "Either `search_issues` (issue search syntax) or `list_issues` " +
+      "(enumerate then filter) can satisfy finding issues mentioning a phrase.",
+  },
+];
+
 export const MCP_SEARCH_CASES: McpSearchCase[] = [
-  {
-    name: "memory: search stored entities (not open/read-graph)",
-    prompt:
-      "Using the available MCP tools, find any stored knowledge-graph " +
-      "entities related to the topic 'invoices' and report what you find. " +
-      "If there are none, say so.",
-    targetToolNames: ["search_nodes"],
-    forbiddenToolNames: ["open_nodes", "read_graph"],
-    groundTruth:
-      "The correct tool is `search_nodes` (query the graph by keyword). " +
-      "`open_nodes` retrieves specific named nodes (not a search) and " +
-      "`read_graph` dumps the entire graph; neither is the right way to " +
-      "find entities by topic.",
-  },
-  {
-    name: "filesystem: list a directory (not tree/with-sizes)",
-    prompt:
-      "Using the available MCP tools, list the top-level entries of the " +
-      "server's allowed directory and report them. Do not recurse into " +
-      "subdirectories and do not report file sizes.",
-    targetToolNames: ["list_directory"],
-    forbiddenToolNames: ["directory_tree", "list_directory_with_sizes"],
-    groundTruth:
-      "The correct tool is `list_directory` (flat, names only). " +
-      "`directory_tree` recurses and `list_directory_with_sizes` adds " +
-      "sizes; the task explicitly excludes both.",
-  },
+  ...MEMORY_SEARCH_CASES,
+  ...GITHUB_SEARCH_CASES,
 ];

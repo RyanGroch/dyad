@@ -145,6 +145,7 @@ import { startFixtureServer, type FixtureServer } from "./mcp/fixture_server";
 import { type EvalMcpEnvironment, withTimeout } from "./mcp/mcp_setup";
 import { MCP_SERVER_SPECS, type McpServerSpec } from "./mcp/servers";
 import { startSearchCatalog, type SearchCatalog } from "./mcp/search_catalog";
+import { bm25Ranker } from "@/pro/main/ipc/handlers/local_agent/tools/bm25";
 import {
   buildExecuteSandboxScriptHarnessTool,
   buildSearchMcpToolsHarnessTool,
@@ -1280,9 +1281,12 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
     }
   }
 
-  // ── mcp_search suite (Type-B near-miss tool discovery) ─────────
+  // ── mcp_search suite (tool discovery via search) ───────────────
   if (mcpSearchRequested && configErrors.length === 0) {
     registerMcpSearchSuite({ models: MODELS });
+    // Model-independent ranker benchmark. Not gated by DYAD_PRO_API_KEY
+    // (no LLM); measures the search algorithm directly on gold queries.
+    registerBm25RetrievalBench();
   }
 }
 
@@ -1679,6 +1683,21 @@ async function runMcpCase(params: {
 // search mode. A case whose target tools aren't in the spawned catalog is
 // skipped (not failed), so a server that didn't connect or a renamed tool
 // degrades cleanly.
+// Catalog membership for the search suites is configurable; defaults to the
+// no-cred servers. GitHub (and other cred servers) can be added via
+// EVAL_MCP_SEARCH_SERVERS. Shared by the agentic suite and the BM25 bench.
+function resolveSearchCatalogSpecs(): McpServerSpec[] {
+  const DEFAULT_CATALOG_KEYS = ["filesystem", "memory", "everything"];
+  const catalogFilter = process.env.EVAL_MCP_SEARCH_SERVERS?.trim();
+  const catalogKeys = catalogFilter
+    ? catalogFilter
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s !== "")
+    : DEFAULT_CATALOG_KEYS;
+  return MCP_SERVER_SPECS.filter((s) => catalogKeys.includes(s.key));
+}
+
 function registerMcpSearchSuite(params: {
   models: Array<{
     provider: EvalProvider;
@@ -1688,20 +1707,7 @@ function registerMcpSearchSuite(params: {
   }>;
 }): void {
   const { models } = params;
-
-  // Catalog membership is configurable; defaults to the no-cred servers.
-  // GitHub (and other cred servers) can be added via EVAL_MCP_SEARCH_SERVERS.
-  const DEFAULT_CATALOG_KEYS = ["filesystem", "memory", "everything"];
-  const catalogFilter = process.env.EVAL_MCP_SEARCH_SERVERS?.trim();
-  const catalogKeys = catalogFilter
-    ? catalogFilter
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter((s) => s !== "")
-    : DEFAULT_CATALOG_KEYS;
-  const catalogSpecs = MCP_SERVER_SPECS.filter((s) =>
-    catalogKeys.includes(s.key),
-  );
+  const catalogSpecs = resolveSearchCatalogSpecs();
 
   const holder: {
     catalog: SearchCatalog | null;
@@ -1712,7 +1718,7 @@ function registerMcpSearchSuite(params: {
   describe.skipIf(!hasDyadProKey())("mcp_search", () => {
     beforeAll(async () => {
       if (catalogSpecs.length === 0) {
-        holder.skipReason = `No catalog servers matched (${catalogKeys.join(", ")}).`;
+        holder.skipReason = `No catalog servers matched EVAL_MCP_SEARCH_SERVERS.`;
         return;
       }
       holder.catalog = await startSearchCatalog(catalogSpecs);
@@ -1748,15 +1754,16 @@ function registerMcpSearchSuite(params: {
               testCtx.skip(holder.skipReason);
               return;
             }
-            // Degrade to skip (not fail) when none of the case's target
-            // tools are in the spawned catalog — a missing server or a
-            // version-renamed tool shouldn't red-fail.
-            const targetPresent = c.targetToolNames.some((t) =>
+            // Degrade to skip (not fail) when none of the case's acceptable
+            // tools are in the spawned catalog — a missing server (e.g.
+            // GitHub before it is wired) or a version-renamed tool shouldn't
+            // red-fail.
+            const acceptablePresent = c.acceptableToolNames.some((t) =>
               holder.toolNames.has(t),
             );
-            if (!targetPresent) {
+            if (!acceptablePresent) {
               testCtx.skip(
-                `None of target tool(s) [${c.targetToolNames.join(", ")}] present in catalog.`,
+                `None of acceptable tool(s) [${c.acceptableToolNames.join(", ")}] present in catalog.`,
               );
               return;
             }
@@ -1892,51 +1899,47 @@ async function runMcpSearchCase(params: {
     responseModelId = result.response.modelId ?? null;
     state.answer = result.text;
 
-    const targets = new Set(c.targetToolNames);
-    const forbidden = new Set(c.forbiddenToolNames ?? []);
+    const acceptable = new Set(c.acceptableToolNames);
 
-    // Did a search surface a target tool, and at which search index?
-    const searchesToSurfaceTarget = state.searchCalls.findIndex((s) =>
-      s.returnedToolNames.some((n) => targets.has(n)),
+    // Did a search surface an acceptable tool, and at which search index?
+    // This is the algorithm signal: the model phrased a query, the ranker
+    // returned results, did a tool that does the job come back.
+    const searchesToSurface = state.searchCalls.findIndex((s) =>
+      s.returnedToolNames.some((n) => acceptable.has(n)),
     );
-    const targetSurfaced = searchesToSurfaceTarget >= 0;
-    const targetCalled = state.mcpCalls.some((call) =>
-      targets.has(call.toolName),
-    );
-    const forbiddenCall = state.mcpCalls.find((call) =>
-      forbidden.has(call.toolName),
+    const surfaced = searchesToSurface >= 0;
+    const acceptableCalled = state.mcpCalls.some((call) =>
+      acceptable.has(call.toolName),
     );
     const hitStepLimit = requests.length >= STEP_CAP;
 
     console.log(
       `\n[${SUITE_NAME} / ${label}] ${c.name} — searches: ${state.searchCalls.length}, ` +
-        `surfaced target: ${targetSurfaced} (search #${searchesToSurfaceTarget + 1}), ` +
-        `called target: ${targetCalled}, mcp calls: ${state.mcpCalls.length}`,
+        `surfaced acceptable: ${surfaced} (search #${searchesToSurface + 1}), ` +
+        `called acceptable: ${acceptableCalled}, mcp calls: ${state.mcpCalls.length}`,
     );
 
-    // Structural checks.
-    if (forbiddenCall) {
-      throw new Error(
-        `Model called forbidden near-miss tool "${forbiddenCall.toolName}" instead of one of [${c.targetToolNames.join(", ")}].`,
-      );
-    }
+    // Structural checks. The model must have found (via search) and called a
+    // tool that does the job. We do NOT penalize calling other tools; using
+    // the wrong tool simply leaves the task unaccomplished, which the judge
+    // catches.
     if (hitStepLimit) {
       throw new Error(
         `Model hit the ${STEP_CAP}-step cap without finishing. Searches: ${state.searchCalls.length}.`,
       );
     }
-    if (!targetCalled) {
+    if (!acceptableCalled) {
       throw new Error(
-        `Model never called a target tool [${c.targetToolNames.join(", ")}]. ` +
-          `Target surfaced in search: ${targetSurfaced}. ` +
+        `Model never called a tool that accomplishes the task [${c.acceptableToolNames.join(", ")}]. ` +
+          `An acceptable tool surfaced in search: ${surfaced}. ` +
           `Searches: ${state.searchCalls
             .map((s) => `"${s.query}"→[${s.returnedToolNames.join(",")}]`)
             .join(" ; ")}`,
       );
     }
 
-    // Judge the final answer for correctness, with ground truth so the
-    // distractor semantics are explicit.
+    // Judge the final answer for task accomplishment, with ground truth so
+    // the acceptable-tool semantics are explicit.
     const transcriptSections: string[] = [];
     if (c.groundTruth) {
       transcriptSections.push(`### Ground truth\n${c.groundTruth}`);
@@ -2018,4 +2021,101 @@ async function runMcpSearchCase(params: {
       executeSandboxScriptDescription: sandboxToolDescription,
     });
   }
+}
+
+// ── mcp_search_bm25 — model-independent ranker benchmark ───────────
+//
+// Measures the search ALGORITHM in isolation: feed each case's gold queries
+// straight into bm25Ranker over the real spawned catalog and assert an
+// acceptable tool lands in the top-K (K mirrors search_mcp_tools' top-5
+// return). No LLM, no DYAD_PRO_API_KEY — this isolates ranker quality from
+// the model's query-writing, so swapping BM25 for a future embedding ranker
+// can be compared on identical queries. A query that fails to surface an
+// acceptable tool is a finding about the algorithm (lexical gap), reported
+// as a failing assertion.
+function registerBm25RetrievalBench(): void {
+  // Mirror search_mcp_tools' MAX_RESULTS: a tool the model never sees in the
+  // top-K is effectively unfindable via search.
+  const TOP_K = 5;
+  const catalogSpecs = resolveSearchCatalogSpecs();
+
+  const cases = MCP_SEARCH_CASES.filter(
+    (c) => (c.goldQueries?.length ?? 0) > 0,
+  );
+  if (cases.length === 0) return;
+
+  const holder: {
+    catalog: SearchCatalog | null;
+    skipReason: string | null;
+    toolNames: Set<string>;
+  } = { catalog: null, skipReason: null, toolNames: new Set() };
+
+  describe("mcp_search_bm25", () => {
+    beforeAll(async () => {
+      if (catalogSpecs.length === 0) {
+        holder.skipReason =
+          "No catalog servers matched EVAL_MCP_SEARCH_SERVERS.";
+        return;
+      }
+      holder.catalog = await startSearchCatalog(catalogSpecs);
+      if (holder.catalog.defs.length === 0) {
+        holder.skipReason = `No MCP catalog tools available. ${holder.catalog.skipped
+          .map((s) => `${s.key}: ${s.reason}`)
+          .join("; ")}`;
+        return;
+      }
+      holder.toolNames = new Set(holder.catalog.defs.map((d) => d.toolName));
+    }, 180_000);
+
+    afterAll(async () => {
+      await holder.catalog?.close();
+    });
+
+    for (const c of cases) {
+      it(c.name, (testCtx) => {
+        if (holder.skipReason || !holder.catalog) {
+          testCtx.skip(holder.skipReason ?? "catalog not initialized");
+          return;
+        }
+        const acceptable = new Set(c.acceptableToolNames);
+        const present = c.acceptableToolNames.some((t) =>
+          holder.toolNames.has(t),
+        );
+        if (!present) {
+          testCtx.skip(
+            `None of acceptable tool(s) [${c.acceptableToolNames.join(", ")}] present in catalog.`,
+          );
+          return;
+        }
+
+        const defs = holder.catalog.defs;
+        const failures: string[] = [];
+        for (const query of c.goldQueries ?? []) {
+          const ranked = bm25Ranker(query, defs);
+          const topK = ranked.slice(0, TOP_K).map((r) => r.def.toolName);
+          // Rank within the full ranking (1-based), or -1 if unranked.
+          const rank =
+            ranked.findIndex((r) => acceptable.has(r.def.toolName)) + 1 || -1;
+          const inTopK = topK.some((n) => acceptable.has(n));
+          console.log(
+            `[mcp_search_bm25] ${c.name} — "${query}" → ` +
+              `acceptable rank ${rank > 0 ? rank : "unranked"} ` +
+              `(top-${TOP_K}: ${topK.join(", ")})`,
+          );
+          if (!inTopK) {
+            failures.push(
+              `"${query}" did not surface any of [${c.acceptableToolNames.join(", ")}] ` +
+                `in top-${TOP_K} (rank ${rank > 0 ? rank : "unranked"}; top-${TOP_K}: ${topK.join(", ")})`,
+            );
+          }
+        }
+        if (failures.length > 0) {
+          throw new Error(
+            `BM25 failed to surface an acceptable tool for ${failures.length}/${(c.goldQueries ?? []).length} gold quer${failures.length === 1 ? "y" : "ies"}:\n` +
+              failures.map((f) => `  - ${f}`).join("\n"),
+          );
+        }
+      });
+    }
+  });
 }
