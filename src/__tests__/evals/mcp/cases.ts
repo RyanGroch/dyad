@@ -24,7 +24,10 @@ export type McpServerKey =
   | "linear"
   | "filesystem"
   | "memory"
-  | "everything";
+  | "everything"
+  // Forward-declared: GitHub cases reference it before the server spec is
+  // wired, so they degrade to SKIP until it exists in MCP_SERVER_SPECS.
+  | "github";
 
 export interface McpEvalCase {
   name: string;
@@ -294,6 +297,13 @@ export const MCP_CASES: McpEvalCase[] = [
 export interface McpSearchCase {
   name: string;
   /**
+   * MCP server spec that hosts this case's tools. The suite spawns exactly
+   * the union of servers referenced by the cases (no EVAL_MCP_SEARCH_SERVERS
+   * needed). A case whose server isn't spawnable (e.g. github before it's
+   * wired, or unreachable) degrades to SKIP.
+   */
+  server: McpServerKey;
+  /**
    * User prompt phrased in intent terms (ideally NOT echoing the tool's
    * name), describing a task that at least one catalog tool accomplishes.
    */
@@ -324,7 +334,7 @@ export interface McpSearchCase {
 // richer set but stay SKIPPED until the GitHub server is wired and added to
 // the catalog (run them then via EVAL_MCP_SEARCH_SERVERS=github,...). Tool
 // names are the pinned servers' real names; a mismatch degrades to SKIP.
-const MEMORY_SEARCH_CASES: McpSearchCase[] = [
+const MEMORY_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   {
     name: "memory: find stored notes about a topic",
     prompt:
@@ -377,7 +387,7 @@ const MEMORY_SEARCH_CASES: McpSearchCase[] = [
 // roughly by retrieval difficulty: lexical baselines, then vocabulary-gap
 // cases (prompt wording != tool wording), then dense-cluster discrimination,
 // then multi-acceptable.
-const GITHUB_SEARCH_CASES: McpSearchCase[] = [
+const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   // Baseline: prompt words match the tool directly.
   {
     name: "github: find repositories about a topic",
@@ -500,6 +510,6 @@ const GITHUB_SEARCH_CASES: McpSearchCase[] = [
 ];
 
 export const MCP_SEARCH_CASES: McpSearchCase[] = [
-  ...MEMORY_SEARCH_CASES,
-  ...GITHUB_SEARCH_CASES,
+  ...MEMORY_SEARCH_CASES.map((c) => ({ ...c, server: "memory" as const })),
+  ...GITHUB_SEARCH_CASES.map((c) => ({ ...c, server: "github" as const })),
 ];

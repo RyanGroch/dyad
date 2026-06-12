@@ -1088,23 +1088,24 @@ async function runCase(
 const SUITE_FILTER_RAW = process.env.EVAL_SUITE?.trim();
 const MODEL_FILTER_RAW = process.env.EVAL_MODEL?.trim();
 
-if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
-  const missingEnv: string[] = [];
-  if (!SUITE_FILTER_RAW) missingEnv.push("EVAL_SUITE");
-  if (!MODEL_FILTER_RAW) missingEnv.push("EVAL_MODEL");
+// EVAL_SUITE is always required (it selects what runs). EVAL_MODEL is only
+// required for the model-dependent suites; the model-free mcp_search_bm25
+// ranker benchmark runs with EVAL_SUITE alone. When EVAL_MODEL is unset,
+// MODELS is empty so the model suites register nothing and only the bench
+// runs.
+if (!SUITE_FILTER_RAW) {
   const suiteOptions = SUITES.map((s) => s.name).join(", ");
-  const modelOptions = ALL_MODELS.map((m) => m.label).join(", ");
   console.warn(
-    `\n⚠️  Eval suite not running: ${missingEnv.join(" and ")} not set.\n` +
-      `  Set EVAL_SUITE to "all" or an exact name (comma-separated for multiple) from: ${suiteOptions}\n` +
-      `  Set EVAL_MODEL to "all" or a substring of a label: ${modelOptions}\n` +
+    `\n⚠️  Eval suite not running: EVAL_SUITE not set.\n` +
+      `  Set EVAL_SUITE to "all" or an exact name (comma-separated for multiple) from: ${suiteOptions}, mcp_execute, mcp_search\n` +
+      `  EVAL_MODEL is required too for everything except the model-free mcp_search_bm25 bench.\n` +
       `  Example:\n` +
       `    EVAL_SUITE=all EVAL_MODEL=all DYAD_PRO_API_KEY="..." npm run eval\n`,
   );
   // Register a single skipped describe so vitest still reports something
   // coherent (rather than "no tests found").
   describe.skip("eval suite — configuration required", () => {
-    it("set EVAL_SUITE and EVAL_MODEL (use 'all' to run every suite/model)", () => {});
+    it("set EVAL_SUITE (and EVAL_MODEL for model suites)", () => {});
   });
 } else {
   const suiteFilter = SUITE_FILTER_RAW.toLowerCase();
@@ -1164,9 +1165,14 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
     }
   }
 
-  const modelFilter = MODEL_FILTER_RAW.toLowerCase();
-  const MODELS =
-    modelFilter === "all"
+  // EVAL_MODEL unset → no models, so the model-dependent suites register
+  // nothing (empty describes don't run their beforeAll, so no servers spawn)
+  // and only the model-free bench runs. A SET-but-unmatched EVAL_MODEL is a
+  // real typo and is surfaced as a config error.
+  const modelFilter = MODEL_FILTER_RAW?.toLowerCase();
+  const MODELS = !modelFilter
+    ? []
+    : modelFilter === "all"
       ? ALL_MODELS
       : ALL_MODELS.filter(
           (m) =>
@@ -1174,7 +1180,7 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
             m.modelName.toLowerCase().includes(modelFilter),
         );
 
-  if (MODELS.length === 0) {
+  if (MODEL_FILTER_RAW && MODELS.length === 0) {
     configErrors.push(
       `EVAL_MODEL="${MODEL_FILTER_RAW}" matched no models. ` +
         `Available labels: ${ALL_MODELS.map((m) => m.label).join(", ")} (or "all")`,
@@ -1683,18 +1689,20 @@ async function runMcpCase(params: {
 // search mode. A case whose target tools aren't in the spawned catalog is
 // skipped (not failed), so a server that didn't connect or a renamed tool
 // degrades cleanly.
-// Catalog membership for the search suites is configurable; defaults to the
-// no-cred servers. GitHub (and other cred servers) can be added via
-// EVAL_MCP_SEARCH_SERVERS. Shared by the agentic suite and the BM25 bench.
+// Which MCP servers the search suites spawn. By default it's derived from
+// the cases themselves — the union of every `case.server` — so you never
+// have to name servers; the suite spawns exactly what the cases need (an
+// un-spawnable one, e.g. github before it's wired, just makes its cases
+// skip). EVAL_MCP_SEARCH_SERVERS overrides this (e.g. to add padding servers
+// or restrict to a subset). Shared by the agentic suite and the BM25 bench.
 function resolveSearchCatalogSpecs(): McpServerSpec[] {
-  const DEFAULT_CATALOG_KEYS = ["filesystem", "memory", "everything"];
-  const catalogFilter = process.env.EVAL_MCP_SEARCH_SERVERS?.trim();
-  const catalogKeys = catalogFilter
-    ? catalogFilter
+  const override = process.env.EVAL_MCP_SEARCH_SERVERS?.trim();
+  const catalogKeys = override
+    ? override
         .split(",")
         .map((s) => s.trim().toLowerCase())
         .filter((s) => s !== "")
-    : DEFAULT_CATALOG_KEYS;
+    : [...new Set(MCP_SEARCH_CASES.map((c) => c.server))];
   return MCP_SERVER_SPECS.filter((s) => catalogKeys.includes(s.key));
 }
 
