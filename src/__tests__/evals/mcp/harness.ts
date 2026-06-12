@@ -12,9 +12,10 @@ import { updateTodosTool } from "@/pro/main/ipc/handlers/local_agent/tools/updat
 import { searchReplaceTool } from "@/pro/main/ipc/handlers/local_agent/tools/search_replace";
 import { writeFileTool } from "@/pro/main/ipc/handlers/local_agent/tools/write_file";
 import { grepTool } from "@/pro/main/ipc/handlers/local_agent/tools/grep";
+import { searchMcpToolsTool } from "@/pro/main/ipc/handlers/local_agent/tools/search_mcp_tools";
 import type { AgentContext } from "@/pro/main/ipc/handlers/local_agent/tools/types";
 import type { McpEvalCase } from "./cases";
-import { getEvalMcpDefs } from "./mcp_registry";
+import { getEvalMcpDefs, notifyEvalSearchCall } from "./mcp_registry";
 
 // Bridges the eval harness to the production `execute_sandbox_script`
 // tool. The tool's `execute` is reused as-is — we only build an
@@ -50,11 +51,26 @@ export interface SandboxScriptRecord {
   mcpCallIndexes: number[];
 }
 
+export interface SearchCallRecord {
+  timestamp: string;
+  index: number;
+  query: string;
+  server: string | null;
+  /** Tool names (raw, server prefix stripped) the BM25 search returned. */
+  returnedToolNames: string[];
+  durationMs: number;
+}
+
 export interface McpRunState {
   // Final assistant text after the model finishes. Set by the runner.
   answer: string;
   mcpCalls: McpCallRecord[];
   sandboxScripts: SandboxScriptRecord[];
+  /**
+   * `search_mcp_tools` calls the model made (search suite only). Empty for
+   * the inline `mcp_execute` suite, which never registers the search tool.
+   */
+  searchCalls: SearchCallRecord[];
   /**
    * XML emitted by the sandbox tool (mirrors `ctx.onXmlComplete`). Kept
    * for the record file so reviewers can see exactly what the UI would
@@ -221,14 +237,21 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
   case: McpEvalCase;
   state: McpRunState;
   ctx: AgentContext;
+  /**
+   * When true, build the search-mode description (server inventory only,
+   * no inlined declarations) and the model must discover tools via
+   * `search_mcp_tools`. Matches production with `enableMcpToolSearch` on.
+   * Defaults to false: the inline-type-defs description prod emits by
+   * default.
+   */
+  useSearch?: boolean;
 }): Promise<{ tool: Tool; description: string }> {
-  // Match production's default path: pass the per-turn defs and inline
-  // the type declarations (search mode is the `enableMcpToolSearch`
-  // experiment, off by default, so the model sees the full MCP surface
-  // rather than being pointed at `search_mcp_tools`).
+  // Pass the per-turn defs to match production's per-turn description. With
+  // `useSearch` off the declarations are inlined; with it on the model is
+  // pointed at `search_mcp_tools` instead (prod's `enableMcpToolSearch`).
   const description = await buildExecuteSandboxScriptDescription(
     getEvalMcpDefs(),
-    { useSearch: false },
+    { useSearch: params.useSearch ?? false },
   );
   const tool: Tool = {
     description,
@@ -275,4 +298,61 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
     },
   };
   return { tool, description };
+}
+
+/**
+ * Parse the `declare function <jsName>(` identifiers out of a
+ * `search_mcp_tools` result block and map each back to its raw MCP
+ * `toolName` via the current eval defs. Returns toolNames in the order
+ * the block listed them (BM25 rank order). Unknown jsNames are dropped.
+ */
+function parseReturnedToolNames(resultBlock: string): string[] {
+  const defs = getEvalMcpDefs();
+  const byJsName = new Map(defs.map((d) => [d.jsName, d.toolName]));
+  const names: string[] = [];
+  const re = /declare function (\w+)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(resultBlock)) !== null) {
+    const toolName = byJsName.get(m[1]);
+    if (toolName) names.push(toolName);
+  }
+  return names;
+}
+
+/**
+ * Build the AI-SDK `Tool` for `search_mcp_tools` the model sees in search
+ * mode. Reuses the production tool's `execute` (real BM25 ranking over
+ * `ctx.mcpToolDefs`) and `inputSchema`/`description`, wrapping `execute`
+ * to record one `SearchCallRecord` per call.
+ */
+export function buildSearchMcpToolsHarnessTool(params: {
+  state: McpRunState;
+  ctx: AgentContext;
+}): Tool {
+  return {
+    description: searchMcpToolsTool.description,
+    inputSchema: searchMcpToolsTool.inputSchema,
+    execute: async (args: { query: string; server?: string }) => {
+      const index = params.state.searchCalls.length;
+      const startedAt = Date.now();
+      const result = await searchMcpToolsTool.execute(args, params.ctx);
+      const returnedToolNames = parseReturnedToolNames(result);
+      const durationMs = Date.now() - startedAt;
+      params.state.searchCalls.push({
+        timestamp: new Date().toISOString(),
+        index,
+        query: args.query,
+        server: args.server ?? null,
+        returnedToolNames,
+        durationMs,
+      });
+      notifyEvalSearchCall({
+        query: args.query,
+        server: args.server,
+        returnedToolNames,
+        durationMs,
+      });
+      return result;
+    },
+  };
 }

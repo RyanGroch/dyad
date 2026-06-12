@@ -110,6 +110,15 @@ export interface SandboxScriptRecord {
   mcpCallIndexes: number[];
 }
 
+export interface SearchCallRecord {
+  timestamp: string;
+  index: number;
+  query: string;
+  server: string | null;
+  returnedToolNames: string[];
+  durationMs: number;
+}
+
 export interface EvalRunRecord {
   timestamp: string;
   suite: string;
@@ -151,6 +160,11 @@ export interface EvalRunRecord {
   answer?: string;
   mcpCalls?: McpCallRecord[];
   sandboxScripts?: SandboxScriptRecord[];
+  /**
+   * `search_mcp_tools` calls (search suite only). Lets reviewers see each
+   * query the model issued and which tools BM25 returned.
+   */
+  searchCalls?: SearchCallRecord[];
   /**
    * Raw XML emitted via `onXmlComplete` while the case ran. Mirrors
    * what the UI would render and includes the full MCP tool-call /
@@ -308,6 +322,22 @@ export function renderEvalRunAsText(record: EvalRunRecord): string {
       lines.push(s.script);
       lines.push("----- OUTPUT -----");
       lines.push(s.output);
+    }
+    lines.push("");
+  }
+
+  if (record.searchCalls && record.searchCalls.length > 0) {
+    lines.push(hr("="));
+    lines.push(`MCP tool searches (${record.searchCalls.length})`);
+    lines.push(hr("="));
+    for (const s of record.searchCalls) {
+      lines.push(hr("-"));
+      const scope = s.server ? ` (server: ${s.server})` : "";
+      lines.push(`Search #${s.index + 1}: "${s.query}"${scope}`);
+      lines.push(`Duration: ${s.durationMs}ms`);
+      lines.push(
+        `Returned: ${s.returnedToolNames.length > 0 ? s.returnedToolNames.join(", ") : "(no matches)"}`,
+      );
     }
     lines.push("");
   }

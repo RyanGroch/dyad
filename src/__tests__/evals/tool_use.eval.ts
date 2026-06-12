@@ -26,6 +26,7 @@ import {
   type JudgeRecord,
   type McpCallRecord,
   type SandboxScriptRecord,
+  type SearchCallRecord,
 } from "./helpers/eval_recorder";
 import { createUnifiedDiff } from "./helpers/unified_diff";
 import {
@@ -133,12 +134,20 @@ vi.mock(
   },
 );
 
-import { MCP_CASES, type McpEvalCase, type McpServerKey } from "./mcp/cases";
+import {
+  MCP_CASES,
+  MCP_SEARCH_CASES,
+  type McpEvalCase,
+  type McpSearchCase,
+  type McpServerKey,
+} from "./mcp/cases";
 import { startFixtureServer, type FixtureServer } from "./mcp/fixture_server";
 import { type EvalMcpEnvironment, withTimeout } from "./mcp/mcp_setup";
 import { MCP_SERVER_SPECS, type McpServerSpec } from "./mcp/servers";
+import { startSearchCatalog, type SearchCatalog } from "./mcp/search_catalog";
 import {
   buildExecuteSandboxScriptHarnessTool,
+  buildSearchMcpToolsHarnessTool,
   buildMcpAgentContext,
   buildProductionToolStubs,
   createCaseAppDir,
@@ -1110,10 +1119,17 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
   // filter validation below doesn't complain that it's "unknown", and
   // record a flag the MCP describe block reads.
   const MCP_SUITE_NAME = "mcp_execute";
+  const MCP_SEARCH_SUITE_NAME = "mcp_search";
   const mcpRequested =
     requestedSuiteNames === null || requestedSuiteNames.has(MCP_SUITE_NAME);
-  if (requestedSuiteNames !== null) requestedSuiteNames.delete(MCP_SUITE_NAME);
-  // True when the caller asked for the MCP suite AND NOT for any of the
+  const mcpSearchRequested =
+    requestedSuiteNames === null ||
+    requestedSuiteNames.has(MCP_SEARCH_SUITE_NAME);
+  if (requestedSuiteNames !== null) {
+    requestedSuiteNames.delete(MCP_SUITE_NAME);
+    requestedSuiteNames.delete(MCP_SEARCH_SUITE_NAME);
+  }
+  // True when the caller asked only for MCP suite(s) AND NOT for any of the
   // file-edit suites (so the file-edit validation should be quiet).
   const onlyMcpRequested =
     requestedSuiteNames !== null && requestedSuiteNames.size === 0;
@@ -1259,6 +1275,11 @@ if (!SUITE_FILTER_RAW || !MODEL_FILTER_RAW) {
         models: MODELS,
       });
     }
+  }
+
+  // ── mcp_search suite (Type-B near-miss tool discovery) ─────────
+  if (mcpSearchRequested && configErrors.length === 0) {
+    registerMcpSearchSuite({ models: MODELS });
   }
 }
 
@@ -1407,6 +1428,7 @@ async function runMcpCase(params: {
     answer: "",
     mcpCalls: [],
     sandboxScripts: [],
+    searchCalls: [],
     xmlEmissions: [],
     abortSignal: abortController.signal,
   };
@@ -1641,6 +1663,354 @@ async function runMcpCase(params: {
       answer: state.answer,
       mcpCalls: state.mcpCalls satisfies McpCallRecord[],
       sandboxScripts: state.sandboxScripts satisfies SandboxScriptRecord[],
+      xmlEmissions: state.xmlEmissions,
+      executeSandboxScriptDescription: sandboxToolDescription,
+    });
+  }
+}
+
+// ── mcp_search suite registration ──────────────────────────────
+//
+// Spawns a MULTI-server catalog (default: the no-cred npx servers) once in
+// beforeAll, unions their tool defs, and runs the Type-B near-miss cases in
+// search mode. A case whose target tools aren't in the spawned catalog is
+// skipped (not failed), so a server that didn't connect or a renamed tool
+// degrades cleanly.
+function registerMcpSearchSuite(params: {
+  models: Array<{
+    provider: EvalProvider;
+    modelName: string;
+    label: string;
+    temperature: number;
+  }>;
+}): void {
+  const { models } = params;
+
+  // Catalog membership is configurable; defaults to the no-cred servers.
+  // GitHub (and other cred servers) can be added via EVAL_MCP_SEARCH_SERVERS.
+  const DEFAULT_CATALOG_KEYS = ["filesystem", "memory", "everything"];
+  const catalogFilter = process.env.EVAL_MCP_SEARCH_SERVERS?.trim();
+  const catalogKeys = catalogFilter
+    ? catalogFilter
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s !== "")
+    : DEFAULT_CATALOG_KEYS;
+  const catalogSpecs = MCP_SERVER_SPECS.filter((s) =>
+    catalogKeys.includes(s.key),
+  );
+
+  const holder: {
+    catalog: SearchCatalog | null;
+    skipReason: string | null;
+    toolNames: Set<string>;
+  } = { catalog: null, skipReason: null, toolNames: new Set() };
+
+  describe.skipIf(!hasDyadProKey())("mcp_search", () => {
+    beforeAll(async () => {
+      if (catalogSpecs.length === 0) {
+        holder.skipReason = `No catalog servers matched (${catalogKeys.join(", ")}).`;
+        return;
+      }
+      holder.catalog = await startSearchCatalog(catalogSpecs);
+      if (holder.catalog.defs.length === 0) {
+        const reasons = holder.catalog.skipped
+          .map((s) => `${s.key}: ${s.reason}`)
+          .join("; ");
+        holder.skipReason = `No MCP catalog tools available. ${reasons}`;
+        return;
+      }
+      // Production reads MCP defs from ctx.mcpToolDefs (set by
+      // buildMcpAgentContext via getEvalMcpDefs); search_mcp_tools and the
+      // capability map both run BM25 / route over this same set.
+      setEvalMcpDefs(holder.catalog.defs);
+      holder.toolNames = new Set(holder.catalog.defs.map((d) => d.toolName));
+      if (holder.catalog.skipped.length > 0) {
+        console.warn(
+          `\n[mcp_search] catalog: started ${holder.catalog.startedKeys.join(", ")}; ` +
+            `skipped ${holder.catalog.skipped.map((s) => s.key).join(", ")}`,
+        );
+      }
+    }, 180_000);
+
+    afterAll(async () => {
+      await holder.catalog?.close();
+    });
+
+    for (const { provider, modelName, label, temperature } of models) {
+      describe(`mcp_search — ${label}`, () => {
+        for (const c of MCP_SEARCH_CASES) {
+          it(c.name, async (testCtx) => {
+            if (holder.skipReason) {
+              testCtx.skip(holder.skipReason);
+              return;
+            }
+            // Degrade to skip (not fail) when none of the case's target
+            // tools are in the spawned catalog — a missing server or a
+            // version-renamed tool shouldn't red-fail.
+            const targetPresent = c.targetToolNames.some((t) =>
+              holder.toolNames.has(t),
+            );
+            if (!targetPresent) {
+              testCtx.skip(
+                `None of target tool(s) [${c.targetToolNames.join(", ")}] present in catalog.`,
+              );
+              return;
+            }
+            await runMcpSearchCase({
+              c,
+              provider,
+              modelName,
+              label,
+              temperature,
+            });
+          });
+        }
+      });
+    }
+  });
+}
+
+// ── mcp_search case runner ─────────────────────────────────────
+//
+// Like runMcpCase but: builds the sandbox description in search mode,
+// registers the real search_mcp_tools tool, and scores Type-B signal —
+// did the model's query surface a target tool, did it then call the target
+// (and not a forbidden near-miss), and how many searches did it take.
+async function runMcpSearchCase(params: {
+  c: McpSearchCase;
+  provider: EvalProvider;
+  modelName: string;
+  label: string;
+  temperature: number;
+}): Promise<void> {
+  const { c, provider, modelName, label, temperature } = params;
+  const SUITE_NAME = "mcp_search";
+  const STEP_CAP = 40;
+  const runTimestamp = new Date().toISOString();
+  const llmStartMs = Date.now();
+  let lastStepEndMs = llmStartMs;
+  const requests: LLMRequestRecord[] = [];
+  let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let totalDurationMs = 0;
+  let responseModelId: string | null = null;
+  let judgeRecord: JudgeRecord | null = null;
+  let passed = false;
+  let errorMessage: string | null = null;
+
+  const systemPrompt = constructLocalAgentPrompt(undefined);
+  const prompt = c.prompt;
+  const userPrompt = prompt;
+
+  const INTERNAL_TIMEOUT_MS = 330_000;
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    abortController.abort(
+      new Error(
+        `runMcpSearchCase internal timeout: exceeded ${INTERNAL_TIMEOUT_MS}ms budget`,
+      ),
+    );
+  }, INTERNAL_TIMEOUT_MS);
+
+  const state: McpRunState = {
+    answer: "",
+    mcpCalls: [],
+    sandboxScripts: [],
+    searchCalls: [],
+    xmlEmissions: [],
+    abortSignal: abortController.signal,
+  };
+
+  resetEvalConsentDecider();
+  setEvalMcpCallObserver((event) => {
+    state.mcpCalls.push({
+      timestamp: new Date().toISOString(),
+      index: state.mcpCalls.length,
+      jsName: event.jsName,
+      serverName: event.serverName,
+      toolName: event.toolName,
+      args: event.args,
+      result: event.result,
+      durationMs: event.durationMs,
+      succeeded: event.succeeded,
+      error: event.error,
+      errorDetail: event.errorDetail,
+      consentGranted: true,
+    });
+  });
+
+  const appPath = createCaseAppDir();
+  const ctx = buildMcpAgentContext({
+    // McpSearchCase isn't an McpEvalCase; buildMcpAgentContext only reads
+    // state/appPath/abortSignal from it, so a minimal cast is safe.
+    case: c as unknown as McpEvalCase,
+    state,
+    fixtureOrigin: "",
+    abortSignal: abortController.signal,
+    appPath,
+  });
+  const { tool: sandboxTool, description: sandboxToolDescription } =
+    await buildExecuteSandboxScriptHarnessTool({
+      case: c as unknown as McpEvalCase,
+      state,
+      ctx,
+      useSearch: true,
+    });
+  const searchTool = buildSearchMcpToolsHarnessTool({ state, ctx });
+
+  try {
+    const result = await generateText({
+      model: getEvalModel(provider, modelName),
+      temperature,
+      stopWhen: stepCountIs(STEP_CAP),
+      abortSignal: abortController.signal,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      tools: {
+        execute_sandbox_script: sandboxTool,
+        search_mcp_tools: searchTool,
+        ...buildProductionToolStubs(),
+      },
+      onStepFinish: (step) => {
+        const now = Date.now();
+        requests.push({
+          stepIndex: requests.length,
+          timestamp: step.response.timestamp.toISOString(),
+          durationMs: now - lastStepEndMs,
+          usage: normalizeUsage(step.usage),
+          finishReason: step.finishReason ?? null,
+        });
+        lastStepEndMs = now;
+      },
+    });
+
+    totalDurationMs = Date.now() - llmStartMs;
+    totalUsage = normalizeUsage(result.totalUsage);
+    responseModelId = result.response.modelId ?? null;
+    state.answer = result.text;
+
+    const targets = new Set(c.targetToolNames);
+    const forbidden = new Set(c.forbiddenToolNames ?? []);
+
+    // Did a search surface a target tool, and at which search index?
+    const searchesToSurfaceTarget = state.searchCalls.findIndex((s) =>
+      s.returnedToolNames.some((n) => targets.has(n)),
+    );
+    const targetSurfaced = searchesToSurfaceTarget >= 0;
+    const targetCalled = state.mcpCalls.some((call) =>
+      targets.has(call.toolName),
+    );
+    const forbiddenCall = state.mcpCalls.find((call) =>
+      forbidden.has(call.toolName),
+    );
+    const hitStepLimit = requests.length >= STEP_CAP;
+
+    console.log(
+      `\n[${SUITE_NAME} / ${label}] ${c.name} — searches: ${state.searchCalls.length}, ` +
+        `surfaced target: ${targetSurfaced} (search #${searchesToSurfaceTarget + 1}), ` +
+        `called target: ${targetCalled}, mcp calls: ${state.mcpCalls.length}`,
+    );
+
+    // Structural checks.
+    if (forbiddenCall) {
+      throw new Error(
+        `Model called forbidden near-miss tool "${forbiddenCall.toolName}" instead of one of [${c.targetToolNames.join(", ")}].`,
+      );
+    }
+    if (hitStepLimit) {
+      throw new Error(
+        `Model hit the ${STEP_CAP}-step cap without finishing. Searches: ${state.searchCalls.length}.`,
+      );
+    }
+    if (!targetCalled) {
+      throw new Error(
+        `Model never called a target tool [${c.targetToolNames.join(", ")}]. ` +
+          `Target surfaced in search: ${targetSurfaced}. ` +
+          `Searches: ${state.searchCalls
+            .map((s) => `"${s.query}"→[${s.returnedToolNames.join(",")}]`)
+            .join(" ; ")}`,
+      );
+    }
+
+    // Judge the final answer for correctness, with ground truth so the
+    // distractor semantics are explicit.
+    const transcriptSections: string[] = [];
+    if (c.groundTruth) {
+      transcriptSections.push(`### Ground truth\n${c.groundTruth}`);
+    }
+    transcriptSections.push(
+      `### MCP tool searches\n${JSON.stringify(state.searchCalls, null, 2)}`,
+    );
+    if (state.sandboxScripts.length > 0) {
+      transcriptSections.push(
+        `### Sandbox scripts\n${JSON.stringify(state.sandboxScripts, null, 2)}`,
+      );
+    }
+    if (state.mcpCalls.length > 0) {
+      transcriptSections.push(
+        `### MCP tool calls\n${JSON.stringify(state.mcpCalls, null, 2)}`,
+      );
+    }
+    judgeRecord = await judgeMcpResult({
+      prompt,
+      transcript: transcriptSections.join("\n\n"),
+      answer: state.answer,
+      abortSignal: abortController.signal,
+    });
+    console.log(
+      `\n[${SUITE_NAME} / ${label}] ${c.name} — judge verdict: ${judgeRecord.pass ? "PASS" : "FAIL"}\n${judgeRecord.explanation}`,
+    );
+    if (!judgeRecord.pass) {
+      throw new Error(
+        `Judge (${JUDGE_LABEL}) said FAIL for ${label}:\n${judgeRecord.explanation}`,
+      );
+    }
+    passed = true;
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : String(err);
+    if (totalDurationMs === 0) totalDurationMs = Date.now() - llmStartMs;
+    if (totalUsage.totalTokens === 0 && requests.length > 0) {
+      totalUsage = requests.reduce(
+        (acc, r) => ({
+          inputTokens: acc.inputTokens + r.usage.inputTokens,
+          outputTokens: acc.outputTokens + r.usage.outputTokens,
+          totalTokens: acc.totalTokens + r.usage.totalTokens,
+        }),
+        { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutHandle);
+    resetEvalConsentDecider();
+    setEvalMcpCallObserver(undefined);
+    try {
+      rmSync(appPath, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    await recordEvalRun({
+      timestamp: runTimestamp,
+      suite: SUITE_NAME,
+      caseName: c.name,
+      model: { label, provider, modelName, responseModelId },
+      prompt: { system: systemPrompt, instructions: prompt, user: userPrompt },
+      file: { name: "(none)", before: "", after: "" },
+      llm: {
+        totalDurationMs,
+        totalUsage,
+        requestCount: requests.length,
+        requests,
+      },
+      toolCalls: [],
+      diff: "",
+      judge: judgeRecord,
+      passed,
+      errorMessage,
+      answer: state.answer,
+      mcpCalls: state.mcpCalls satisfies McpCallRecord[],
+      sandboxScripts: state.sandboxScripts satisfies SandboxScriptRecord[],
+      searchCalls: state.searchCalls satisfies SearchCallRecord[],
       xmlEmissions: state.xmlEmissions,
       executeSandboxScriptDescription: sandboxToolDescription,
     });

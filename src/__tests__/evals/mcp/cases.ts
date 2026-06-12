@@ -18,7 +18,13 @@
  * add) but narrower than `string` (so a typo'd `server: "chrom"` fails
  * fast at runtime when the registry lookup misses).
  */
-export type McpServerKey = "chrome_devtools" | "stripe" | "linear";
+export type McpServerKey =
+  | "chrome_devtools"
+  | "stripe"
+  | "linear"
+  | "filesystem"
+  | "memory"
+  | "everything";
 
 export interface McpEvalCase {
   name: string;
@@ -263,4 +269,78 @@ export const MCP_CASES: McpEvalCase[] = [
   ...CHROME_DEVTOOLS_CASES,
   ...STRIPE_CASES,
   ...LINEAR_CASES,
+];
+
+// ── mcp_search suite (Type-B: near-miss tool discovery) ──────────
+//
+// These cases run in search mode: the model is NOT shown MCP tool
+// declarations up front. It must call `search_mcp_tools` (BM25) to find
+// the tool it needs, then call it from `execute_sandbox_script`. The point
+// is to measure whether the model can craft queries that surface the right
+// tool when lexically-similar distractors exist — `search_mcp_tools`
+// returns only the top 5, so a sloppy query over a dense cluster pushes the
+// target out and forces refinement.
+//
+// The catalog is the union of the servers spawned for the suite (default:
+// the no-cred npx servers; GitHub is added in a later phase). A case is
+// SKIPPED (not failed) when none of its `targetToolNames` are present in
+// the spawned catalog, so a server that didn't connect or a tool renamed by
+// a version bump degrades cleanly instead of red-failing.
+export interface McpSearchCase {
+  name: string;
+  /** User prompt describing a task solvable by exactly one catalog tool. */
+  prompt: string;
+  /**
+   * Raw MCP `toolName`(s) that correctly satisfy the task. The model passes
+   * if it surfaces one of these via search AND calls it. Matched exactly
+   * against recorded `toolName`s (not substrings) so near-miss distractors
+   * like `update_pull_request` vs `update_pull_request_branch` don't
+   * collide.
+   */
+  targetToolNames: string[];
+  /**
+   * Near-miss `toolName`s that count as a wrong choice. Calling any of
+   * these fails the case. Optional.
+   */
+  forbiddenToolNames?: string[];
+  /**
+   * Ground truth handed to the judge (what the right tool is and why the
+   * distractors are wrong), so cosmetic answer phrasing doesn't flip the
+   * verdict.
+   */
+  groundTruth?: string;
+}
+
+// Provisional no-cred cases that exercise the search machinery end to end.
+// The authoritative GitHub near-miss cases land once that server is wired
+// and its pinned toolset enumerated. Tool names here are best-effort for
+// the pinned server versions and degrade to SKIP if they don't match.
+export const MCP_SEARCH_CASES: McpSearchCase[] = [
+  {
+    name: "memory: search stored entities (not open/read-graph)",
+    prompt:
+      "Using the available MCP tools, find any stored knowledge-graph " +
+      "entities related to the topic 'invoices' and report what you find. " +
+      "If there are none, say so.",
+    targetToolNames: ["search_nodes"],
+    forbiddenToolNames: ["open_nodes", "read_graph"],
+    groundTruth:
+      "The correct tool is `search_nodes` (query the graph by keyword). " +
+      "`open_nodes` retrieves specific named nodes (not a search) and " +
+      "`read_graph` dumps the entire graph; neither is the right way to " +
+      "find entities by topic.",
+  },
+  {
+    name: "filesystem: list a directory (not tree/with-sizes)",
+    prompt:
+      "Using the available MCP tools, list the top-level entries of the " +
+      "server's allowed directory and report them. Do not recurse into " +
+      "subdirectories and do not report file sizes.",
+    targetToolNames: ["list_directory"],
+    forbiddenToolNames: ["directory_tree", "list_directory_with_sizes"],
+    groundTruth:
+      "The correct tool is `list_directory` (flat, names only). " +
+      "`directory_tree` recurses and `list_directory_with_sizes` adds " +
+      "sizes; the task explicitly excludes both.",
+  },
 ];

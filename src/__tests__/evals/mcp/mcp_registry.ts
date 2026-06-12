@@ -11,6 +11,20 @@ type ConsentDecider = (params: {
   callIndex: number;
 }) => boolean | Promise<boolean>;
 
+export interface SearchCallObserverEvent {
+  /** Query the model passed to `search_mcp_tools`. */
+  query: string;
+  /** Optional server-name filter the model passed. */
+  server?: string;
+  /**
+   * Tool names (raw `toolName`, server prefix stripped) whose declarations
+   * the search returned, in rank order. Used to score whether the model's
+   * query surfaced the target tool.
+   */
+  returnedToolNames: string[];
+  durationMs: number;
+}
+
 export interface McpCallObserverEvent {
   jsName: string;
   serverName: string;
@@ -48,6 +62,12 @@ interface RegistryState {
    * `McpRunState.mcpCalls`.
    */
   onMcpCall?: (event: McpCallObserverEvent) => void;
+  /**
+   * Invoked from the wrapped `search_mcp_tools` tool after each search so
+   * the search-suite harness can record what the model queried and which
+   * tools the BM25 ranker returned.
+   */
+  onSearchCall?: (event: SearchCallObserverEvent) => void;
 }
 
 const state: RegistryState = {
@@ -88,6 +108,16 @@ export function setEvalMcpCallObserver(
 
 export function notifyEvalMcpCall(event: McpCallObserverEvent): void {
   state.onMcpCall?.(event);
+}
+
+export function setEvalSearchObserver(
+  observer: RegistryState["onSearchCall"],
+): void {
+  state.onSearchCall = observer;
+}
+
+export function notifyEvalSearchCall(event: SearchCallObserverEvent): void {
+  state.onSearchCall?.(event);
 }
 
 /**

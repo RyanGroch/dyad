@@ -38,7 +38,7 @@ const SERVER_NAME = "chrome-devtools-eval";
  */
 function buildSpawnConfig(): { command: string; args: string[] } {
   const command = process.env.EVAL_MCP_COMMAND || "npx";
-  const pkg = process.env.EVAL_MCP_PACKAGE || "chrome-devtools-mcp@latest";
+  const pkg = process.env.EVAL_MCP_PACKAGE || "chrome-devtools-mcp@1.2.0";
   const args: string[] = command === "npx" ? ["-y", pkg] : [];
 
   args.push("--isolated");
