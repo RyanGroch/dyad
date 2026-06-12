@@ -869,8 +869,11 @@ const ALL_MODELS: Array<{
   {
     provider: "anthropic",
     modelName: SONNET_4_6,
+    // The gateway runs Sonnet 4.6 with adaptive/extended thinking, and
+    // Anthropic rejects any temperature other than 1 in that mode. Must
+    // stay 1 (not 0) or every request 400s.
     label: "Claude Sonnet 4.6",
-    temperature: 0,
+    temperature: 1,
   },
   {
     provider: "openai",
