@@ -2079,51 +2079,45 @@ function registerBm25RetrievalBench(): void {
       await holder.catalog?.close();
     });
 
+    // One test per gold query so the result list shows pass/fail per prompt
+    // (a query that misses top-K is a finding about the ranker, not a bug).
     for (const c of cases) {
-      it(c.name, (testCtx) => {
-        if (holder.skipReason || !holder.catalog) {
-          testCtx.skip(holder.skipReason ?? "catalog not initialized");
-          return;
-        }
-        const acceptable = new Set(c.acceptableToolNames);
-        const present = c.acceptableToolNames.some((t) =>
-          holder.toolNames.has(t),
-        );
-        if (!present) {
-          testCtx.skip(
-            `None of acceptable tool(s) [${c.acceptableToolNames.join(", ")}] present in catalog.`,
+      for (const query of c.goldQueries ?? []) {
+        it(`${c.name} :: "${query}"`, (testCtx) => {
+          if (holder.skipReason || !holder.catalog) {
+            testCtx.skip(holder.skipReason ?? "catalog not initialized");
+            return;
+          }
+          const present = c.acceptableToolNames.some((t) =>
+            holder.toolNames.has(t),
           );
-          return;
-        }
+          if (!present) {
+            testCtx.skip(
+              `None of acceptable tool(s) [${c.acceptableToolNames.join(", ")}] present in catalog.`,
+            );
+            return;
+          }
 
-        const defs = holder.catalog.defs;
-        const failures: string[] = [];
-        for (const query of c.goldQueries ?? []) {
-          const ranked = bm25Ranker(query, defs);
+          const acceptable = new Set(c.acceptableToolNames);
+          const ranked = bm25Ranker(query, holder.catalog.defs);
           const topK = ranked.slice(0, TOP_K).map((r) => r.def.toolName);
           // Rank within the full ranking (1-based), or -1 if unranked.
           const rank =
             ranked.findIndex((r) => acceptable.has(r.def.toolName)) + 1 || -1;
           const inTopK = topK.some((n) => acceptable.has(n));
           console.log(
-            `[mcp_search_bm25] ${c.name} — "${query}" → ` +
-              `acceptable rank ${rank > 0 ? rank : "unranked"} ` +
+            `[mcp_search_bm25] "${query}" → expected [${c.acceptableToolNames.join(", ")}] ` +
+              `rank ${rank > 0 ? rank : "unranked"} ` +
               `(top-${TOP_K}: ${topK.join(", ")})`,
           );
           if (!inTopK) {
-            failures.push(
+            throw new Error(
               `"${query}" did not surface any of [${c.acceptableToolNames.join(", ")}] ` +
                 `in top-${TOP_K} (rank ${rank > 0 ? rank : "unranked"}; top-${TOP_K}: ${topK.join(", ")})`,
             );
           }
-        }
-        if (failures.length > 0) {
-          throw new Error(
-            `BM25 failed to surface an acceptable tool for ${failures.length}/${(c.goldQueries ?? []).length} gold quer${failures.length === 1 ? "y" : "ies"}:\n` +
-              failures.map((f) => `  - ${f}`).join("\n"),
-          );
-        }
-      });
+        });
+      }
     }
   });
 }
