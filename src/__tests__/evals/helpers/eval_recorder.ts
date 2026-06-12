@@ -436,8 +436,60 @@ export async function recordEvalRun(record: EvalRunRecord): Promise<void> {
   if (record.mcpCalls && record.mcpCalls.length > 0) {
     writes.push(writeMcpCallsFolder(recordDir, record));
   }
+  if (record.searchCalls && record.searchCalls.length > 0) {
+    writes.push(writeSearchesFolder(recordDir, record));
+  }
 
   await Promise.all(writes);
+}
+
+async function writeSearchesFolder(
+  recordDir: string,
+  record: EvalRunRecord,
+): Promise<void> {
+  const searches = record.searchCalls ?? [];
+  if (searches.length === 0) return;
+  const dir = resolve(recordDir, "mcp_searches");
+  await mkdir(dir, { recursive: true });
+  const padWidth = Math.max(2, String(searches.length).length);
+
+  await Promise.all(
+    searches.map(async (s) => {
+      const base = String(s.index + 1).padStart(padWidth, "0");
+      const splitDir = resolve(dir, base);
+      await mkdir(splitDir, { recursive: true });
+
+      const scope = s.server ? ` (server: ${s.server})` : "";
+      const returned =
+        s.returnedToolNames.length > 0
+          ? s.returnedToolNames.map((n, i) => `  ${i + 1}. ${n}`).join("\n")
+          : "  (no matches)";
+      const combined =
+        `${hr("=")}\n` +
+        `MCP tool search #${s.index + 1}${scope}\n` +
+        `Timestamp: ${s.timestamp}\n` +
+        `Duration:  ${s.durationMs}ms\n` +
+        `${hr("=")}\n\n` +
+        `----- QUERY -----\n${s.query}\n\n` +
+        `----- RETURNED (rank order) -----\n${returned}\n`;
+
+      await Promise.all([
+        writeFile(resolve(dir, `${base}.txt`), combined),
+        writeFile(
+          resolve(splitDir, "meta.txt"),
+          `index:       ${s.index + 1}\n` +
+            `timestamp:   ${s.timestamp}\n` +
+            `server:      ${s.server ?? ""}\n` +
+            `query:       ${s.query}\n` +
+            `duration_ms: ${s.durationMs}\n`,
+        ),
+        writeFile(
+          resolve(splitDir, "returned.json"),
+          JSON.stringify(s.returnedToolNames, null, 2) + "\n",
+        ),
+      ]);
+    }),
+  );
 }
 
 async function writeSandboxScriptsFolder(
