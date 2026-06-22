@@ -235,3 +235,102 @@ export function buildMcpTypeDefsBlock(defs: McpToolDef[]): string {
 
   return sections.join("\n");
 }
+
+export interface McpToolListOptions {
+  /**
+   * How much of each tool's description to include:
+   * - "name": just the callable name (cheapest).
+   * - "firstSentence": name + the first sentence of the description, hard-
+   *   capped (keeps the discriminating lead, drops method-list / caveat tails
+   *   and protects against pathological no-period blobs).
+   * - "full": name + the whole (whitespace-collapsed) description.
+   * Default "full".
+   */
+  detail?: "name" | "firstSentence" | "full";
+  /**
+   * Hard per-description char cap, applied after the first-sentence trim.
+   * Only used for "firstSentence". Default 120.
+   */
+  maxDescChars?: number;
+}
+
+/** First sentence (up to the first . ! or ?), or the whole string if none. */
+function firstSentence(s: string): string {
+  const m = s.match(/^.*?[.!?](\s|$)/);
+  return (m ? m[0] : s).trim();
+}
+
+/**
+ * Build a lean catalog of every MCP tool, grouped by server, mirroring
+ * `buildMcpTypeDefsBlock` but WITHOUT input schemas. Used by the list- and
+ * hybrid-mode `execute_sandbox_script` descriptions: the model sees what
+ * every tool is up front (so it never has to guess one exists), then fetches
+ * full signatures for the ones it wants via `get_mcp_tool_schema` (or refines
+ * via `search_mcp_tools`). `detail` trades token cost for selection signal.
+ * Returns "" when `defs` is empty.
+ */
+export function buildMcpToolListBlock(
+  defs: McpToolDef[],
+  opts: McpToolListOptions = {},
+): string {
+  if (defs.length === 0) {
+    return "";
+  }
+  const detail = opts.detail ?? "full";
+  const cap = opts.maxDescChars ?? 120;
+
+  const byServer = new Map<string, McpToolDef[]>();
+  for (const d of defs) {
+    const list = byServer.get(d.serverName) ?? [];
+    list.push(d);
+    byServer.set(d.serverName, list);
+  }
+
+  const sections: string[] = [];
+  for (const [serverName, list] of byServer) {
+    sections.push(`// ---- Server: ${serverName} ----`);
+    for (const def of list) {
+      let desc = "";
+      if (detail !== "name" && def.description) {
+        desc = def.description.replace(/\s+/g, " ").trim();
+        if (detail === "firstSentence") {
+          desc = firstSentence(desc);
+          if (desc.length > cap) desc = desc.slice(0, cap).trimEnd() + "…";
+        }
+      }
+      sections.push(`- ${def.jsName}${desc ? `: ${desc}` : ""}`);
+    }
+    sections.push("");
+  }
+
+  return sections.join("\n").trimEnd();
+}
+
+/**
+ * Resolve caller-supplied tool names to defs. Accepts either the sandbox
+ * `jsName` (what the list/declarations show) or the raw MCP `toolName`, so
+ * the model can ask for whichever it has on hand. Names that match nothing
+ * are returned in `missing`. Order follows the requested names; duplicates
+ * are collapsed.
+ */
+export function resolveMcpToolDefs(
+  defs: McpToolDef[],
+  names: string[],
+): { found: McpToolDef[]; missing: string[] } {
+  const byJsName = new Map(defs.map((d) => [d.jsName, d]));
+  const byToolName = new Map(defs.map((d) => [d.toolName, d]));
+  const found: McpToolDef[] = [];
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const def = byJsName.get(name) ?? byToolName.get(name);
+    if (!def) {
+      missing.push(name);
+      continue;
+    }
+    if (seen.has(def.jsName)) continue;
+    seen.add(def.jsName);
+    found.push(def);
+  }
+  return { found, missing };
+}

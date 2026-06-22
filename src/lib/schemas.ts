@@ -362,6 +362,7 @@ const BaseUserSettingsFields = {
   enableSandboxScriptExecution: z.boolean().optional(),
   enableMcpServersForBuildMode: z.boolean().optional(),
   enableMcpToolSearch: z.boolean().optional(),
+  enableMcpToolList: z.boolean().optional(),
   enableCodeExplorer: z.boolean().optional(),
   enableAutoUpdate: z.boolean(),
   releaseChannel: ReleaseChannelSchema,

@@ -717,6 +717,13 @@ export async function handleLocalAgentStream(
       mcpInSandboxEnabled &&
       !!settings.enableMcpToolSearch &&
       agentTools.search_mcp_tools != undefined;
+    // List mode: names + descriptions up front, schemas fetched on demand via
+    // get_mcp_tool_schema. Mutually exclusive with search (search wins).
+    const useMcpToolList =
+      mcpInSandboxEnabled &&
+      !useMcpToolSearch &&
+      !!settings.enableMcpToolList &&
+      agentTools.get_mcp_tool_schema != undefined;
     const mcpToolsForRegistration: ToolSet =
       !readOnly && !planModeOnly && !mcpInSandboxEnabled
         ? await getMcpTools(event, ctx)
@@ -729,6 +736,7 @@ export async function handleLocalAgentStream(
       agentTools.execute_sandbox_script.description =
         await buildExecuteSandboxScriptDescription([], {
           useSearch: useMcpToolSearch,
+          useList: useMcpToolList,
         });
       if (mcpInSandboxEnabled) {
         try {
@@ -741,6 +749,7 @@ export async function handleLocalAgentStream(
           agentTools.execute_sandbox_script.description =
             await buildExecuteSandboxScriptDescription(defs, {
               useSearch: useMcpToolSearch,
+              useList: useMcpToolList,
             });
         } catch (e) {
           logger.warn(

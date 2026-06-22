@@ -426,7 +426,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   {
     name: "github: open a new issue (tool named issue_write)",
     prompt:
-      "Open a new issue in the repository owner/repo titled 'Flaky test' " +
+      "Open a new issue in the repository RyanGroch/ryangroch.github.io titled 'Flaky test' " +
       "describing an intermittently failing test.",
     acceptableToolNames: ["issue_write"],
     goldQueries: ["create a new issue", "open a github issue", "file an issue"],
@@ -438,7 +438,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
     name: "github: most recent release",
     prompt:
       "What is the most recent released version of the repository " +
-      "owner/repo?",
+      "RyanGroch/ryangroch.github.io?",
     acceptableToolNames: ["get_latest_release"],
     goldQueries: [
       "latest release",
@@ -451,7 +451,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
     name: "github: commit history of a branch",
     prompt:
       "Show me the commit history of the main branch in the repository " +
-      "owner/repo.",
+      "RyanGroch/ryangroch.github.io.",
     acceptableToolNames: ["list_commits"],
     goldQueries: ["commit history", "list commits on a branch"],
     groundTruth: "`list_commits` returns the commits of a branch.",
@@ -459,7 +459,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   {
     name: "github: read a file's contents",
     prompt:
-      "Get the contents of the README.md file in the repository owner/repo " +
+      "Get the contents of the README.md file in the repository RyanGroch/ryangroch.github.io " +
       "and summarize it.",
     acceptableToolNames: ["get_file_contents"],
     goldQueries: ["read a file from a repo", "get file contents"],
@@ -469,7 +469,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   {
     name: "github: sync a PR branch with its base",
     prompt:
-      "Bring pull request #42 in owner/repo up to date by merging the latest " +
+      "Bring pull request #42 in RyanGroch/ryangroch.github.io up to date by merging the latest " +
       "changes from its base branch into it.",
     acceptableToolNames: ["update_pull_request_branch"],
     goldQueries: [
@@ -484,14 +484,16 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   // Dense-cluster discrimination: many list_* tools share the verb.
   {
     name: "github: list tags",
-    prompt: "List the git tags in the repository owner/repo.",
+    prompt:
+      "List the git tags in the repository RyanGroch/ryangroch.github.io.",
     acceptableToolNames: ["list_tags"],
     goldQueries: ["list tags", "git tags in a repository"],
     groundTruth: "`list_tags` lists a repository's git tags.",
   },
   {
     name: "github: list branches",
-    prompt: "List the branches in the repository owner/repo.",
+    prompt:
+      "List the branches in the repository RyanGroch/ryangroch.github.io.",
     acceptableToolNames: ["list_branches"],
     goldQueries: ["list branches", "branches in a repository"],
     groundTruth: "`list_branches` lists a repository's branches.",
@@ -500,7 +502,7 @@ const GITHUB_SEARCH_CASES: Omit<McpSearchCase, "server">[] = [
   {
     name: "github: find issues mentioning a phrase",
     prompt:
-      "Find issues in the repository owner/repo that mention 'memory leak'.",
+      "Find issues in the repository RyanGroch/ryangroch.github.io that mention 'memory leak'.",
     acceptableToolNames: ["search_issues", "list_issues"],
     goldQueries: ["search issues for a phrase", "find issues mentioning text"],
     groundTruth:

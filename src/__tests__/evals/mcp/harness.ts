@@ -13,6 +13,7 @@ import { searchReplaceTool } from "@/pro/main/ipc/handlers/local_agent/tools/sea
 import { writeFileTool } from "@/pro/main/ipc/handlers/local_agent/tools/write_file";
 import { grepTool } from "@/pro/main/ipc/handlers/local_agent/tools/grep";
 import { searchMcpToolsTool } from "@/pro/main/ipc/handlers/local_agent/tools/search_mcp_tools";
+import { getMcpToolSchemaTool } from "@/pro/main/ipc/handlers/local_agent/tools/get_mcp_tool_schema";
 import type { AgentContext } from "@/pro/main/ipc/handlers/local_agent/tools/types";
 import type { McpEvalCase } from "./cases";
 import { getEvalMcpDefs, notifyEvalSearchCall } from "./mcp_registry";
@@ -245,13 +246,31 @@ export async function buildExecuteSandboxScriptHarnessTool(params: {
    * default.
    */
   useSearch?: boolean;
+  /**
+   * When true, build the list-mode description (names + descriptions only,
+   * no schemas) and the model must fetch schemas via `get_mcp_tool_schema`.
+   * Matches production with `enableMcpToolList` on. Mutually exclusive with
+   * `useSearch` (search wins if both set, mirroring production).
+   */
+  useList?: boolean;
+  /**
+   * When true, build the hybrid description: a catalog listing (names, or
+   * names + first sentence per `listDetail`) plus BOTH discovery tools
+   * (`get_mcp_tool_schema` + `search_mcp_tools`).
+   */
+  useHybrid?: boolean;
+  /** List verbosity for hybrid mode. Default "name". */
+  listDetail?: "name" | "firstSentence" | "full";
 }): Promise<{ tool: Tool; description: string }> {
-  // Pass the per-turn defs to match production's per-turn description. With
-  // `useSearch` off the declarations are inlined; with it on the model is
-  // pointed at `search_mcp_tools` instead (prod's `enableMcpToolSearch`).
+  // Pass the per-turn defs to match production's per-turn description.
   const description = await buildExecuteSandboxScriptDescription(
     getEvalMcpDefs(),
-    { useSearch: params.useSearch ?? false },
+    {
+      useSearch: params.useSearch ?? false,
+      useList: params.useList ?? false,
+      useHybrid: params.useHybrid ?? false,
+      listDetail: params.listDetail,
+    },
   );
   const tool: Tool = {
     description,
@@ -349,6 +368,48 @@ export function buildSearchMcpToolsHarnessTool(params: {
       notifyEvalSearchCall({
         query: args.query,
         server: args.server,
+        returnedToolNames,
+        durationMs,
+      });
+      return result;
+    },
+  };
+}
+
+/**
+ * Build the AI-SDK `Tool` for `get_mcp_tool_schema` the model sees in list
+ * mode. Reuses the production tool's `execute` (resolves names → full TS
+ * declarations over `ctx.mcpToolDefs`) and `inputSchema`/`description`,
+ * wrapping `execute` to record one `SearchCallRecord` per call so list-mode
+ * runs are comparable to search-mode runs in the eval output. For these
+ * records `query` is the requested tool names and `returnedToolNames` is the
+ * subset whose declarations actually came back.
+ */
+export function buildGetMcpToolSchemaHarnessTool(params: {
+  state: McpRunState;
+  ctx: AgentContext;
+}): Tool {
+  return {
+    description: getMcpToolSchemaTool.description,
+    inputSchema: getMcpToolSchemaTool.inputSchema,
+    execute: async (args: { tools: string[] }) => {
+      const index = params.state.searchCalls.length;
+      const startedAt = Date.now();
+      const result = await getMcpToolSchemaTool.execute(args, params.ctx);
+      const returnedToolNames = parseReturnedToolNames(result);
+      const durationMs = Date.now() - startedAt;
+      const query = (args.tools ?? []).join(", ");
+      params.state.searchCalls.push({
+        timestamp: new Date().toISOString(),
+        index,
+        query,
+        server: null,
+        returnedToolNames,
+        durationMs,
+      });
+      notifyEvalSearchCall({
+        query,
+        server: undefined,
         returnedToolNames,
         durationMs,
       });

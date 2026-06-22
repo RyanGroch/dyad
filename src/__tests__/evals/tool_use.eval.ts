@@ -149,6 +149,7 @@ import { bm25Ranker } from "@/pro/main/ipc/handlers/local_agent/tools/bm25";
 import {
   buildExecuteSandboxScriptHarnessTool,
   buildSearchMcpToolsHarnessTool,
+  buildGetMcpToolSchemaHarnessTool,
   buildMcpAgentContext,
   buildProductionToolStubs,
   createCaseAppDir,
@@ -1125,14 +1126,31 @@ if (!SUITE_FILTER_RAW) {
   // record a flag the MCP describe block reads.
   const MCP_SUITE_NAME = "mcp_execute";
   const MCP_SEARCH_SUITE_NAME = "mcp_search";
+  const MCP_LIST_SUITE_NAME = "mcp_list";
+  // Two hybrid arms (catalog listing + both discovery tools), differing only
+  // in list verbosity: names-only vs names + first sentence.
+  const MCP_HYBRID_NAMES_SUITE_NAME = "mcp_hybrid_names";
+  const MCP_HYBRID_DESC_SUITE_NAME = "mcp_hybrid_desc";
   const mcpRequested =
     requestedSuiteNames === null || requestedSuiteNames.has(MCP_SUITE_NAME);
   const mcpSearchRequested =
     requestedSuiteNames === null ||
     requestedSuiteNames.has(MCP_SEARCH_SUITE_NAME);
+  const mcpListRequested =
+    requestedSuiteNames === null ||
+    requestedSuiteNames.has(MCP_LIST_SUITE_NAME);
+  const mcpHybridNamesRequested =
+    requestedSuiteNames === null ||
+    requestedSuiteNames.has(MCP_HYBRID_NAMES_SUITE_NAME);
+  const mcpHybridDescRequested =
+    requestedSuiteNames === null ||
+    requestedSuiteNames.has(MCP_HYBRID_DESC_SUITE_NAME);
   if (requestedSuiteNames !== null) {
     requestedSuiteNames.delete(MCP_SUITE_NAME);
     requestedSuiteNames.delete(MCP_SEARCH_SUITE_NAME);
+    requestedSuiteNames.delete(MCP_LIST_SUITE_NAME);
+    requestedSuiteNames.delete(MCP_HYBRID_NAMES_SUITE_NAME);
+    requestedSuiteNames.delete(MCP_HYBRID_DESC_SUITE_NAME);
   }
   // True when the caller asked only for MCP suite(s) AND NOT for any of the
   // file-edit suites (so the file-edit validation should be quiet).
@@ -1289,10 +1307,40 @@ if (!SUITE_FILTER_RAW) {
 
   // ── mcp_search suite (tool discovery via search) ───────────────
   if (mcpSearchRequested && configErrors.length === 0) {
-    registerMcpSearchSuite({ models: MODELS });
+    registerMcpSearchSuite({ models: MODELS, mode: "search" });
     // Model-independent ranker benchmark. Not gated by DYAD_PRO_API_KEY
     // (no LLM); measures the search algorithm directly on gold queries.
     registerBm25RetrievalBench();
+  }
+
+  // ── mcp_list suite (names + descriptions up front, schemas on demand) ──
+  // The experiment arm compared against mcp_search: instead of BM25 retrieval,
+  // the model sees every tool's name + description and pulls schemas via
+  // get_mcp_tool_schema. Same catalog, same pass criterion, so token cost and
+  // pass rate are directly comparable between the two arms.
+  if (mcpListRequested && configErrors.length === 0) {
+    registerMcpSearchSuite({ models: MODELS, mode: "list" });
+  }
+
+  // ── mcp_hybrid arms (catalog listing + get_mcp_tool_schema + search) ──
+  // Two verbosities so we can read off whether per-tool descriptions are
+  // worth their ~3x token cost over bare names. Same catalog + pass criterion
+  // as the other discovery arms, so all are directly comparable.
+  if (mcpHybridNamesRequested && configErrors.length === 0) {
+    registerMcpSearchSuite({
+      models: MODELS,
+      mode: "hybrid",
+      listDetail: "name",
+      suiteName: MCP_HYBRID_NAMES_SUITE_NAME,
+    });
+  }
+  if (mcpHybridDescRequested && configErrors.length === 0) {
+    registerMcpSearchSuite({
+      models: MODELS,
+      mode: "hybrid",
+      listDetail: "firstSentence",
+      suiteName: MCP_HYBRID_DESC_SUITE_NAME,
+    });
   }
 }
 
@@ -1518,7 +1566,9 @@ async function runMcpCase(params: {
     const result = await generateText({
       model: getEvalModel(provider, modelName),
       temperature,
-      stopWhen: stepCountIs(40),
+      // mcp_execute chains real multi-tool tasks so it needs more headroom
+      // than discovery, but 40 still lets a non-converging run drain budget.
+      stopWhen: stepCountIs(20),
       abortSignal: abortController.signal,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -1713,8 +1763,26 @@ function registerMcpSearchSuite(params: {
     label: string;
     temperature: number;
   }>;
+  /**
+   * Discovery arm. "search": `search_mcp_tools` (BM25) only. "list": full
+   * name+desc catalog + `get_mcp_tool_schema` only. "hybrid": catalog listing
+   * (verbosity per `listDetail`) + BOTH discovery tools. All share the
+   * catalog, cases, and pass criterion.
+   */
+  mode: "search" | "list" | "hybrid";
+  /** List verbosity for hybrid mode. Default "name". */
+  listDetail?: "name" | "firstSentence" | "full";
+  /** Suite name (and eval-results folder). Defaults derived from mode. */
+  suiteName?: string;
 }): void {
-  const { models } = params;
+  const { models, mode, listDetail } = params;
+  const suiteName =
+    params.suiteName ??
+    (mode === "list"
+      ? "mcp_list"
+      : mode === "hybrid"
+        ? "mcp_hybrid"
+        : "mcp_search");
   const catalogSpecs = resolveSearchCatalogSpecs();
 
   const holder: {
@@ -1723,7 +1791,7 @@ function registerMcpSearchSuite(params: {
     toolNames: Set<string>;
   } = { catalog: null, skipReason: null, toolNames: new Set() };
 
-  describe.skipIf(!hasDyadProKey())("mcp_search", () => {
+  describe.skipIf(!hasDyadProKey())(suiteName, () => {
     beforeAll(async () => {
       if (catalogSpecs.length === 0) {
         holder.skipReason = `No catalog servers matched EVAL_MCP_SEARCH_SERVERS.`;
@@ -1744,7 +1812,7 @@ function registerMcpSearchSuite(params: {
       holder.toolNames = new Set(holder.catalog.defs.map((d) => d.toolName));
       if (holder.catalog.skipped.length > 0) {
         console.warn(
-          `\n[mcp_search] catalog: started ${holder.catalog.startedKeys.join(", ")}; ` +
+          `\n[${suiteName}] catalog: started ${holder.catalog.startedKeys.join(", ")}; ` +
             `skipped ${holder.catalog.skipped.map((s) => s.key).join(", ")}`,
         );
       }
@@ -1755,7 +1823,7 @@ function registerMcpSearchSuite(params: {
     });
 
     for (const { provider, modelName, label, temperature } of models) {
-      describe(`mcp_search — ${label}`, () => {
+      describe(`${suiteName} — ${label}`, () => {
         for (const c of MCP_SEARCH_CASES) {
           it(c.name, async (testCtx) => {
             if (holder.skipReason) {
@@ -1781,6 +1849,9 @@ function registerMcpSearchSuite(params: {
               modelName,
               label,
               temperature,
+              mode,
+              listDetail,
+              suiteName,
             });
           });
         }
@@ -1789,22 +1860,39 @@ function registerMcpSearchSuite(params: {
   });
 }
 
-// ── mcp_search case runner ─────────────────────────────────────
+// ── mcp_search / mcp_list case runner ───────────────────────────
 //
-// Like runMcpCase but: builds the sandbox description in search mode,
-// registers the real search_mcp_tools tool, and scores Type-B signal —
-// did the model's query surface a target tool, did it then call the target
-// (and not a forbidden near-miss), and how many searches did it take.
+// Like runMcpCase but for tool discovery. In "search" mode it builds the
+// search-mode description and registers search_mcp_tools (BM25); in "list"
+// mode it builds the list-mode description (names + descriptions) and
+// registers get_mcp_tool_schema. Both score the same Type-B signal: did a
+// discovery call surface a target tool, did the model then call it, and how
+// many discovery calls did it take.
 async function runMcpSearchCase(params: {
   c: McpSearchCase;
   provider: EvalProvider;
   modelName: string;
   label: string;
   temperature: number;
+  mode: "search" | "list" | "hybrid";
+  listDetail?: "name" | "firstSentence" | "full";
+  suiteName?: string;
 }): Promise<void> {
-  const { c, provider, modelName, label, temperature } = params;
-  const SUITE_NAME = "mcp_search";
-  const STEP_CAP = 40;
+  const { c, provider, modelName, label, temperature, mode, listDetail } =
+    params;
+  const SUITE_NAME =
+    params.suiteName ??
+    (mode === "list"
+      ? "mcp_list"
+      : mode === "hybrid"
+        ? "mcp_hybrid"
+        : "mcp_search");
+  // Tight cap: a legit discovery case finishes in well under 10 steps (1-2
+  // searches + 1-2 MCP calls + reasoning). A high cap lets a model that won't
+  // commit (e.g. re-searching the same thing) run away — one Gemini case hit
+  // 40 steps and burned ~9.8M tokens alone. Cut hard so a non-converging run
+  // fails fast instead of draining budget.
+  const STEP_CAP = 12;
   const runTimestamp = new Date().toISOString();
   const llmStartMs = Date.now();
   let lastStepEndMs = llmStartMs;
@@ -1874,9 +1962,30 @@ async function runMcpSearchCase(params: {
       case: c as unknown as McpEvalCase,
       state,
       ctx,
-      useSearch: true,
+      useSearch: mode === "search",
+      useList: mode === "list",
+      useHybrid: mode === "hybrid",
+      listDetail,
     });
-  const searchTool = buildSearchMcpToolsHarnessTool({ state, ctx });
+  // Register the discovery tool(s) the chosen mode exposes, keyed by their
+  // production names so the model's tool calls resolve. Hybrid exposes both.
+  const discoveryTools: Record<string, Tool> =
+    mode === "search"
+      ? { search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }) }
+      : mode === "list"
+        ? {
+            get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
+              state,
+              ctx,
+            }),
+          }
+        : {
+            get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
+              state,
+              ctx,
+            }),
+            search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }),
+          };
 
   try {
     const result = await generateText({
@@ -1888,7 +1997,7 @@ async function runMcpSearchCase(params: {
       messages: [{ role: "user", content: userPrompt }],
       tools: {
         execute_sandbox_script: sandboxTool,
-        search_mcp_tools: searchTool,
+        ...discoveryTools,
         ...buildProductionToolStubs(),
       },
       onStepFinish: (step) => {

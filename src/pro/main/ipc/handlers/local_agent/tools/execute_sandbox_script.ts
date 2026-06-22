@@ -20,8 +20,10 @@ import {
 import {
   collectMcpToolDefs,
   buildMcpTypeDefsBlock,
+  buildMcpToolListBlock,
   buildMcpCapabilityMap,
   type McpToolDef,
+  type McpToolListOptions,
 } from "./mcp_type_defs";
 
 const executeSandboxScriptSchema = z.object({
@@ -230,6 +232,51 @@ ${buildServerInventory(defs)}
 - MCP host functions are only available on the 'main' execution thread. They are NOT available on the 'worker' thread — if you need both heavy compute and MCP calls, split into two scripts (worker for the compute, then main for the MCP follow-up).`;
 }
 
+// List-mode addendum: used when the `enableMcpToolList` experiment is on.
+// Lists every tool's name + description (no input schemas) so the model can
+// see what exists up front, then fetches the schemas it needs via
+// `get_mcp_tool_schema` before calling the host functions. A middle ground
+// between inlining every schema (default) and search (which hides names too).
+function buildMcpListAddendum(defs: McpToolDef[]): string {
+  return `
+
+MCP tools can also be invoked from inside the script. The available tools are listed below by name and description only, without their input signatures. To call one:
+1. Call the \`get_mcp_tool_schema\` tool with the tool name(s) you need to get their full TypeScript declarations.
+2. Call those declared host functions inside this script, exactly as declared.
+- Each MCP tool invocation may trigger a user consent prompt. A denied call throws.
+- MCP host functions are only available on the 'main' execution thread. They are NOT available on the 'worker' thread — if you need both heavy compute and MCP calls, split into two scripts (worker for the compute, then main for the MCP follow-up).
+
+Available MCP tools:
+\`\`\`
+${buildMcpToolListBlock(defs)}
+\`\`\``;
+}
+
+// Hybrid-mode addendum: lists every tool (names, or names + first sentence)
+// up front AND offers both discovery tools. The model picks a tool from the
+// list and pulls its signature with `get_mcp_tool_schema`, or falls back to
+// `search_mcp_tools` when the listing isn't enough to know which one fits.
+// Combines list mode's full-catalog visibility (suppresses repeated blind
+// searching) with search's fallback for genuinely ambiguous names.
+function buildMcpHybridAddendum(
+  defs: McpToolDef[],
+  listOpts: McpToolListOptions,
+): string {
+  return `
+
+MCP tools can also be invoked from inside the script. Every available tool is listed below (without input signatures). To call one:
+1. If you can identify the right tool from the list, call \`get_mcp_tool_schema\` with its name to get its full TypeScript declaration.
+2. If you are unsure which tool fits, call \`search_mcp_tools\` with keywords first to rank the candidates, then get its schema.
+3. Call the declared host function inside this script, exactly as declared.
+- Each MCP tool invocation may trigger a user consent prompt. A denied call throws.
+- MCP host functions are only available on the 'main' execution thread. They are NOT available on the 'worker' thread — if you need both heavy compute and MCP calls, split into two scripts (worker for the compute, then main for the MCP follow-up).
+
+Available MCP tools:
+\`\`\`
+${buildMcpToolListBlock(defs, listOpts)}
+\`\`\``;
+}
+
 /**
  * Build the full tool description, appending the MCP host-function
  * declarations and usage notes when any MCP server is enabled. The
@@ -239,10 +286,24 @@ ${buildServerInventory(defs)}
  * available the description carries no MCP framing at all, so the
  * model does not try to call host functions that don't exist (e.g. in
  * read-only / plan-only turns).
+ *
+ * MCP framing has four mutually exclusive modes (precedence top to bottom):
+ * - `useSearch`: list nothing; the model finds tools via `search_mcp_tools`.
+ * - `useHybrid`: list every tool (names, or names + first sentence per
+ *   `listDetail`) AND offer both `get_mcp_tool_schema` and `search_mcp_tools`.
+ * - `useList`: list every tool's name + full desc (no schema); the model
+ *   pulls schemas on demand via `get_mcp_tool_schema`.
+ * - default: inline every tool's full TS declaration (name + desc + schema).
  */
 export async function buildExecuteSandboxScriptDescription(
   precomputedDefs?: McpToolDef[],
-  options?: { useSearch?: boolean },
+  options?: {
+    useSearch?: boolean;
+    useList?: boolean;
+    useHybrid?: boolean;
+    /** List verbosity for hybrid mode. Default "name". */
+    listDetail?: McpToolListOptions["detail"];
+  },
 ): Promise<string> {
   const defs = precomputedDefs ?? (await collectMcpToolDefs());
   if (defs.length === 0) {
@@ -253,6 +314,18 @@ export async function buildExecuteSandboxScriptDescription(
   // only embedded when search is off.
   if (options?.useSearch) {
     return FILES_ONLY_PREAMBLE + buildMcpSearchAddendum(defs);
+  }
+  // Hybrid mode (experiment on): catalog listing + both discovery tools.
+  if (options?.useHybrid) {
+    return (
+      FILES_ONLY_PREAMBLE +
+      buildMcpHybridAddendum(defs, { detail: options.listDetail ?? "name" })
+    );
+  }
+  // List mode (experiment on): names + descriptions up front, schemas on
+  // demand via `get_mcp_tool_schema`.
+  if (options?.useList) {
+    return FILES_ONLY_PREAMBLE + buildMcpListAddendum(defs);
   }
   return FILES_ONLY_PREAMBLE + buildMcpAddendum(buildMcpTypeDefsBlock(defs));
 }

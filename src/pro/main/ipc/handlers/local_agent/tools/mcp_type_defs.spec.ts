@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildMcpCapabilityMap,
   buildMcpTypeDefsBlock,
+  buildMcpToolListBlock,
+  resolveMcpToolDefs,
   type McpToolDef,
 } from "./mcp_type_defs";
 import { mcpManager } from "@/ipc/utils/mcp_manager";
@@ -115,6 +117,114 @@ describe("buildMcpTypeDefsBlock", () => {
       declare function b__one(args: Record<string, unknown>): Promise<McpResult>;
       "
     `);
+  });
+});
+
+describe("buildMcpToolListBlock", () => {
+  it("returns an empty string when defs are empty", () => {
+    expect(buildMcpToolListBlock([])).toBe("");
+  });
+
+  it("lists name + one-line description per tool, grouped by server, no schema", () => {
+    const block = buildMcpToolListBlock([
+      def({
+        jsName: "a__one",
+        serverName: "alpha",
+        description: "first line\n  second line",
+        inputSchema: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+        },
+      }),
+      def({
+        jsName: "b__one",
+        serverName: "beta",
+        description: undefined,
+      }),
+    ]);
+    expect(block).toMatchInlineSnapshot(`
+      "// ---- Server: alpha ----
+      - a__one: first line second line
+
+      // ---- Server: beta ----
+      - b__one"
+    `);
+    // The whole point of list mode: no input schema leaks into the listing.
+    expect(block).not.toContain("declare function");
+    expect(block).not.toContain("name: string");
+  });
+
+  it("detail 'name' omits descriptions entirely", () => {
+    const block = buildMcpToolListBlock(
+      [
+        def({
+          jsName: "a__one",
+          serverName: "alpha",
+          description: "Create a new issue in a repository",
+        }),
+      ],
+      { detail: "name" },
+    );
+    expect(block).toContain("- a__one");
+    expect(block).not.toContain("Create a new issue");
+  });
+
+  it("detail 'firstSentence' keeps only the first sentence", () => {
+    const block = buildMcpToolListBlock(
+      [
+        def({
+          jsName: "a__one",
+          serverName: "alpha",
+          description:
+            "Create or update a file. If updating, provide the SHA. Use this to commit.",
+        }),
+      ],
+      { detail: "firstSentence" },
+    );
+    expect(block).toContain("- a__one: Create or update a file.");
+    expect(block).not.toContain("provide the SHA");
+  });
+
+  it("detail 'firstSentence' hard-caps a run-on first sentence", () => {
+    const long = "word ".repeat(60).trim(); // ~300 chars, no period
+    const block = buildMcpToolListBlock(
+      [def({ jsName: "a__one", serverName: "alpha", description: long })],
+      { detail: "firstSentence", maxDescChars: 40 },
+    );
+    const line = block.split("\n").find((l) => l.startsWith("- a__one"))!;
+    expect(line.endsWith("…")).toBe(true);
+    // "- a__one: " (10) + 40 desc chars + "…" — comfortably bounded.
+    expect(line.length).toBeLessThanOrEqual(10 + 40 + 1);
+  });
+});
+
+describe("resolveMcpToolDefs", () => {
+  const defs = [
+    def({ jsName: "github__create_issue", toolName: "create_issue" }),
+    def({ jsName: "slack__send_message", toolName: "send_message" }),
+  ];
+
+  it("resolves by jsName and by raw toolName", () => {
+    const { found, missing } = resolveMcpToolDefs(defs, [
+      "github__create_issue",
+      "send_message",
+    ]);
+    expect(found.map((d) => d.jsName)).toEqual([
+      "github__create_issue",
+      "slack__send_message",
+    ]);
+    expect(missing).toEqual([]);
+  });
+
+  it("collapses duplicates and collects unmatched names", () => {
+    const { found, missing } = resolveMcpToolDefs(defs, [
+      "github__create_issue",
+      "create_issue",
+      "nope",
+    ]);
+    expect(found.map((d) => d.jsName)).toEqual(["github__create_issue"]);
+    expect(missing).toEqual(["nope"]);
   });
 });
 
