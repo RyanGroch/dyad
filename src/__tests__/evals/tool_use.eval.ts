@@ -1131,6 +1131,9 @@ if (!SUITE_FILTER_RAW) {
   // in list verbosity: names-only vs names + first sentence.
   const MCP_HYBRID_NAMES_SUITE_NAME = "mcp_hybrid_names";
   const MCP_HYBRID_DESC_SUITE_NAME = "mcp_hybrid_desc";
+  // Baseline arm: inline every tool's full declaration, no discovery tool. The
+  // accuracy ceiling / token ceiling to compare search and names against.
+  const MCP_INLINE_SUITE_NAME = "mcp_inline";
   const mcpRequested =
     requestedSuiteNames === null || requestedSuiteNames.has(MCP_SUITE_NAME);
   const mcpSearchRequested =
@@ -1145,12 +1148,16 @@ if (!SUITE_FILTER_RAW) {
   const mcpHybridDescRequested =
     requestedSuiteNames === null ||
     requestedSuiteNames.has(MCP_HYBRID_DESC_SUITE_NAME);
+  const mcpInlineRequested =
+    requestedSuiteNames === null ||
+    requestedSuiteNames.has(MCP_INLINE_SUITE_NAME);
   if (requestedSuiteNames !== null) {
     requestedSuiteNames.delete(MCP_SUITE_NAME);
     requestedSuiteNames.delete(MCP_SEARCH_SUITE_NAME);
     requestedSuiteNames.delete(MCP_LIST_SUITE_NAME);
     requestedSuiteNames.delete(MCP_HYBRID_NAMES_SUITE_NAME);
     requestedSuiteNames.delete(MCP_HYBRID_DESC_SUITE_NAME);
+    requestedSuiteNames.delete(MCP_INLINE_SUITE_NAME);
   }
   // True when the caller asked only for MCP suite(s) AND NOT for any of the
   // file-edit suites (so the file-edit validation should be quiet).
@@ -1340,6 +1347,17 @@ if (!SUITE_FILTER_RAW) {
       mode: "hybrid",
       listDetail: "firstSentence",
       suiteName: MCP_HYBRID_DESC_SUITE_NAME,
+    });
+  }
+
+  // ── mcp_inline arm (baseline: all declarations inline, no discovery) ──
+  // The accuracy/token ceiling: the model sees every tool's full signature up
+  // front and calls one directly, with no search_mcp_tools / get_mcp_tool_schema.
+  if (mcpInlineRequested && configErrors.length === 0) {
+    registerMcpSearchSuite({
+      models: MODELS,
+      mode: "inline",
+      suiteName: MCP_INLINE_SUITE_NAME,
     });
   }
 }
@@ -1766,10 +1784,11 @@ function registerMcpSearchSuite(params: {
   /**
    * Discovery arm. "search": `search_mcp_tools` (BM25) only. "list": full
    * name+desc catalog + `get_mcp_tool_schema` only. "hybrid": catalog listing
-   * (verbosity per `listDetail`) + BOTH discovery tools. All share the
+   * (verbosity per `listDetail`) + BOTH discovery tools. "inline": every tool's
+   * full declaration inline, no discovery tool (baseline). All share the
    * catalog, cases, and pass criterion.
    */
-  mode: "search" | "list" | "hybrid";
+  mode: "search" | "list" | "hybrid" | "inline";
   /** List verbosity for hybrid mode. Default "name". */
   listDetail?: "name" | "firstSentence" | "full";
   /** Suite name (and eval-results folder). Defaults derived from mode. */
@@ -1782,7 +1801,9 @@ function registerMcpSearchSuite(params: {
       ? "mcp_list"
       : mode === "hybrid"
         ? "mcp_hybrid"
-        : "mcp_search");
+        : mode === "inline"
+          ? "mcp_inline"
+          : "mcp_search");
   const catalogSpecs = resolveSearchCatalogSpecs();
 
   const holder: {
@@ -1874,7 +1895,7 @@ async function runMcpSearchCase(params: {
   modelName: string;
   label: string;
   temperature: number;
-  mode: "search" | "list" | "hybrid";
+  mode: "search" | "list" | "hybrid" | "inline";
   listDetail?: "name" | "firstSentence" | "full";
   suiteName?: string;
 }): Promise<void> {
@@ -1886,7 +1907,9 @@ async function runMcpSearchCase(params: {
       ? "mcp_list"
       : mode === "hybrid"
         ? "mcp_hybrid"
-        : "mcp_search");
+        : mode === "inline"
+          ? "mcp_inline"
+          : "mcp_search");
   // Tight cap: a legit discovery case finishes in well under 10 steps (1-2
   // searches + 1-2 MCP calls + reasoning). A high cap lets a model that won't
   // commit (e.g. re-searching the same thing) run away — one Gemini case hit
@@ -1968,24 +1991,27 @@ async function runMcpSearchCase(params: {
       listDetail,
     });
   // Register the discovery tool(s) the chosen mode exposes, keyed by their
-  // production names so the model's tool calls resolve. Hybrid exposes both.
+  // production names so the model's tool calls resolve. Hybrid exposes both;
+  // inline exposes none (all declarations are already in the description).
   const discoveryTools: Record<string, Tool> =
-    mode === "search"
-      ? { search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }) }
-      : mode === "list"
-        ? {
-            get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
-              state,
-              ctx,
-            }),
-          }
-        : {
-            get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
-              state,
-              ctx,
-            }),
-            search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }),
-          };
+    mode === "inline"
+      ? {}
+      : mode === "search"
+        ? { search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }) }
+        : mode === "list"
+          ? {
+              get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
+                state,
+                ctx,
+              }),
+            }
+          : {
+              get_mcp_tool_schema: buildGetMcpToolSchemaHarnessTool({
+                state,
+                ctx,
+              }),
+              search_mcp_tools: buildSearchMcpToolsHarnessTool({ state, ctx }),
+            };
 
   try {
     const result = await generateText({
