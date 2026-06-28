@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { app, ipcMain, IpcMainInvokeEvent } from "electron";
 import { createTypedHandler } from "./base";
 import { computeStreamingPatch } from "../utils/stream_text_utils";
+import { metricEvent, timeSync } from "../../utils/stream_metrics";
 import { chatContracts } from "../types/chat";
 import {
   ModelMessage,
@@ -240,7 +241,14 @@ async function processStreamChunks({
 
     fullResponse += chunk;
     incrementalResponse += chunk;
-    fullResponse = cleanFullResponse(fullResponse);
+    const cleaned = timeSync(() => cleanFullResponse(fullResponse));
+    fullResponse = cleaned.value;
+    metricEvent({
+      kind: "chunk_clean",
+      chunkLen: chunk.length,
+      fullLen: fullResponse.length,
+      cleanMs: Math.round(cleaned.ms * 100) / 100,
+    });
     fullResponse = await processResponseChunkUpdate({
       fullResponse,
     });
@@ -1325,17 +1333,31 @@ This conversation includes one or more image attachments. When the user uploads 
           partialResponses.set(req.chatId, fullResponse);
           // Save to DB (in case user is switching chats during the stream)
           const now = Date.now();
+          let dbMs = 0;
+          let wroteDb = false;
           if (now - lastDbSaveAt >= 150) {
+            const dbStart = performance.now();
             await db
               .update(messages)
               .set({ content: fullResponse })
               .where(eq(messages.id, placeholderAssistantMessage.id));
-
+            dbMs = performance.now() - dbStart;
+            wroteDb = true;
             lastDbSaveAt = now;
           }
 
-          const patch = computeStreamingPatch(fullResponse, lastSentContent);
+          const patchTimed = timeSync(() =>
+            computeStreamingPatch(fullResponse, lastSentContent),
+          );
+          const patch = patchTimed.value;
           lastSentContent = fullResponse;
+          metricEvent({
+            kind: "chunk_main",
+            fullLen: fullResponse.length,
+            patchMs: Math.round(patchTimed.ms * 100) / 100,
+            dbMs: Math.round(dbMs * 100) / 100,
+            wroteDb,
+          });
           if (!patch) {
             return fullResponse;
           }
