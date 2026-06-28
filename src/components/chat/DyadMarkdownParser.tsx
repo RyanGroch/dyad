@@ -23,6 +23,7 @@ import {
   isStreamingByIdAtom,
   selectedChatIdAtom,
   streamingPreviewByChatIdAtom,
+  streamingParseByMessageIdAtom,
 } from "@/atoms/chatAtoms";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
@@ -124,6 +125,15 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 
+  // While a stream is in flight the hook maintains the parser state in this
+  // atom and leaves message.content empty, so the full response string is
+  // never reassembled or re-parsed here. When an entry exists for this
+  // message we render from it; otherwise we parse the content prop (history,
+  // post-completion, and non-chat callers).
+  const streamingParseMap = useAtomValue(streamingParseByMessageIdAtom);
+  const atomParserState =
+    messageId != null ? streamingParseMap.get(messageId) : undefined;
+
   // Component-local parser cache. Closed-block refs stay stable across chunks
   // so MemoClosedBlocks can skip its subtree; only the open trailing block
   // changes shape per chunk. On prefix-mismatch (full-message replace, etc.)
@@ -140,7 +150,7 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     state: ParserState;
   } | null>(null);
 
-  const parserState = useMemo(() => {
+  const contentParserState = useMemo(() => {
     const cached = parserCacheRef.current;
     if (
       cached &&
@@ -155,6 +165,8 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
     parserCacheRef.current = { messageId, content: contentToParse, state };
     return state;
   }, [messageId, contentToParse]);
+
+  const parserState = atomParserState ?? contentParserState;
 
   const closedBlocks = parserState.blocks;
   const openBlock = getOpenBlock(parserState);

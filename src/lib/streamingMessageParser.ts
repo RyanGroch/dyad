@@ -112,6 +112,16 @@ interface OpenTag {
 export interface ParserState {
   /** Bytes from `content` already consumed. */
   cursor: number;
+  /**
+   * Raw bytes of the still-open region: everything consumed after the last
+   * committed block. Bounded by one block's size, never the whole response —
+   * this is what lets the renderer stream without retaining the full string.
+   * A patch that rewrites bytes inside this region is replayed from here; one
+   * that reaches before it (offset < openBase) forces a resync.
+   */
+  openRaw: string;
+  /** Absolute byte offset where `openRaw` begins (== cursor - openRaw.length). */
+  openBase: number;
   mode: Mode;
   /** Bytes seen but not yet committed (e.g. partial "<dyad-..."). */
   pending: string;
@@ -139,6 +149,8 @@ export interface ParserState {
 export function initialParserState(): ParserState {
   return {
     cursor: 0,
+    openRaw: "",
+    openBase: 0,
     mode: "prose",
     pending: "",
     pendingTagName: "",
@@ -183,6 +195,14 @@ function appendToMarkdownOpen(state: ParserState, text: string): void {
   }
 }
 
+// Drop the first `rawLen` raw bytes from the open-region buffer once the
+// block they belong to has committed. Keeps openRaw bounded to the bytes of
+// the block that is still open.
+function dropOpenRaw(state: ParserState, rawLen: number): void {
+  state.openRaw = state.openRaw.slice(rawLen);
+  state.openBase += rawLen;
+}
+
 function commitOpenMarkdown(state: ParserState): void {
   if (state.openBlock && state.openBlock.kind === "markdown") {
     if (state.openBlock.content.length > 0) {
@@ -196,46 +216,53 @@ function commitOpenMarkdown(state: ParserState): void {
           complete: true,
         },
       ];
+      // Markdown content is stored raw, so its byte length is its raw length.
+      dropOpenRaw(state, state.openBlock.content.length);
     }
     state.openBlock = null;
   }
 }
 
 /**
- * Advance the parser through `content` starting from state.cursor.
- * If `content` is shorter than state.cursor (a rewrite/resync), the parser
- * is reset and re-runs from scratch.
+ * Advance the parser by a single appended chunk `delta` (the bytes that
+ * arrived since the last call). State carries across calls, so a tag split
+ * across deltas resolves correctly. The full content string is never needed:
+ * `delta` is appended to the bounded open-region buffer, and committed blocks
+ * are trimmed out of it as they close.
  *
- * Returns a NEW state object. Individual committed Block objects share refs
- * with the previous state (so per-block React.memo hits); the blocks array
- * gets a new ref only when a block closes during this advance. The open
- * block is rebuilt only when its content changes.
+ * Returns a NEW state object. Committed Block objects share refs with the
+ * previous state (so per-block React.memo hits); the blocks array gets a new
+ * ref only when a block closes during this advance.
  */
-export function advanceParser(prev: ParserState, content: string): ParserState {
-  let state: ParserState;
-  if (content.length < prev.cursor) {
-    state = initialParserState();
-  } else {
-    // Shallow clone — we mutate locally then return it. The blocks array
-    // is reassigned (immutable append) on each commit, so prior refs are
-    // preserved on chunks that don't close any block.
-    state = {
-      cursor: prev.cursor,
-      mode: prev.mode,
-      pending: prev.pending,
-      pendingTagName: prev.pendingTagName,
-      pendingAttrs: prev.pendingAttrs,
-      pendingCloseName: prev.pendingCloseName,
-      currentTag: prev.currentTag,
-      tagStartOffset: prev.tagStartOffset,
-      openBlock: prev.openBlock,
-      blocks: prev.blocks,
-      nextBlockId: prev.nextBlockId,
-    };
-  }
+export function advanceParserDelta(
+  prev: ParserState,
+  delta: string,
+): ParserState {
+  // Shallow clone — we mutate locally then return it. The blocks array
+  // is reassigned (immutable append) on each commit, so prior refs are
+  // preserved on chunks that don't close any block.
+  const state: ParserState = {
+    cursor: prev.cursor,
+    openRaw: prev.openRaw + delta,
+    openBase: prev.openBase,
+    mode: prev.mode,
+    pending: prev.pending,
+    pendingTagName: prev.pendingTagName,
+    pendingAttrs: prev.pendingAttrs,
+    pendingCloseName: prev.pendingCloseName,
+    currentTag: prev.currentTag,
+    tagStartOffset: prev.tagStartOffset,
+    openBlock: prev.openBlock,
+    blocks: prev.blocks,
+    nextBlockId: prev.nextBlockId,
+  };
 
-  const len = content.length;
-  let i = state.cursor;
+  // Absolute offset of delta[0]; used to keep tagStartOffset / raw-byte
+  // accounting in absolute terms even though the loop indexes into delta.
+  const base = state.cursor;
+  const len = delta.length;
+  const content = delta;
+  let i = 0;
 
   while (i < len) {
     const ch = content[i];
@@ -243,7 +270,7 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
     if (state.mode === "prose") {
       if (ch === "<") {
         state.pending = "<";
-        state.tagStartOffset = i;
+        state.tagStartOffset = base + i;
         state.mode = "tag-open";
         i++;
       } else {
@@ -387,6 +414,9 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
               inProgress: false,
             },
           ];
+          // The whole open region was this tag ("<...>...</...>"); drop it so
+          // openRaw resets to empty for the bytes that follow the close.
+          dropOpenRaw(state, base + i + 1 - state.openBase);
           state.currentTag = null;
           state.openBlock = null;
           state.pending = "";
@@ -440,8 +470,20 @@ export function advanceParser(prev: ParserState, content: string): ParserState {
     }
   }
 
-  state.cursor = len;
+  state.cursor = base + len;
   return state;
+}
+
+/**
+ * Advance the parser through the full `content` string starting from
+ * state.cursor. A thin wrapper over advanceParserDelta for one-shot /
+ * history parsing (parseFullMessage) and the renderer's content-prop path.
+ * If `content` is shorter than state.cursor (a rewrite/resync), the parser
+ * is reset and re-runs from scratch.
+ */
+export function advanceParser(prev: ParserState, content: string): ParserState {
+  const fromState = content.length < prev.cursor ? initialParserState() : prev;
+  return advanceParserDelta(fromState, content.slice(fromState.cursor));
 }
 
 /**

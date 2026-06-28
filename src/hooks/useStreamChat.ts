@@ -14,6 +14,7 @@ import {
   queuedMessagesByIdAtom,
   streamCompletedSuccessfullyByIdAtom,
   streamingPreviewByChatIdAtom,
+  streamingParseByMessageIdAtom,
   queuePausedByIdAtom,
   publishChatCompletionEventAtom,
   type QueuedMessageItem,
@@ -24,7 +25,11 @@ import { pendingScreenshotAppIdAtom } from "@/atoms/previewAtoms";
 import type { ChatResponseEnd, Chat } from "@/ipc/types";
 import { useChats } from "./useChats";
 import { useLoadApp } from "./useLoadApp";
-import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
+import { applyPatchToParserState } from "@/lib/applyPatchToParserState";
+import {
+  advanceParserDelta,
+  initialParserState,
+} from "@/lib/streamingMessageParser";
 import {
   applyPreviewChunk,
   clearPreviewForChat,
@@ -125,6 +130,7 @@ export function useStreamChat({
     streamCompletedSuccessfullyByIdAtom,
   );
   const setStreamingPreviewByChatId = useSetAtom(streamingPreviewByChatIdAtom);
+  const setStreamingParseById = useSetAtom(streamingParseByMessageIdAtom);
   const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const setQueuePausedById = useSetAtom(queuePausedByIdAtom);
 
@@ -281,6 +287,30 @@ export function useStreamChat({
         clearPreviewForChat(setStreamingPreviewByChatId, chatId);
       };
 
+      // Drop the in-flight parser state for this chat's messages once the
+      // stream has settled. Call this only after message.content has been
+      // restored from the DB, so the renderer can fall back to parsing the
+      // full content for the now-complete message.
+      const dropParseForChat = (chatId: number) => {
+        setStreamingParseById((prev) => {
+          if (prev.size === 0) return prev;
+          const ids = new Set(
+            (store.get(chatMessagesByIdAtom).get(chatId) ?? []).map(
+              (m) => m.id,
+            ),
+          );
+          let changed = false;
+          const next = new Map(prev);
+          for (const id of prev.keys()) {
+            if (ids.has(id)) {
+              next.delete(id);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      };
+
       try {
         const cachedChat =
           requestedChatMode === null
@@ -358,13 +388,43 @@ export function useStreamChat({
                 streamingMessageId !== undefined &&
                 streamingPatch !== undefined
               ) {
-                const applied = applyStreamingPatch(
-                  setMessagesById,
-                  chatId,
-                  streamingMessageId,
-                  streamingPatch,
-                );
+                // Apply the patch to the incremental parser state instead of
+                // growing message.content. The renderer reads blocks from the
+                // parse atom, so the full response string is never reassembled.
+                let applied = true;
+                setStreamingParseById((prev) => {
+                  let parse = prev.get(streamingMessageId);
+                  if (!parse) {
+                    // First patch for this message (content is the empty
+                    // placeholder) or a post-resync restart (content is the
+                    // full DB message): seed the parser from whatever the
+                    // renderer currently holds.
+                    const base =
+                      store
+                        .get(chatMessagesByIdAtom)
+                        .get(chatId)
+                        ?.find((m) => m.id === streamingMessageId)?.content ??
+                      "";
+                    parse = advanceParserDelta(initialParserState(), base);
+                  }
+                  const result = applyPatchToParserState(parse, streamingPatch);
+                  if (!result.ok || !result.state) {
+                    applied = false;
+                    return prev;
+                  }
+                  const next = new Map(prev);
+                  next.set(streamingMessageId, result.state);
+                  return next;
+                });
                 if (!applied) {
+                  // Drop the stale parser state and resync the full message
+                  // from the DB; the renderer falls back to parsing content.
+                  setStreamingParseById((prev) => {
+                    if (!prev.has(streamingMessageId)) return prev;
+                    const next = new Map(prev);
+                    next.delete(streamingMessageId);
+                    return next;
+                  });
                   triggerResync(chatId, setMessagesById, store);
                 }
               }
@@ -384,26 +444,10 @@ export function useStreamChat({
             onEnd: (response: ChatResponseEnd) => {
               finalizeStream(chatId);
               void (async () => {
-                // Only mark as successful if NOT cancelled - wasCancelled flag is set
-                // by the backend when user cancels the stream
-                if (response.wasCancelled) {
-                  setMessagesById((prev) => {
-                    const existingMessages = prev.get(chatId);
-                    if (!existingMessages) return prev;
-
-                    const updatedMessages =
-                      applyCancellationNoticeToLastAssistantMessage(
-                        existingMessages,
-                      );
-                    if (updatedMessages === existingMessages) {
-                      return prev;
-                    }
-
-                    const next = new Map(prev);
-                    next.set(chatId, updatedMessages);
-                    return next;
-                  });
-                }
+                // wasCancelled is set by the backend when the user cancels.
+                // The cancellation notice is applied to the DB-restored content
+                // below (message.content is empty here while streaming drives
+                // the parser atom instead).
 
                 if (response.pausePromptQueue) {
                   setQueuePausedById((prev) => {
@@ -478,42 +522,47 @@ export function useStreamChat({
                 queryClient.invalidateQueries({
                   queryKey: queryKeys.proposals.detail({ chatId }),
                 });
-                if (!response.wasCancelled) {
-                  // Re-fetch messages to pick up server-assigned fields (e.g. commitHash)
-                  // that may only be finalized at stream completion.
-                  try {
-                    const latestChat = await ipc.chat.getChat(chatId);
-                    queryClient.setQueryData(
-                      queryKeys.chats.detail({ chatId }),
-                      latestChat,
-                    );
-                    // Guard against a racing new stream that started after
-                    // setIsStreamingById(false) above.
-                    if (!store.get(isStreamingByIdAtom).get(chatId)) {
-                      setMessagesById((prev) => {
-                        const currentMessages = prev.get(chatId);
-                        if (!currentMessages) {
-                          const next = new Map(prev);
-                          next.set(chatId, latestChat.messages);
-                          return next;
-                        }
-                        if (currentMessages.length > latestChat.messages.length)
-                          return prev;
-                        const merged = mergeResyncMessages(
-                          latestChat.messages,
-                          currentMessages,
-                        );
-                        const next = new Map(prev);
-                        next.set(chatId, merged);
-                        return next;
-                      });
-                    }
-                  } catch (error) {
-                    console.warn(
-                      `[CHAT] Failed to refresh latest chat for ${chatId}:`,
-                      error,
-                    );
+                // Re-fetch messages to pick up the authoritative final content
+                // (the parser atom drove the renderer during streaming) plus
+                // server-assigned fields (e.g. commitHash). Runs for cancelled
+                // streams too, since the DB holds the partial response.
+                try {
+                  const latestChat = await ipc.chat.getChat(chatId);
+                  queryClient.setQueryData(
+                    queryKeys.chats.detail({ chatId }),
+                    latestChat,
+                  );
+                  // Guard against a racing new stream that started after
+                  // setIsStreamingById(false) above.
+                  if (!store.get(isStreamingByIdAtom).get(chatId)) {
+                    setMessagesById((prev) => {
+                      const currentMessages = prev.get(chatId);
+                      const base = currentMessages
+                        ? currentMessages.length > latestChat.messages.length
+                          ? null
+                          : mergeResyncMessages(
+                              latestChat.messages,
+                              currentMessages,
+                            )
+                        : latestChat.messages;
+                      // A racing stream added messages; leave it alone.
+                      if (base === null) return prev;
+                      const finalMessages = response.wasCancelled
+                        ? applyCancellationNoticeToLastAssistantMessage(base)
+                        : base;
+                      const next = new Map(prev);
+                      next.set(chatId, finalMessages);
+                      return next;
+                    });
+                    // Content is now restored from the DB; drop the in-flight
+                    // parser state so the renderer parses the final message.
+                    dropParseForChat(chatId);
                   }
+                } catch (error) {
+                  console.warn(
+                    `[CHAT] Failed to refresh latest chat for ${chatId}:`,
+                    error,
+                  );
                 }
                 invalidateChats();
                 refreshApp();
@@ -576,6 +625,7 @@ export function useStreamChat({
                 return next;
               });
               syncChatFromDb(chatId, setMessagesById, "[CHAT] onError", store);
+              dropParseForChat(chatId);
               invalidateChats();
               refreshApp();
               refreshVersions();
@@ -613,6 +663,7 @@ export function useStreamChat({
       setStreamCompletedSuccessfullyById,
       setQueuePausedById,
       setStreamingPreviewByChatId,
+      setStreamingParseById,
       selectedAppId,
       refetchUserBudget,
       settings,
