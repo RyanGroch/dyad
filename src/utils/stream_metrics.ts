@@ -8,7 +8,70 @@
 // synchronous file I/O to the very hot path we are measuring.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import inspector from "node:inspector";
+import { PerformanceObserver } from "node:perf_hooks";
 import { app, BrowserWindow } from "electron";
+
+const MB = 1024 * 1024;
+
+// perf_hooks GC entry detail.kind values.
+const GC_KIND: Record<number, string> = {
+  1: "minor", // scavenge
+  2: "incremental",
+  4: "major", // mark-sweep-compact
+  8: "weakcb",
+};
+
+let gcObserver: PerformanceObserver | null = null;
+
+// Main-process CPU profiler. The V8 sampler runs on its own thread, so it
+// captures the main thread's stack even while the JS event loop is blocked.
+// Profiles are rotated to disk every 10s (4 files) so the lead-up to a freeze
+// survives a force-kill.
+let profSession: inspector.Session | null = null;
+let profTimer: NodeJS.Timeout | null = null;
+let profSeq = 0;
+
+function startProfiler(): void {
+  try {
+    profSession = new inspector.Session();
+    profSession.connect();
+    profSession.post("Profiler.enable", () => {
+      profSession?.post(
+        "Profiler.setSamplingInterval",
+        { interval: 1000 }, // microseconds (1ms) — low overhead
+        () => {
+          profSession?.post("Profiler.start");
+        },
+      );
+    });
+    profTimer = setInterval(rotateProfile, 10_000);
+  } catch {
+    // best effort
+  }
+}
+
+function rotateProfile(restart = true): void {
+  const session = profSession;
+  if (!session) return;
+  session.post("Profiler.stop", (err, res) => {
+    const profile = (res as { profile?: unknown } | undefined)?.profile;
+    if (!err && profile && filePath) {
+      const p = path.join(
+        path.dirname(filePath),
+        `cpuprofile-${profSeq % 4}.cpuprofile`,
+      );
+      profSeq++;
+      try {
+        fs.writeFileSync(p, JSON.stringify(profile));
+      } catch {
+        // best effort
+      }
+    }
+    if (restart) session.post("Profiler.start");
+  });
+}
 
 let buffer: string[] = [];
 let filePath: string | null = null;
@@ -51,6 +114,29 @@ export function startStreamMetrics(
   }
   metricEvent({ kind: "start", mainPid: process.pid });
 
+  // GC pause observer: logs each GC's duration + kind. If mainloop_lag spikes
+  // line up with multi-hundred-ms "major" entries, the freeze is GC. Only log
+  // GCs > 5ms to skip the noise of frequent tiny minor collections.
+  try {
+    gcObserver = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) {
+        if (e.duration < 5) continue;
+        const kind = (e as unknown as { detail?: { kind?: number } }).detail
+          ?.kind;
+        metricEvent({
+          kind: "gc",
+          gcMs: Math.round(e.duration * 100) / 100,
+          gcKind: kind != null ? (GC_KIND[kind] ?? String(kind)) : "?",
+        });
+      }
+    });
+    gcObserver.observe({ entryTypes: ["gc"] });
+  } catch {
+    // best effort
+  }
+
+  startProfiler();
+
   // Main event-loop lag: a 100ms interval; the amount it overshoots 100ms is
   // how long the main thread was blocked. The single clearest "is main hung"
   // signal.
@@ -78,6 +164,24 @@ export function startStreamMetrics(
           cpu: Math.round((m.cpu?.percentCPUUsage ?? 0) * 10) / 10,
         }));
         metricEvent({ kind: "procs", procs });
+      } catch {
+        // best effort
+      }
+
+      // Main-process memory split (JS heap vs native/off-heap) + system memory.
+      // `external`/`arrayBuffers` ballooning while `heapUsed` stays modest ==
+      // a native buffer leak (undici/SDK), which V8's heap cap does NOT bound.
+      try {
+        const mu = process.memoryUsage();
+        metricEvent({
+          kind: "mem",
+          rssMB: Math.round(mu.rss / MB),
+          heapUsedMB: Math.round(mu.heapUsed / MB),
+          externalMB: Math.round(mu.external / MB),
+          arrayBuffersMB: Math.round(mu.arrayBuffers / MB),
+          sysUsedMB: Math.round((os.totalmem() - os.freemem()) / MB),
+          sysTotalMB: Math.round(os.totalmem() / MB),
+        });
       } catch {
         // best effort
       }
@@ -112,6 +216,15 @@ export function startStreamMetrics(
 export function stopStreamMetrics(): void {
   for (const t of timers) clearInterval(t);
   timers.length = 0;
+  gcObserver?.disconnect();
+  gcObserver = null;
+  if (profTimer) {
+    clearInterval(profTimer);
+    profTimer = null;
+  }
+  rotateProfile(false);
+  profSession?.disconnect();
+  profSession = null;
   flush();
   started = false;
 }
