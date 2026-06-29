@@ -2,6 +2,8 @@ import { v4 as uuidv4 } from "uuid";
 import { app, ipcMain, IpcMainInvokeEvent } from "electron";
 import { createTypedHandler } from "./base";
 import { computeStreamingPatch } from "../utils/stream_text_utils";
+import { createStreamProcessor } from "../utils/incremental_stream_processor";
+import type { StreamingPatch } from "@/ipc/types";
 import { metricEvent, timeSync } from "../../utils/stream_metrics";
 import { chatContracts } from "../types/chat";
 import {
@@ -199,11 +201,23 @@ async function processStreamChunks({
   abortController: AbortController;
   chatId: number;
   processResponseChunkUpdate: (params: {
-    fullResponse: string;
+    fullResponse?: string;
+    patch?: StreamingPatch | null;
+    getFull?: () => string;
   }) => Promise<string>;
 }): Promise<{ fullResponse: string; incrementalResponse: string }> {
   let incrementalResponse = "";
   let inThinkingBlock = false;
+
+  // EXPERIMENT (Option B): feed chunks to an incremental processor that builds
+  // the cleaned content + tail patches in O(delta) — no whole-string re-clean,
+  // re-diff, or re-alloc per chunk. Sends are still coalesced to COALESCE_MS
+  // windows (Option A) to bound renderer/IPC churn.
+  const COALESCE_MS = 50;
+  let lastProcessAt = 0;
+  const processor = createStreamProcessor();
+  if (fullResponse) processor.push(fullResponse); // seed any pre-existing content
+  let totalLen = fullResponse.length;
 
   for await (const part of fullStream) {
     let chunk = "";
@@ -239,19 +253,27 @@ async function processStreamChunks({
       continue;
     }
 
-    fullResponse += chunk;
+    // Cheap (O(delta)): feed the incremental processor every chunk.
+    const pushed = timeSync(() => processor.push(chunk));
     incrementalResponse += chunk;
-    const cleaned = timeSync(() => cleanFullResponse(fullResponse));
-    fullResponse = cleaned.value;
-    metricEvent({
-      kind: "chunk_clean",
-      chunkLen: chunk.length,
-      fullLen: fullResponse.length,
-      cleanMs: Math.round(cleaned.ms * 100) / 100,
-    });
-    fullResponse = await processResponseChunkUpdate({
-      fullResponse,
-    });
+    totalLen += chunk.length;
+
+    // Coalesce patch emission + DB persistence to COALESCE_MS windows.
+    const now = Date.now();
+    if (now - lastProcessAt >= COALESCE_MS) {
+      lastProcessAt = now;
+      const patched = timeSync(() => processor.takePatch());
+      metricEvent({
+        kind: "chunk_proc",
+        fullLen: totalLen,
+        pushMs: Math.round(pushed.ms * 100) / 100,
+        patchMs: Math.round(patched.ms * 100) / 100,
+      });
+      await processResponseChunkUpdate({
+        patch: patched.value,
+        getFull: () => processor.getFullContent(),
+      });
+    }
 
     // If the stream was aborted, exit early
     if (abortController.signal.aborted) {
@@ -260,7 +282,14 @@ async function processStreamChunks({
     }
   }
 
-  return { fullResponse, incrementalResponse };
+  // Flush the remaining tail so the last window isn't dropped.
+  const flushPatch = processor.takePatch();
+  await processResponseChunkUpdate({
+    patch: flushPatch,
+    getFull: () => processor.getFullContent(),
+  });
+
+  return { fullResponse: processor.getFullContent(), incrementalResponse };
 }
 
 export function registerChatStreamHandlers() {
@@ -1326,47 +1355,73 @@ This conversation includes one or more image attachments. When the user uploads 
 
         const processResponseChunkUpdate = async ({
           fullResponse,
+          patch: providedPatch,
+          getFull,
         }: {
-          fullResponse: string;
-        }) => {
-          // Store the current partial response
-          partialResponses.set(req.chatId, fullResponse);
-          // Save to DB (in case user is switching chats during the stream)
+          // Legacy callers pass `fullResponse` (the whole string) and the patch
+          // is computed here. The incremental (Option B) model-stream path
+          // instead passes a precomputed `patch` + a lazy `getFull` so the whole
+          // string is only materialized on the rare DB write.
+          fullResponse?: string;
+          patch?: StreamingPatch | null;
+          getFull?: () => string;
+        }): Promise<string> => {
+          const usingProcessor = getFull !== undefined;
+          // Save to DB (chat-switch safety net). Throttled hard (5s) since the
+          // final content is persisted after the stream anyway. Writes the whole
+          // content — O(n) — so the lazy getter is only invoked here.
           const now = Date.now();
           let dbMs = 0;
           let wroteDb = false;
-          if (now - lastDbSaveAt >= 150) {
+          if (now - lastDbSaveAt >= 5000) {
+            const full = usingProcessor ? getFull!() : (fullResponse ?? "");
+            partialResponses.set(req.chatId, full);
             const dbStart = performance.now();
             await db
               .update(messages)
-              .set({ content: fullResponse })
+              .set({ content: full })
               .where(eq(messages.id, placeholderAssistantMessage.id));
             dbMs = performance.now() - dbStart;
             wroteDb = true;
             lastDbSaveAt = now;
+          } else if (!usingProcessor) {
+            partialResponses.set(req.chatId, fullResponse ?? "");
           }
 
-          const patchTimed = timeSync(() =>
-            computeStreamingPatch(fullResponse, lastSentContent),
-          );
-          const patch = patchTimed.value;
-          lastSentContent = fullResponse;
-          metricEvent({
-            kind: "chunk_main",
-            fullLen: fullResponse.length,
-            patchMs: Math.round(patchTimed.ms * 100) / 100,
-            dbMs: Math.round(dbMs * 100) / 100,
-            wroteDb,
-          });
+          let patch: StreamingPatch | null;
+          if (usingProcessor) {
+            patch = providedPatch ?? null;
+            if (wroteDb) {
+              metricEvent({
+                kind: "chunk_main",
+                dbMs: Math.round(dbMs * 100) / 100,
+                wroteDb,
+              });
+            }
+          } else {
+            const content = fullResponse ?? "";
+            const patchTimed = timeSync(() =>
+              computeStreamingPatch(content, lastSentContent),
+            );
+            patch = patchTimed.value;
+            lastSentContent = content;
+            metricEvent({
+              kind: "chunk_main",
+              fullLen: content.length,
+              patchMs: Math.round(patchTimed.ms * 100) / 100,
+              dbMs: Math.round(dbMs * 100) / 100,
+              wroteDb,
+            });
+          }
           if (!patch) {
-            return fullResponse;
+            return fullResponse ?? "";
           }
           safeSend(event.sender, "chat:response:chunk", {
             chatId: req.chatId,
             streamingMessageId: placeholderAssistantMessage.id,
             streamingPatch: patch,
           });
-          return fullResponse;
+          return fullResponse ?? "";
         };
 
         // Handle ask mode: use local-agent in read-only mode

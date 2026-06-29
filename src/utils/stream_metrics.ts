@@ -8,7 +8,10 @@
 // synchronous file I/O to the very hot path we are measuring.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { app, BrowserWindow } from "electron";
+
+const MB = 1024 * 1024;
 
 let buffer: string[] = [];
 let filePath: string | null = null;
@@ -78,6 +81,24 @@ export function startStreamMetrics(
           cpu: Math.round((m.cpu?.percentCPUUsage ?? 0) * 10) / 10,
         }));
         metricEvent({ kind: "procs", procs });
+      } catch {
+        // best effort
+      }
+
+      // Main-process memory split (JS heap vs native/off-heap) + system memory.
+      // `external`/`arrayBuffers` ballooning while `heapUsed` stays modest ==
+      // a native buffer leak (undici/SDK), which V8's heap cap does NOT bound.
+      try {
+        const mu = process.memoryUsage();
+        metricEvent({
+          kind: "mem",
+          rssMB: Math.round(mu.rss / MB),
+          heapUsedMB: Math.round(mu.heapUsed / MB),
+          externalMB: Math.round(mu.external / MB),
+          arrayBuffersMB: Math.round(mu.arrayBuffers / MB),
+          sysUsedMB: Math.round((os.totalmem() - os.freemem()) / MB),
+          sysTotalMB: Math.round(os.totalmem() / MB),
+        });
       } catch {
         // best effort
       }
