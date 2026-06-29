@@ -47,6 +47,7 @@ import {
   startPerformanceMonitoring,
   stopPerformanceMonitoring,
 } from "./utils/performance_monitor";
+import { startStreamMetrics, metricEvent } from "./utils/stream_metrics";
 import {
   parseMinidumpSummary,
   type MinidumpSummary,
@@ -387,6 +388,17 @@ export async function onReady() {
   // Start performance monitoring
   startPerformanceMonitoring();
 
+  // THROWAWAY: streaming-hang instrumentation (measure/stream-hotpath).
+  startStreamMetrics(() => mainWindow);
+  app.on("child-process-gone", (_event, details) => {
+    metricEvent({
+      kind: "child_gone",
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+    });
+  });
+
   // Handle dyad-media:// protocol requests to serve persistent media and screenshot files.
   protocol.handle("dyad-media", async (request) => {
     const url = new URL(request.url);
@@ -685,6 +697,11 @@ const createWindow = () => {
       "exitCode=",
       details.exitCode,
     );
+    metricEvent({
+      kind: "renderer_gone",
+      reason: details.reason,
+      exitCode: details.exitCode,
+    });
     // Capture the latest heartbeat snapshot synchronously so the record pins
     // the pre-crash performance state, matching the semantics of
     // `app:crash_detected`. `readSettings` returns `DEFAULT_SETTINGS` on any
