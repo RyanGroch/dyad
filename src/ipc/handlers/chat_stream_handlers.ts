@@ -1,7 +1,10 @@
 import { v4 as uuidv4 } from "uuid";
 import { app, ipcMain, IpcMainInvokeEvent } from "electron";
 import { createTypedHandler } from "./base";
-import { computeStreamingPatch } from "../utils/stream_text_utils";
+import {
+  computeStreamingPatch,
+  fastTextOutput,
+} from "../utils/stream_text_utils";
 import { createStreamProcessor } from "../utils/incremental_stream_processor";
 import type { StreamingPatch } from "@/ipc/types";
 import { metricEvent, timeSync } from "../../utils/stream_metrics";
@@ -219,7 +222,18 @@ async function processStreamChunks({
   if (fullResponse) processor.push(fullResponse); // seed any pre-existing content
   let totalLen = fullResponse.length;
 
+  // SDK-layer instrumentation: time spent in `await` between parts (= the AI
+  // SDK producing each part, separate from our push/patch) and main JS-heap per
+  // window. If awaitMs climbs O(n) while push/patch stay flat, the bottleneck is
+  // the SDK/stream plumbing, not our code.
+  let lastIterEnd = performance.now();
+  let windowAwaitMs = 0;
+  let windowChunks = 0;
+
   for await (const part of fullStream) {
+    const iterStart = performance.now();
+    windowAwaitMs += iterStart - lastIterEnd;
+    windowChunks++;
     let chunk = "";
     if (
       inThinkingBlock &&
@@ -250,6 +264,7 @@ async function processStreamChunks({
     }
 
     if (!chunk) {
+      lastIterEnd = performance.now();
       continue;
     }
 
@@ -268,7 +283,16 @@ async function processStreamChunks({
         fullLen: totalLen,
         pushMs: Math.round(pushed.ms * 100) / 100,
         patchMs: Math.round(patched.ms * 100) / 100,
+        // SDK per-part produce time (avg over the window) + main JS heap.
+        awaitAvgMs:
+          windowChunks > 0
+            ? Math.round((windowAwaitMs / windowChunks) * 100) / 100
+            : 0,
+        chunks: windowChunks,
+        heapMB: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
       });
+      windowAwaitMs = 0;
+      windowChunks = 0;
       await processResponseChunkUpdate({
         patch: patched.value,
         getFull: () => processor.getFullContent(),
@@ -280,6 +304,8 @@ async function processStreamChunks({
       logger.log(`Stream for chat ${chatId} was aborted`);
       break;
     }
+
+    lastIterEnd = performance.now();
   }
 
   // Flush the remaining tail so the last window isn't dropped.
@@ -1279,6 +1305,10 @@ This conversation includes one or more image attachments. When the user uploads 
             maxRetries: 2,
             model: modelClient.model,
             stopWhen: [stepCountIs(20), hasToolCall("edit-code")],
+            // Avoids the SDK's O(n^2) per-chunk JSON.stringify of the full
+            // accumulated text (see fastTextOutput). We read fullStream parts
+            // directly and never consume partialOutput.
+            experimental_output: fastTextOutput(),
             providerOptions,
             system: systemPromptOverride,
             tools,
