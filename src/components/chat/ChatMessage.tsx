@@ -25,6 +25,7 @@ import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import {
   selectedChatIdAtom,
   streamingPreviewByChatIdAtom,
+  streamingParseByMessageIdAtom,
 } from "@/atoms/chatAtoms";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
@@ -119,9 +120,24 @@ const ChatMessage = ({
     isLastMessage &&
     isStreaming &&
     hasPreviewForChat;
+  // While streaming, the parsed blocks live in this atom and message.content is
+  // empty, so derive "has text" from the parse state too. Subscribe to a
+  // boolean so messages without an entry don't re-render on every chunk.
+  const hasStreamingParseAtom = useMemo(
+    () =>
+      selectAtom(streamingParseByMessageIdAtom, (m) => {
+        const state = m.get(message.id);
+        if (!state) return false;
+        return state.blocks.length > 0 || state.openRaw.length > 0;
+      }),
+    [message.id],
+  );
+  const hasStreamingParse = useAtomValue(hasStreamingParseAtom);
   const hasAssistantText =
     message.role === "assistant" &&
-    (assistantTextContent.length > 0 || hasStreamingPreview);
+    (assistantTextContent.length > 0 ||
+      hasStreamingPreview ||
+      hasStreamingParse);
   //handle copy chat
   const { copyMessageContent, copied } = useCopyToClipboard();
   const handleCopyFormatted = async () => {

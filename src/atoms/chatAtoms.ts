@@ -6,6 +6,7 @@ import type {
 } from "@/ipc/types";
 import type { ListedApp } from "@/ipc/types/app";
 import type { SqlConsentMetadata } from "@/shared/sqlConsentMetadata";
+import type { ParserState } from "@/lib/streamingMessageParser";
 import type { Getter, Setter } from "jotai";
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
@@ -514,6 +515,16 @@ export const streamCompletedSuccessfullyByIdAtom = atom<Map<number, boolean>>(
 
 // Tracks if the queue is paused for each chat (Map<chatId, isPaused>)
 export const queuePausedByIdAtom = atom<Map<number, boolean>>(new Map());
+
+// Incremental parser state for the in-flight assistant message, keyed by
+// message id. While a stream is active the renderer reads its blocks from
+// here instead of parsing message.content, which is left empty so the full
+// response string is never materialized or re-parsed in the renderer. The
+// state holds the committed blocks plus a bounded open-region buffer; it is
+// dropped when the chat's messages are replaced (resync / fresh load).
+export const streamingParseByMessageIdAtom = atom<Map<number, ParserState>>(
+  new Map(),
+);
 
 // Sidecar overlay for tool-input XML preview during Pro/Agent v2 streaming.
 // Lives outside message.content so the patch protocol stays strictly
