@@ -622,12 +622,11 @@ export default Index;
     // and renderer without committing a huge fixture. Both numbers are required;
     // the only caller is the manual stress test, which always supplies them.
     // When the marker is absent, behaviour is unchanged.
-    const stressFilesMatch =
-      typeof lastMessage?.content === "string" &&
-      lastMessage.content.match(/\[stress-files=(\d+)\]/);
-    const stressLinesMatch =
-      typeof lastMessage?.content === "string" &&
-      lastMessage.content.match(/\[stress-lines=(\d+)\]/);
+    // Match against userTextContent (not lastMessage.content) so it works
+    // whether the client sends the message as a plain string or as content
+    // parts (an array), which is what the app sends in production.
+    const stressFilesMatch = userTextContent.match(/\[stress-files=(\d+)\]/);
+    const stressLinesMatch = userTextContent.match(/\[stress-lines=(\d+)\]/);
     const isStress = !!(stressFilesMatch && stressLinesMatch);
     if (isStress) {
       const stressFiles = parseInt(stressFilesMatch[1], 10);
