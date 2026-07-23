@@ -111,7 +111,7 @@ export function registerVpsHandlers() {
 
   createTypedHandler(vpsContracts.deploy, async (_, { appId }) => {
     const appPath = await getAppPath(appId);
-    const config = readVpsConfig(appPath);
+    let config = readVpsConfig(appPath);
     if (!config) {
       throw new DyadError(
         "No dyad.deploy.json found for this app",
@@ -127,6 +127,13 @@ export function registerVpsHandlers() {
     const compat = await analyzeVpsCompat(appPath);
     if (!compat.supported) {
       throw new DyadError(compat.blockers.join(" "), DyadErrorKind.Validation);
+    }
+    // Self-heal a stale output dir: a config saved before framework detection
+    // keeps the generic "dist" default, but e.g. a Next static export builds
+    // to out/. Only the plain default is corrected, never a deliberate value.
+    if (config.distDir === "dist" && compat.recommendedDistDir !== "dist") {
+      config = { ...config, distDir: compat.recommendedDistDir };
+      writeVpsConfig(appPath, config);
     }
     const runner = deployRunnerHost.ensure(appId);
     watchRunner(appId);
