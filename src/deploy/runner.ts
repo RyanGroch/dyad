@@ -150,7 +150,11 @@ export class DeployRunner {
       cwd: this.deps.appPath,
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, FORCE_COLOR: "0" },
+      // Force a production build for the whole deploy tree. Dyad's own process
+      // can carry a non-standard NODE_ENV, and a stale scaffolded deploy.mjs
+      // won't override it — which breaks framework builds (e.g. Next.js). Set
+      // it here so the fix applies without re-scaffolding.
+      env: { ...process.env, FORCE_COLOR: "0", NODE_ENV: "production" },
     });
     this.child = child;
 
