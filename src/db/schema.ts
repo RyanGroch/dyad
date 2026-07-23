@@ -105,6 +105,10 @@ export const apps = sqliteTable("apps", {
   vercelProjectName: text("vercel_project_name"),
   vercelTeamId: text("vercel_team_id"),
   vercelDeploymentUrl: text("vercel_deployment_url"),
+  // VPS deploys: connection config lives in the repo (dyad.deploy.json); only
+  // ephemeral UI state is persisted here.
+  vpsLastDeployStatus: text("vps_last_deploy_status"),
+  vpsLastDeployedAt: integer("vps_last_deployed_at", { mode: "timestamp" }),
   installCommand: text("install_command"),
   startCommand: text("start_command"),
   chatContext: text("chat_context", { mode: "json" }),

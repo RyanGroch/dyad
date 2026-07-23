@@ -288,6 +288,13 @@
       "when": 1784670583376,
       "tag": "0040_chat-search-fts",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1784670587376,
+      "tag": "0041_vps_deploy",
+      "breakpoints": true
     }
   ]
 }

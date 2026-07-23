@@ -26,6 +26,7 @@ import {
 } from "../types/connection_flow";
 import { mcpContracts, mcpEvents } from "../types/mcp";
 import { vercelContracts } from "../types/vercel";
+import { vpsContracts, vpsEvents } from "../types/vps";
 import { supabaseContracts } from "../types/supabase";
 import { neonContracts } from "../types/neon";
 import { migrationContracts } from "../types/migration";
@@ -95,6 +96,7 @@ export const VALID_INVOKE_CHANNELS = [
   ...getInvokeChannels(gitContracts),
   ...getInvokeChannels(mcpContracts),
   ...getInvokeChannels(vercelContracts),
+  ...getInvokeChannels(vpsContracts),
   ...getInvokeChannels(supabaseContracts),
   ...getInvokeChannels(neonContracts),
   ...getInvokeChannels(migrationContracts),
@@ -161,6 +163,7 @@ export const VALID_RECEIVE_CHANNELS = [
   ...getReceiveChannels(agentEvents),
   ...getReceiveChannels(connectionFlowEvents),
   ...getReceiveChannels(mcpEvents),
+  ...getReceiveChannels(vpsEvents),
   ...getReceiveChannels(systemEvents),
   ...getReceiveChannels(miscEvents),
   ...getReceiveChannels(planEvents),

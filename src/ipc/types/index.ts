@@ -37,6 +37,7 @@ export {
 } from "./connection_flow";
 export { mcpContracts, mcpEvents } from "./mcp";
 export { vercelContracts } from "./vercel";
+export { vpsContracts, vpsEvents } from "./vps";
 export { supabaseContracts } from "./supabase";
 export { neonContracts } from "./neon";
 export { migrationContracts } from "./migration";
@@ -221,6 +222,16 @@ export type {
   GetVercelDeploymentsParams,
   DisconnectVercelProjectParams,
 } from "./vercel";
+
+// VPS types
+export { vpsEventClient } from "./vps";
+export type {
+  VpsDeployConfig,
+  VpsStatus,
+  VpsTestConnectionResult,
+  VpsDeploySnapshot,
+  VpsScaffoldResult,
+} from "./vps";
 
 // Supabase types
 export type {
@@ -440,6 +451,7 @@ import {
 } from "./connection_flow";
 import { mcpClient, mcpEventClient } from "./mcp";
 import { vercelClient } from "./vercel";
+import { vpsClient } from "./vps";
 import { supabaseClient } from "./supabase";
 import { neonClient } from "./neon";
 import { migrationClient } from "./migration";
@@ -505,6 +517,7 @@ export const ipc = {
   connectionFlow: connectionFlowClient,
   mcp: mcpClient,
   vercel: vercelClient,
+  vps: vpsClient,
   supabase: supabaseClient,
   neon: neonClient,
   migration: migrationClient,

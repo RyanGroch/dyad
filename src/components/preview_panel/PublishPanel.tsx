@@ -3,6 +3,8 @@ import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { GitHubConnector } from "@/components/GitHubConnector";
 import { VercelConnector } from "@/components/VercelConnector";
+import { VpsConnector } from "@/components/VpsConnector";
+import { Server } from "lucide-react";
 import { PortalMigrate } from "@/components/PortalMigrate";
 import { ipc } from "@/ipc/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -179,6 +181,23 @@ export const PublishPanel = () => {
             ) : (
               <VercelConnector appId={selectedAppId} folderName={app.name} />
             )}
+          </CardContent>
+        </Card>
+
+        {/* VPS Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2">
+              <Server className="w-5 h-5" />
+              Your own server
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Deploy over SSH to a server you control, like a DigitalOcean or
+              Hetzner VPS.
+            </p>
+            <VpsConnector appId={selectedAppId} folderName={app.name} />
           </CardContent>
         </Card>
       </div>
