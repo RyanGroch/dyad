@@ -109,7 +109,7 @@ export function VpsConnector({ appId, folderName }: VpsConnectorProps) {
         status.config?.remotePath ?? `/var/www/${folderName || "app"}`,
       domain: domain.trim() ? domain.trim() : null,
       keyName: status.config?.keyName ?? "dyad_deploy_ed25519",
-      distDir: status.config?.distDir ?? "dist",
+      distDir: status.config?.distDir ?? status.compat.recommendedDistDir,
     };
   };
 
@@ -292,7 +292,24 @@ export function VpsConnector({ appId, folderName }: VpsConnectorProps) {
         </Button>
       </div>
 
-      {!status.scaffoldPresent ? (
+      {!status.compat.supported && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          <p className="font-medium">This app can't be deployed to a VPS yet</p>
+          {status.compat.blockers.map((blocker) => (
+            <p key={blocker} className="mt-1">
+              {blocker}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {status.compat.supported && status.compat.notes.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {status.compat.notes.join(" ")}
+        </p>
+      )}
+
+      {!status.compat.supported ? null : !status.scaffoldPresent ? (
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
             Dyad will add deploy scripts to your app. They run with{" "}

@@ -18,6 +18,7 @@ import {
 } from "../utils/ssh_utils";
 import { readVpsConfig, writeVpsConfig } from "../utils/vps_config";
 import { isScaffoldPresent, scaffoldDeployFiles } from "../utils/vps_scaffold";
+import { analyzeVpsCompat } from "../utils/vps_compat";
 import { safeSend } from "../utils/safe_sender";
 
 const logger = log.scope("vps_handlers");
@@ -79,6 +80,7 @@ export function registerVpsHandlers() {
       publicKey: readPublicKey(keyName),
       config,
       scaffoldPresent: isScaffoldPresent(appPath),
+      compat: await analyzeVpsCompat(appPath),
     };
   });
 
@@ -121,6 +123,10 @@ export function registerVpsHandlers() {
         "No deploy script found. Generate deploy files first.",
         DyadErrorKind.Validation,
       );
+    }
+    const compat = await analyzeVpsCompat(appPath);
+    if (!compat.supported) {
+      throw new DyadError(compat.blockers.join(" "), DyadErrorKind.Validation);
     }
     const runner = deployRunnerHost.ensure(appId);
     watchRunner(appId);

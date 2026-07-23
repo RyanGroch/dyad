@@ -51,12 +51,30 @@ export type VpsTestConnectionResult = z.infer<
   typeof VpsTestConnectionResultSchema
 >;
 
+export const VpsFrameworkSchema = z.enum(["vite", "nextjs", "other"]);
+
+export type VpsFramework = z.infer<typeof VpsFrameworkSchema>;
+
+export const VpsCompatSchema = z.object({
+  framework: VpsFrameworkSchema,
+  recommendedDistDir: z.string(),
+  // Whether the static pipeline can serve this app as-is.
+  supported: z.boolean(),
+  // Hard stops, each with a fix. Non-empty means deploy is refused.
+  blockers: z.array(z.string()),
+  // Advisory context shown to the user; does not block.
+  notes: z.array(z.string()),
+});
+
+export type VpsCompat = z.infer<typeof VpsCompatSchema>;
+
 export const VpsStatusSchema = z.object({
   sshAvailable: z.boolean(),
   keyExists: z.boolean(),
   publicKey: z.string().nullable(),
   config: VpsDeployConfigSchema.nullable(),
   scaffoldPresent: z.boolean(),
+  compat: VpsCompatSchema,
 });
 
 export type VpsStatus = z.infer<typeof VpsStatusSchema>;
