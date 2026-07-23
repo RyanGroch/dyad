@@ -94,6 +94,17 @@ describe("analyzeVpsCompat", () => {
     expect(compat.supported).toBe(true);
   });
 
+  it("does not treat a commented-out output:export as configured", async () => {
+    writeFileSync(
+      join(dir, "next.config.js"),
+      "// output: 'export'\nmodule.exports = {}",
+    );
+    writePackageJson({ next: "^15" });
+    const compat = await analyzeVpsCompat(dir);
+    expect(compat.supported).toBe(false);
+    expect(compat.blockers.join(" ")).toMatch(/static export/i);
+  });
+
   it("falls back to other/dist with a note for unknown frameworks", async () => {
     writePackageJson({ "some-static-gen": "^1" });
     const compat = await analyzeVpsCompat(dir);

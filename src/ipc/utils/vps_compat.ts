@@ -46,13 +46,22 @@ function detectFramework(appPath: string): VpsFramework {
   return "other";
 }
 
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "") // block comments
+    .replace(/\/\/[^\n]*/g, ""); // line comments
+}
+
 function nextHasStaticExport(appPath: string): boolean {
   for (const file of NEXT_CONFIG_FILES) {
     const configPath = path.join(appPath, file);
     if (!fs.existsSync(configPath)) continue;
-    const contents = fs.readFileSync(configPath, "utf8");
-    // Deliberately loose: matches output: "export" with either quote style and
-    // arbitrary spacing. A false positive just lets a build fail loudly later.
+    const contents = stripComments(fs.readFileSync(configPath, "utf8"));
+    // Best-effort static check: matches output: "export" with either quote
+    // style and arbitrary spacing, ignoring commented-out lines. It can't
+    // prove the value is effective (correct nesting, config actually
+    // exported), so the deploy script re-checks that the build produced an
+    // output directory before uploading.
     if (/output\s*:\s*["']export["']/.test(contents)) return true;
   }
   return false;
