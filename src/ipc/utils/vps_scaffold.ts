@@ -53,7 +53,12 @@ function scp(localPath, remotePath) {
 }
 
 stage("build");
-run("npm", ["run", "build"], { shell: process.platform === "win32" });
+// Force a production build regardless of the caller's NODE_ENV. A non-
+// production value makes some frameworks (e.g. Next.js) emit broken output.
+run("npm", ["run", "build"], {
+  shell: process.platform === "win32",
+  env: { ...process.env, NODE_ENV: "production" },
+});
 
 stage("upload");
 const workDir = mkdtempSync(join(tmpdir(), "dyad-deploy-"));
