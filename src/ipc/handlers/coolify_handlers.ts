@@ -26,7 +26,10 @@ import {
 } from "../utils/ssh_utils";
 import { withDatabaseTunnel } from "../utils/ssh_tunnel";
 import { generateNeonMigrationStatements } from "../utils/migration_utils";
-import { executePostgresStatementsInTransaction } from "@/postgres_admin/postgres_context";
+import {
+  executePostgresSql,
+  executePostgresStatementsInTransaction,
+} from "@/postgres_admin/postgres_context";
 import { getConnectionUri } from "@/neon_admin/neon_context";
 import * as fs from "fs";
 import { getGitHubApiBase } from "./github_handlers";
@@ -222,7 +225,25 @@ async function migrateProduction({
         desiredDatabaseUrl: devConnectionString,
       });
       if (statements.length === 0) {
-        update(appId, {}, "Schema already up to date.\n");
+        // An empty diff reads as reassuring, but it also happens when there is
+        // simply nothing to copy yet. Say which, so a deployed app that cannot
+        // find its tables is not a mystery.
+        const devTables = await executePostgresSql({
+          connectionString: devConnectionString,
+          query:
+            "SELECT count(*)::int AS count FROM information_schema.tables " +
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')",
+        }).catch(() => null);
+        const isDevEmpty = devTables !== null && /"count":\s*0/.test(devTables);
+        update(
+          appId,
+          {},
+          isDevEmpty
+            ? "The development database has no tables, so nothing was copied " +
+                "to production. Build a feature that stores data first; the " +
+                "deployed app will not find any tables until then.\n"
+            : "Schema already up to date.\n",
+        );
         return;
       }
       update(
