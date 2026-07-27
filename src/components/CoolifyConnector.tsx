@@ -41,6 +41,8 @@ export function CoolifyConnector({
     discovery,
     discoveryError,
     refetchDiscovery,
+    clearToken,
+    isClearingToken,
     createProject,
     isCreatingProject,
     saveToken,
@@ -196,14 +198,29 @@ export function CoolifyConnector({
           <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
             <p className="font-medium">Could not load servers and projects</p>
             <p className="mt-1">{getErrorMessage(discoveryError)}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2"
-              onClick={() => refetchDiscovery()}
-            >
-              Retry
-            </Button>
+            <div className="mt-2 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refetchDiscovery()}
+              >
+                Retry
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isClearingToken}
+                onClick={async () => {
+                  await clearToken();
+                  toast.success("Coolify token cleared. Enter it again.");
+                }}
+              >
+                {isClearingToken && (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                )}
+                Re-enter token
+              </Button>
+            </div>
           </div>
         )}
 

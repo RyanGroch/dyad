@@ -432,6 +432,13 @@ export function registerCoolifyHandlers() {
     return { servers, projects };
   });
 
+  createTypedHandler(coolifyContracts.clearToken, async () => {
+    writeSettings({
+      coolifyInstanceUrl: undefined,
+      coolifyAccessToken: undefined,
+    });
+  });
+
   createTypedHandler(coolifyContracts.createProject, async (_, { name }) => {
     const client = getClient();
     const created = await client.createProject(name);

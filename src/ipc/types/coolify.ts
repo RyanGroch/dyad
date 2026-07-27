@@ -159,6 +159,12 @@ export const coolifyContracts = {
     output: CoolifyDeploySnapshotSchema,
   }),
 
+  clearToken: defineContract({
+    channel: "coolify:clear-token",
+    input: z.void(),
+    output: z.void(),
+  }),
+
   createProject: defineContract({
     channel: "coolify:create-project",
     input: z.object({ name: z.string().min(1) }),

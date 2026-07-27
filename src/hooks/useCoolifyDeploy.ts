@@ -65,6 +65,16 @@ export function useCoolifyDeploy(appId: number | null) {
     enabled: Boolean(status?.hasToken),
   });
 
+  const clearToken = useMutation({
+    mutationFn: async () => ipc.coolify.clearToken(),
+    onSuccess: () => {
+      invalidate();
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.coolify.discovery,
+      });
+    },
+  });
+
   const createProject = useMutation({
     mutationFn: async (name: string) => ipc.coolify.createProject({ name }),
     onSuccess: () => {
@@ -111,6 +121,8 @@ export function useCoolifyDeploy(appId: number | null) {
     isDiscovering: discovery.isLoading,
     discoveryError: discovery.error,
     refetchDiscovery: discovery.refetch,
+    clearToken: clearToken.mutateAsync,
+    isClearingToken: clearToken.isPending,
     createProject: createProject.mutateAsync,
     isCreatingProject: createProject.isPending,
     saveToken: saveToken.mutateAsync,
