@@ -262,6 +262,12 @@ async function resolveDevConnectionString(app: {
  * denied (publickey)". Dyad is already authenticated with GitHub, so add it
  * rather than asking the user to copy it across by hand.
  */
+function repoKeyName(owner: string, repo: string): string {
+  // GitHub allows a given deploy key on only one repository, so each repo
+  // needs its own. Keep the name filesystem-safe.
+  return `dyad_deploy_${owner}_${repo}`.replace(/[^A-Za-z0-9_.-]/g, "-");
+}
+
 async function ensureGithubDeployKey({
   appId,
   owner,
@@ -270,11 +276,13 @@ async function ensureGithubDeployKey({
   appId: number;
   owner: string;
   repo: string;
-}): Promise<void> {
-  const publicKey = readPublicKey();
+}): Promise<string> {
+  const keyName = repoKeyName(owner, repo);
+  await ensureDeployKey(keyName);
+  const publicKey = readPublicKey(keyName);
   if (!publicKey) {
     throw new DyadError(
-      "No deploy key found. Generate one in the Coolify section first.",
+      `Could not read the deploy key for ${owner}/${repo}.`,
       DyadErrorKind.Validation,
     );
   }
@@ -303,14 +311,37 @@ async function ensureGithubDeployKey({
 
   if (res.ok) {
     update(appId, {}, `Added the deploy key to ${owner}/${repo}.\n`);
-    return;
+    return keyName;
   }
   const body = await res.text();
-  // GitHub answers 422 when the key is already on the repository, which is
-  // exactly the state we want.
+  // "Already in use" does not mean it is on *this* repository — a deploy key
+  // belongs to exactly one repo across all of GitHub. Confirm rather than
+  // assume, or the clone fails later with a misleading "repository not found".
   if (res.status === 422 && /already in use/i.test(body)) {
-    update(appId, {}, `Deploy key already present on ${owner}/${repo}.\n`);
-    return;
+    const listed = await fetch(
+      `${getGitHubApiBase()}/repos/${owner}/${repo}/keys`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/vnd.github+json",
+        },
+      },
+    );
+    const keys = listed.ok
+      ? ((await listed.json()) as Array<{ key?: string }>)
+      : [];
+    // GitHub returns the key without its trailing comment.
+    const ours = publicKey.split(/\s+/).slice(0, 2).join(" ");
+    if (keys.some((k) => (k.key ?? "").startsWith(ours))) {
+      update(appId, {}, `Deploy key already present on ${owner}/${repo}.\n`);
+      return keyName;
+    }
+    throw new DyadError(
+      `The deploy key for ${owner}/${repo} is already registered on a different ` +
+        `repository, so GitHub will not accept it here. Remove it from the other ` +
+        `repository's deploy keys, or delete ~/.ssh/${keyName} to generate a new one.`,
+      DyadErrorKind.Validation,
+    );
   }
   throw new DyadError(
     `Could not add the deploy key to ${owner}/${repo} (${res.status}): ${body.slice(0, 200)}`,
@@ -405,7 +436,7 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
     // Runs on every deploy, not just the first: an application created before
     // this step existed still has an unauthorised clone, and GitHub treats
     // adding a key that is already present as a no-op.
-    await ensureGithubDeployKey({
+    const repoKey = await ensureGithubDeployKey({
       appId,
       owner: app.githubOrg,
       repo: app.githubRepo,
@@ -414,10 +445,11 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
     let applicationUuid = app.coolifyApplicationUuid;
     if (!applicationUuid) {
       stage(appId, "create-application", "Creating the Coolify application...");
-      const privateKey = fs.readFileSync(keyFilePath(), "utf8");
+      const privateKey = fs.readFileSync(keyFilePath(repoKey), "utf8");
       const key = await client.registerPrivateKey({
-        name: "dyad-deploy",
-        description: "Key Dyad uses to let Coolify clone private repositories",
+        // Named per repository to match the deploy key GitHub accepted.
+        name: repoKey,
+        description: "Key Dyad uses to let Coolify clone this repository",
         privateKey,
       });
       const created = await client.createApplicationFromPrivateRepo({
