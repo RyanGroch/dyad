@@ -14,6 +14,7 @@ import type {
 } from "../types/coolify";
 import { CoolifyClient, resolveServerSshHost } from "../utils/coolify_client";
 import { safeSend } from "../utils/safe_sender";
+import { shouldProvisionDatabase } from "@/shared/coolify_provisioning";
 import {
   deployKeyExists,
   ensureDeployKey,
@@ -317,13 +318,7 @@ async function ensureGithubDeployKey({
   );
 }
 
-async function runDeploy({
-  appId,
-  provisionDatabase,
-}: {
-  appId: number;
-  provisionDatabase: boolean;
-}): Promise<void> {
+async function runDeploy({ appId }: { appId: number }): Promise<void> {
   const startedAt = Date.now();
   update(appId, {
     status: "running",
@@ -362,6 +357,7 @@ async function runDeploy({
     }
     update(appId, {}, "SSH OK.\n");
 
+    const provisionDatabase = shouldProvisionDatabase(app);
     let databaseUuid = app.coolifyDatabaseUuid;
     if (provisionDatabase) {
       if (databaseUuid) {
@@ -617,21 +613,18 @@ export function registerCoolifyHandlers() {
     },
   );
 
-  createTypedHandler(
-    coolifyContracts.deploy,
-    async (_, { appId, provisionDatabase }) => {
-      const current = getSnapshot(appId);
-      if (current.status === "running") {
-        throw new DyadError(
-          "A deploy is already in progress for this app",
-          DyadErrorKind.Validation,
-        );
-      }
-      // Deliberately not awaited: progress reaches the renderer through
-      // deploy-status events while this returns immediately.
-      void runDeploy({ appId, provisionDatabase });
-    },
-  );
+  createTypedHandler(coolifyContracts.deploy, async (_, { appId }) => {
+    const current = getSnapshot(appId);
+    if (current.status === "running") {
+      throw new DyadError(
+        "A deploy is already in progress for this app",
+        DyadErrorKind.Validation,
+      );
+    }
+    // Deliberately not awaited: progress reaches the renderer through
+    // deploy-status events while this returns immediately.
+    void runDeploy({ appId });
+  });
 
   createTypedHandler(coolifyContracts.getDeploySnapshot, async (_, { appId }) =>
     getSnapshot(appId),

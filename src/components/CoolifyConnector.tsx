@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -13,6 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useCoolifyDeploy } from "@/hooks/useCoolifyDeploy";
+import { useLoadApp } from "@/hooks/useLoadApp";
+import { shouldProvisionDatabase } from "@/shared/coolify_provisioning";
 import { getErrorMessage } from "@/lib/errors";
 
 interface CoolifyConnectorProps {
@@ -58,6 +59,7 @@ export function CoolifyConnector({
     disconnect,
   } = useCoolifyDeploy(appId);
 
+  const { app } = useLoadApp(appId);
   const [instanceUrl, setInstanceUrl] = useState("");
   const [token, setToken] = useState("");
   const [serverUuid, setServerUuid] = useState("");
@@ -65,7 +67,6 @@ export function CoolifyConnector({
   const [sshHost, setSshHost] = useState("");
   const [sshUser, setSshUser] = useState("root");
   const [sshPort, setSshPort] = useState("22");
-  const [provisionDatabase, setProvisionDatabase] = useState(true);
 
   useEffect(() => {
     const c = status?.connection;
@@ -98,6 +99,7 @@ export function CoolifyConnector({
   }
 
   const isDeploying = snapshot.status === "running";
+  const willProvisionDatabase = shouldProvisionDatabase(app ?? {});
 
   // --- Step 1: instance URL + API token ---
   if (!status.hasToken) {
@@ -408,13 +410,11 @@ export function CoolifyConnector({
         </div>
       )}
 
-      <label className="flex items-center gap-2 text-sm">
-        <Checkbox
-          checked={provisionDatabase}
-          onCheckedChange={(v) => setProvisionDatabase(v === true)}
-        />
-        Let Coolify host a Postgres database for this app
-      </label>
+      {willProvisionDatabase && (
+        <p className="text-sm text-muted-foreground">
+          Coolify will host a Postgres database for this app on your server.
+        </p>
+      )}
 
       <div className="flex items-center gap-2">
         <Button
@@ -422,7 +422,7 @@ export function CoolifyConnector({
           disabled={isDeploying || !hasGithubRepo}
           onClick={async () => {
             try {
-              await deploy(provisionDatabase);
+              await deploy();
             } catch (err) {
               toast.error(err instanceof Error ? err.message : String(err));
             }

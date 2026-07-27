@@ -105,9 +105,6 @@ export const SaveCoolifyConnectionParamsSchema = z.object({
 
 export const DeployToCoolifyParamsSchema = z.object({
   appId: z.number(),
-  // When true, Dyad provisions a Postgres on the user's server and wires
-  // DATABASE_URL to it. When false the app keeps whatever database it has.
-  provisionDatabase: z.boolean().default(false),
 });
 
 // =============================================================================

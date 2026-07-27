@@ -104,8 +104,7 @@ export function useCoolifyDeploy(appId: number | null) {
   });
 
   const deploy = useMutation({
-    mutationFn: async (provisionDatabase: boolean) =>
-      ipc.coolify.deploy({ appId: appId!, provisionDatabase }),
+    mutationFn: async () => ipc.coolify.deploy({ appId: appId! }),
   });
 
   const disconnect = useMutation({
