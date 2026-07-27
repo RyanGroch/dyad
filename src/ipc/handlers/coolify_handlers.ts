@@ -406,14 +406,18 @@ async function runDeploy({
       }
     }
 
+    // Runs on every deploy, not just the first: an application created before
+    // this step existed still has an unauthorised clone, and GitHub treats
+    // adding a key that is already present as a no-op.
+    await ensureGithubDeployKey({
+      appId,
+      owner: app.githubOrg,
+      repo: app.githubRepo,
+    });
+
     let applicationUuid = app.coolifyApplicationUuid;
     if (!applicationUuid) {
       stage(appId, "create-application", "Creating the Coolify application...");
-      await ensureGithubDeployKey({
-        appId,
-        owner: app.githubOrg,
-        repo: app.githubRepo,
-      });
       const privateKey = fs.readFileSync(keyFilePath(), "utf8");
       const key = await client.registerPrivateKey({
         name: "dyad-deploy",
