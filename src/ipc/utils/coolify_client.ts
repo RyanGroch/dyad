@@ -296,6 +296,10 @@ export class CoolifyClient {
       name: params.name,
       ports_exposes: params.portsExposes,
       autogenerate_domain: true,
+      // The database is reachable only by its container name on Coolify's
+      // network, so the application has to be on that network too or it cannot
+      // resolve DATABASE_URL's host at all.
+      connect_to_docker_network: true,
       health_check_enabled: Boolean(params.healthCheckPath),
       health_check_path: params.healthCheckPath,
       instant_deploy: false,

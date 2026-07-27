@@ -76,6 +76,27 @@ describe("CoolifyClient", () => {
     await expect(client.listServers()).rejects.toThrow(/enlarged elsewhere/);
   });
 
+  it("puts the application on the network where the database lives", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(201, { uuid: "app-1" }));
+    await client.createApplicationFromPrivateRepo({
+      serverUuid: "s",
+      projectUuid: "p",
+      environmentName: "production",
+      privateKeyUuid: "k",
+      gitRepository: "git@github.com:o/r.git",
+      gitBranch: "main",
+      name: "app",
+      portsExposes: "3000",
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0][1] as RequestInit).body as string,
+    );
+    // Without this the app cannot resolve the database's container hostname.
+    expect(body.connect_to_docker_network).toBe(true);
+  });
+
   it("explains which scopes are missing on 403", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       respond(403, { message: "Missing required permissions: write" }),
