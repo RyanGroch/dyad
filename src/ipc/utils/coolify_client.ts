@@ -49,6 +49,13 @@ export class CoolifyClient {
     try {
       res = await fetch(`${this.base}/api/v1${path}`, {
         method,
+        // Electron's main-process fetch is Chromium-backed and would otherwise
+        // attach cookies from the default session. Coolify's own session
+        // cookie is large enough that the proxy in front of it rejects the
+        // request with "400 Request Header Or Cookie Too Large" before Coolify
+        // ever sees it. This call authenticates with a bearer token, so
+        // cookies are never wanted.
+        credentials: "omit",
         headers: {
           Authorization: `Bearer ${this.options.token}`,
           "Content-Type": "application/json",

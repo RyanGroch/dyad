@@ -41,6 +41,15 @@ describe("CoolifyClient", () => {
     );
   });
 
+  it("never sends cookies, which a proxy would reject as oversized headers", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(200, []));
+    await client.listServers();
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe("omit");
+  });
+
   it("explains which scopes are missing on 403", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       respond(403, { message: "Missing required permissions: write" }),
