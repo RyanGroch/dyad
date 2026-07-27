@@ -1,0 +1,144 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { CoolifyClient } from "./coolify_client";
+
+const client = new CoolifyClient({
+  instanceUrl: "http://coolify.test:8000/",
+  token: "tok",
+});
+
+function respond(status: number, body: unknown) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    text: () =>
+      Promise.resolve(typeof body === "string" ? body : JSON.stringify(body)),
+  } as Response);
+}
+
+describe("CoolifyClient", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("strips a trailing slash and calls the versioned API path", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(200, []));
+    await client.listServers();
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "http://coolify.test:8000/api/v1/servers",
+    );
+  });
+
+  it("sends the bearer token", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(200, []));
+    await client.listServers();
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer tok",
+    );
+  });
+
+  it("explains which scopes are missing on 403", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      respond(403, { message: "Missing required permissions: write" }),
+    );
+    await expect(client.listProjects()).rejects.toThrow(
+      /read:sensitive.*write.*deploy|needs all of/s,
+    );
+  });
+
+  it("reports a bad token distinctly from a scope problem on 401", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      respond(401, { message: "Unauthenticated" }),
+    );
+    await expect(client.listProjects()).rejects.toThrow(
+      /rejected the API token/i,
+    );
+  });
+
+  it("reports an unreachable instance rather than a generic failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
+    await expect(client.listServers()).rejects.toThrow(
+      /Could not reach Coolify/,
+    );
+  });
+
+  it("creates databases without exposing them publicly", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(201, { uuid: "db-1" }));
+    await client.createPostgres({
+      serverUuid: "s",
+      projectUuid: "p",
+      environmentName: "production",
+      name: "db",
+    });
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(body.is_public).toBe(false);
+    expect(body.public_port).toBeUndefined();
+  });
+
+  it("falls back to PATCH when an env var already exists", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const method = (init as RequestInit).method!;
+      calls.push(method);
+      if (method === "POST") {
+        return respond(409, { message: "Environment variable already exists" });
+      }
+      return respond(200, {});
+    });
+    await client.setEnv("app-1", "DATABASE_URL", "postgres://x");
+    expect(calls).toEqual(["POST", "PATCH"]);
+  });
+
+  it("marks env values literal so a $ in a password is not interpolated", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(200, {}));
+    await client.setEnv("app-1", "DATABASE_URL", "postgres://u:p$w@h/db");
+    const body = JSON.parse(
+      (fetchSpy.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(body.is_literal).toBe(true);
+    // There is no is_build_time field; sending one fails validation.
+    expect(body.is_build_time).toBeUndefined();
+  });
+
+  it("reuses an existing private key instead of registering a duplicate", async () => {
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const method = (init as RequestInit).method!;
+      methods.push(method);
+      if (method === "GET") {
+        return respond(200, [{ uuid: "key-1", name: "dyad-deploy" }]);
+      }
+      return respond(201, { uuid: "key-new" });
+    });
+    const result = await client.registerPrivateKey({
+      name: "dyad-deploy",
+      privateKey: "PEM",
+    });
+    expect(result.uuid).toBe("key-1");
+    expect(methods).not.toContain("POST");
+  });
+
+  it("reads deployment status from the deployment endpoint", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => respond(200, { status: "finished" }));
+    const result = await client.getDeployment("dep-1");
+    expect(fetchSpy.mock.calls[0][0]).toContain("/deployments/dep-1");
+    // Guards against regressing to /deployments/applications/{uuid}, which
+    // returns Application objects with no status.
+    expect(fetchSpy.mock.calls[0][0]).not.toContain(
+      "/deployments/applications",
+    );
+    expect(result.status).toBe("finished");
+  });
+});
