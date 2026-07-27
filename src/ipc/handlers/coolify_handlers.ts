@@ -485,6 +485,16 @@ export function registerCoolifyHandlers() {
     getSnapshot(appId),
   );
 
+  createTypedHandler(
+    coolifyContracts.setPortableCodegen,
+    async (_, { appId, enabled }) => {
+      await db
+        .update(apps)
+        .set({ portableCodegen: enabled })
+        .where(eq(apps.id, appId));
+    },
+  );
+
   createTypedHandler(coolifyContracts.disconnect, async (_, { appId }) => {
     await db
       .update(apps)

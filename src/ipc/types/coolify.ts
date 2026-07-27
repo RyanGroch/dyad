@@ -159,6 +159,12 @@ export const coolifyContracts = {
     output: CoolifyDeploySnapshotSchema,
   }),
 
+  setPortableCodegen: defineContract({
+    channel: "coolify:set-portable-codegen",
+    input: z.object({ appId: z.number(), enabled: z.boolean() }),
+    output: z.void(),
+  }),
+
   disconnect: defineContract({
     channel: "coolify:disconnect",
     input: CoolifyAppParamsSchema,

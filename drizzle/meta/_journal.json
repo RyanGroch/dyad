@@ -302,6 +302,13 @@
       "when": 1785172747428,
       "tag": "0042_salty_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1785175114085,
+      "tag": "0043_same_wrecker",
+      "breakpoints": true
     }
   ]
 }

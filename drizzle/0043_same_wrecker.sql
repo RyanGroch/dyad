@@ -1,0 +1,1 @@
+ALTER TABLE `apps` ADD `portable_codegen` integer DEFAULT 0 NOT NULL;
