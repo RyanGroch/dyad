@@ -367,7 +367,6 @@ export function CoolifyConnector({
             onClick={async () => {
               try {
                 await saveConnection({
-                  instanceUrl,
                   serverUuid,
                   projectUuid,
                   environmentName: "production",

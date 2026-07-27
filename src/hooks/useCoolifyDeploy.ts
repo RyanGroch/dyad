@@ -98,7 +98,7 @@ export function useCoolifyDeploy(appId: number | null) {
   });
 
   const saveConnection = useMutation({
-    mutationFn: async (connection: CoolifyConnection) =>
+    mutationFn: async (connection: Omit<CoolifyConnection, "instanceUrl">) =>
       ipc.coolify.saveConnection({ appId: appId!, connection }),
     onSuccess: invalidate,
   });

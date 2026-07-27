@@ -95,9 +95,12 @@ export const CoolifyDiscoverySchema = z.object({
 
 export type CoolifyDiscovery = z.infer<typeof CoolifyDiscoverySchema>;
 
+// Saving only persists where to deploy and how to reach it. The instance URL
+// lives in settings, so requiring it here made the call fail whenever the
+// renderer had not just been through the token form.
 export const SaveCoolifyConnectionParamsSchema = z.object({
   appId: z.number(),
-  connection: CoolifyConnectionSchema,
+  connection: CoolifyConnectionSchema.omit({ instanceUrl: true }),
 });
 
 export const DeployToCoolifyParamsSchema = z.object({
