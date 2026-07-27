@@ -159,6 +159,12 @@ export const coolifyContracts = {
     output: CoolifyDeploySnapshotSchema,
   }),
 
+  createProject: defineContract({
+    channel: "coolify:create-project",
+    input: z.object({ name: z.string().min(1) }),
+    output: CoolifyProjectSchema,
+  }),
+
   setPortableCodegen: defineContract({
     channel: "coolify:set-portable-codegen",
     input: z.object({ appId: z.number(), enabled: z.boolean() }),

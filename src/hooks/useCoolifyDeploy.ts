@@ -65,6 +65,15 @@ export function useCoolifyDeploy(appId: number | null) {
     enabled: Boolean(status?.hasToken),
   });
 
+  const createProject = useMutation({
+    mutationFn: async (name: string) => ipc.coolify.createProject({ name }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.coolify.discovery,
+      });
+    },
+  });
+
   const generateSshKey = useMutation({
     mutationFn: async () => ipc.coolify.generateSshKey(),
     onSuccess: invalidate,
@@ -100,6 +109,10 @@ export function useCoolifyDeploy(appId: number | null) {
     snapshot,
     discovery: discovery.data ?? null,
     isDiscovering: discovery.isLoading,
+    discoveryError: discovery.error,
+    refetchDiscovery: discovery.refetch,
+    createProject: createProject.mutateAsync,
+    isCreatingProject: createProject.isPending,
     saveToken: saveToken.mutateAsync,
     isSavingToken: saveToken.isPending,
     generateSshKey: generateSshKey.mutateAsync,

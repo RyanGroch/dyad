@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useCoolifyDeploy } from "@/hooks/useCoolifyDeploy";
+import { getErrorMessage } from "@/lib/errors";
 
 interface CoolifyConnectorProps {
   appId: number | null;
@@ -38,6 +39,10 @@ export function CoolifyConnector({
     isStatusLoading,
     snapshot,
     discovery,
+    discoveryError,
+    refetchDiscovery,
+    createProject,
+    isCreatingProject,
     saveToken,
     isSavingToken,
     generateSshKey,
@@ -184,6 +189,49 @@ export function CoolifyConnector({
                 <Copy className="h-4 w-4" />
               </Button>
             </div>
+          </div>
+        )}
+
+        {discoveryError && (
+          <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
+            <p className="font-medium">Could not load servers and projects</p>
+            <p className="mt-1">{getErrorMessage(discoveryError)}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={() => refetchDiscovery()}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
+
+        {!discoveryError && discovery && discovery.projects.length === 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            <p>
+              This Coolify instance has no projects yet. Create one to deploy
+              into.
+            </p>
+            <Button
+              size="sm"
+              className="mt-2"
+              disabled={isCreatingProject}
+              onClick={async () => {
+                try {
+                  const project = await createProject("dyad");
+                  setProjectUuid(project.uuid);
+                  toast.success("Project created");
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {isCreatingProject && (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              )}
+              Create a project
+            </Button>
           </div>
         )}
 
