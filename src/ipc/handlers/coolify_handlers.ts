@@ -149,6 +149,43 @@ function sshTargetFor(connection: CoolifyConnection): SshTarget {
  * production database and applies the delta. The production database is only
  * reachable through the SSH tunnel, which also encrypts the connection.
  */
+/**
+ * Waits until a provisioned database is actually running.
+ *
+ * Creating one only queues it, so the container does not exist for a while
+ * afterwards and inspecting it fails with "no such object".
+ */
+async function waitForDatabaseRunning({
+  appId,
+  databaseUuid,
+}: {
+  appId: number;
+  databaseUuid: string;
+}): Promise<void> {
+  const client = getClient();
+  const deadline = Date.now() + 3 * 60 * 1000;
+  let sawStatus = false;
+  while (Date.now() < deadline) {
+    const database = await client.getDatabase(databaseUuid);
+    const status = String(database.status ?? "");
+    if (status) {
+      sawStatus = true;
+      if (status.startsWith("running")) {
+        update(appId, {}, `Database is running (${status}).\n`);
+        return;
+      }
+    }
+    update(appId, {}, `  waiting for database... ${status || "(no status)"}\n`);
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  throw new DyadError(
+    sawStatus
+      ? "The database did not start in time."
+      : "Coolify never reported a database status, so it could not be confirmed running.",
+    DyadErrorKind.External,
+  );
+}
+
 async function migrateProduction({
   appId,
   connection,
@@ -276,6 +313,8 @@ async function runDeploy({
         update(appId, {}, `Database created (${databaseUuid}).\n`);
       }
 
+      await waitForDatabaseRunning({ appId, databaseUuid });
+
       const devConnectionString = await resolveDevConnectionString(app);
       if (devConnectionString) {
         stage(
@@ -356,8 +395,21 @@ async function runDeploy({
       }
     }
     if (status !== "finished") {
+      // The status alone says nothing about the cause, so pull the build log.
+      let detail = "";
+      if (deploymentUuid) {
+        const entry = await client
+          .getDeployment(deploymentUuid)
+          .catch(() => null);
+        const logs = (entry as { logs?: string } | null)?.logs;
+        if (logs) {
+          const tail = logs.slice(-4000);
+          update(appId, {}, `\n--- deployment log ---\n${tail}\n`);
+          detail = ` Check the deployment log above.`;
+        }
+      }
       throw new DyadError(
-        `Deployment did not finish (last status: ${status}).`,
+        `Deployment did not finish (last status: ${status}).${detail}`,
         DyadErrorKind.External,
       );
     }
