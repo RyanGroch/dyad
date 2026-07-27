@@ -26,6 +26,7 @@ export interface CoolifyApplication {
   uuid: string;
   name?: string;
   fqdn?: string | null;
+  private_key_id?: number | null;
 }
 
 export interface CoolifyDeployment {
@@ -207,7 +208,12 @@ export class CoolifyClient {
     return this.request("GET", `/projects/${uuid}`);
   }
 
-  /** Registers a private key so Coolify can clone a private repository. */
+  /**
+   * Registers a private key so Coolify can clone a private repository.
+   *
+   * Returns the numeric id as well, because an application records the key it
+   * clones with as `private_key_id` and there is no way to change it later.
+   */
   async registerPrivateKey({
     name,
     privateKey,
@@ -216,20 +222,30 @@ export class CoolifyClient {
     name: string;
     privateKey: string;
     description?: string;
-  }): Promise<{ uuid: string }> {
-    const existing = await this.request<Array<{ uuid: string; name: string }>>(
-      "GET",
-      "/security/keys",
-    ).catch(() => []);
+  }): Promise<{ uuid: string; id: number | null }> {
+    const listKeys = () =>
+      this.request<Array<{ uuid: string; name: string; id?: number }>>(
+        "GET",
+        "/security/keys",
+      ).catch(() => [] as Array<{ uuid: string; name: string; id?: number }>);
+
+    const existing = await listKeys();
     const match = (Array.isArray(existing) ? existing : []).find(
       (k) => k.name === name,
     );
-    if (match) return { uuid: match.uuid };
-    return this.request("POST", "/security/keys", {
-      name,
-      description,
-      private_key: privateKey,
-    });
+    if (match) return { uuid: match.uuid, id: match.id ?? null };
+
+    const created = await this.request<{ uuid: string }>(
+      "POST",
+      "/security/keys",
+      { name, description, private_key: privateKey },
+    );
+    // The create response carries no id, so read it back.
+    const after = await listKeys();
+    const found = (Array.isArray(after) ? after : []).find(
+      (k) => k.uuid === created.uuid,
+    );
+    return { uuid: created.uuid, id: found?.id ?? null };
   }
 
   async createPostgres(params: {

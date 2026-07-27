@@ -442,16 +442,39 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
       repo: app.githubRepo,
     });
 
+    // Register the key up front: an application records the key it clones with
+    // and Coolify offers no way to change it afterwards, so one created with a
+    // stale key has to be replaced.
+    const privateKey = fs.readFileSync(keyFilePath(repoKey), "utf8");
+    const key = await client.registerPrivateKey({
+      // Named per repository to match the deploy key GitHub accepted.
+      name: repoKey,
+      description: "Key Dyad uses to let Coolify clone this repository",
+      privateKey,
+    });
+
     let applicationUuid = app.coolifyApplicationUuid;
+    if (applicationUuid && key.id !== null) {
+      const existing = await client
+        .getApplication(applicationUuid)
+        .catch(() => null);
+      if (existing && existing.private_key_id !== key.id) {
+        update(
+          appId,
+          {},
+          "The application clones with an outdated key; recreating it.\n",
+        );
+        await client.deleteApplication(applicationUuid).catch(() => undefined);
+        applicationUuid = null;
+        await db
+          .update(apps)
+          .set({ coolifyApplicationUuid: null })
+          .where(eq(apps.id, appId));
+      }
+    }
+
     if (!applicationUuid) {
       stage(appId, "create-application", "Creating the Coolify application...");
-      const privateKey = fs.readFileSync(keyFilePath(repoKey), "utf8");
-      const key = await client.registerPrivateKey({
-        // Named per repository to match the deploy key GitHub accepted.
-        name: repoKey,
-        description: "Key Dyad uses to let Coolify clone this repository",
-        privateKey,
-      });
       const created = await client.createApplicationFromPrivateRepo({
         serverUuid: connection.serverUuid,
         projectUuid: connection.projectUuid,
