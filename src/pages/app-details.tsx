@@ -45,6 +45,7 @@ import {
 import { GitHubConnector } from "@/components/GitHubConnector";
 import { SupabaseConnector } from "@/components/SupabaseConnector";
 import { NeonConnector } from "@/components/NeonConnector";
+import { PostgresConnector } from "@/components/PostgresConnector";
 import { showError, showSuccess } from "@/lib/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
@@ -660,12 +661,22 @@ export default function AppDetailsPage() {
               {appId && selectedApp?.neonProjectId && (
                 <UnavailableIntegrationCard provider="supabase" />
               )}
-              {appId && !selectedApp?.supabaseProjectId && (
-                <NeonConnector appId={appId} />
-              )}
+              {appId &&
+                !selectedApp?.supabaseProjectId &&
+                !selectedApp?.portableCodegen && (
+                  <NeonConnector appId={appId} />
+                )}
               {appId && selectedApp?.supabaseProjectId && (
                 <UnavailableIntegrationCard provider="neon" />
               )}
+              {/* Postgres is Neon-backed for development, so it is offered
+                  only when Neon is not already set up as itself. */}
+              {appId &&
+                !selectedApp?.supabaseProjectId &&
+                (selectedApp?.portableCodegen ||
+                  !selectedApp?.neonProjectId) && (
+                  <PostgresConnector appId={appId} />
+                )}
             </>
           )}
           {appId && <CapacitorControls appId={appId} />}

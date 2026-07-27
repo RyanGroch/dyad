@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -104,15 +103,6 @@ export const DatabaseSection = ({ appId }: DatabaseSectionProps) => {
     },
   });
 
-  const portableMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      ipc.coolify.setPortableCodegen({ appId, enabled }),
-    onSuccess: () => {
-      refreshApp();
-    },
-    onError: (error) => toast.error(getErrorMessage(error)),
-  });
-
   const syncMutation = useMutation({
     mutationFn: (branchType: "production" | "development") =>
       ipc.vercel.syncNeonConfig({ appId, branchType }),
@@ -172,24 +162,6 @@ export const DatabaseSection = ({ appId }: DatabaseSectionProps) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
-          <div>
-            <p className="text-sm font-medium">Portable Postgres</p>
-            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-              Generate standard Postgres code instead of Neon-specific code, so
-              this app can also run against a database you host yourself. Your
-              development database stays on Neon. Required to let Coolify host
-              this app's database.
-            </p>
-          </div>
-          <Switch
-            className="shrink-0 mt-1"
-            checked={Boolean(app?.portableCodegen)}
-            disabled={portableMutation.isPending}
-            onCheckedChange={(checked) => portableMutation.mutate(checked)}
-          />
-        </div>
-
         {showSync && (
           <div
             className="flex items-start justify-between gap-3 rounded-lg border border-border p-3"
