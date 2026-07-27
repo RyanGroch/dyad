@@ -246,6 +246,10 @@ async function resolveDevConnectionString(app: {
   return getConnectionUri({
     projectId: app.neonProjectId,
     branchId: app.neonDevelopmentBranchId,
+    // Schema diffing sets statement_timeout as a startup parameter, which
+    // Neon's pooler rejects. The existing migration path is unpooled for the
+    // same reason.
+    pooled: false,
   });
 }
 

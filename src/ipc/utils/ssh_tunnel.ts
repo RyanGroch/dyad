@@ -149,6 +149,13 @@ export async function openSshTunnel({
 
   let exited = false;
   child.on("exit", () => (exited = true));
+  // Without this, a spawn failure emits an unhandled 'error' event, which
+  // Electron surfaces as a JavaScript error dialog from the main process.
+  child.on("error", (err) => {
+    exited = true;
+    stderr += `\n${err.message}`;
+    logger.error(`SSH tunnel process failed to start: ${err.message}`);
+  });
 
   const close = () => {
     if (child && !child.killed) {
