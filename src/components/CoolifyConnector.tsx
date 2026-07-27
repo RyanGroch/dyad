@@ -257,7 +257,17 @@ export function CoolifyConnector({
             <Label>Server</Label>
             <Select
               value={serverUuid}
-              onValueChange={(v) => setServerUuid(v ?? "")}
+              onValueChange={(v) => {
+                const uuid = v ?? "";
+                setServerUuid(uuid);
+                // Coolify already knows how to reach this server; reusing its
+                // details keeps the tunnel pointed at the machine the database
+                // is actually provisioned on.
+                const server = discovery?.servers.find((s) => s.uuid === uuid);
+                if (server?.ip) setSshHost(server.ip);
+                if (server?.user) setSshUser(server.user);
+                if (server?.port) setSshPort(String(server.port));
+              }}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select a server" />
@@ -288,6 +298,13 @@ export function CoolifyConnector({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="col-span-2">
+            <p className="text-xs text-muted-foreground">
+              These are filled in from the server you picked. Dyad connects over
+              SSH to reach that server's database when applying schema changes,
+              so they must point at the same machine.
+            </p>
           </div>
           <div>
             <Label htmlFor="coolify-ssh-host">Server address (SSH)</Label>

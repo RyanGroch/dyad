@@ -13,6 +13,12 @@ import {
 export const CoolifyServerSchema = z.object({
   uuid: z.string(),
   name: z.string(),
+  // Coolify reaches its servers over SSH, so it already knows how to address
+  // them. Reusing that keeps Dyad's tunnel pointed at the same machine the
+  // database is provisioned on.
+  ip: z.string().nullable().optional(),
+  user: z.string().nullable().optional(),
+  port: z.number().nullable().optional(),
 });
 
 export type CoolifyServer = z.infer<typeof CoolifyServerSchema>;

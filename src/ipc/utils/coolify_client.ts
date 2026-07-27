@@ -133,11 +133,24 @@ export class CoolifyClient {
   }
 
   /** Validates the token and returns the reachable servers. */
-  async listServers(): Promise<Array<{ uuid: string; name: string }>> {
-    const servers = await this.request<Array<{ uuid: string; name: string }>>(
-      "GET",
-      "/servers",
-    );
+  async listServers(): Promise<
+    Array<{
+      uuid: string;
+      name: string;
+      ip?: string | null;
+      user?: string | null;
+      port?: number | null;
+    }>
+  > {
+    const servers = await this.request<
+      Array<{
+        uuid: string;
+        name: string;
+        ip?: string | null;
+        user?: string | null;
+        port?: number | null;
+      }>
+    >("GET", "/servers");
     return Array.isArray(servers) ? servers : [];
   }
 
