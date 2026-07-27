@@ -1,0 +1,17 @@
+{
+  "name": "coolify-phase0-testapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal full-stack app to validate Coolify deploy + Postgres persistence",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
