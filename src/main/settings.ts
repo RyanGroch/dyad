@@ -639,6 +639,19 @@ function readExistingSettingsFile(
       delete combinedSettings.vercelAccessToken;
     }
   }
+  if (combinedSettings.coolifyAccessToken) {
+    const resolved = resolveStoredSecret(
+      combinedSettings.coolifyAccessToken,
+      "Coolify access token",
+      ["coolifyAccessToken"],
+      ctx,
+    );
+    if (resolved) {
+      combinedSettings.coolifyAccessToken = resolved;
+    } else {
+      delete combinedSettings.coolifyAccessToken;
+    }
+  }
   for (const provider in combinedSettings.providerSettings) {
     if (combinedSettings.providerSettings[provider].apiKey) {
       const resolved = resolveStoredSecret(
