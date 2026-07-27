@@ -80,12 +80,20 @@ describe("rewriteHostPort", () => {
     expect(rewritten).toContain("/dyad");
   });
 
-  it("preserves query parameters such as sslmode", () => {
+  it("disables TLS, which a self-hosted database does not offer", () => {
+    // Clients that default to requiring TLS otherwise fail with "the server
+    // does not support SSL connections"; the SSH channel already encrypts.
+    const rewritten = rewriteHostPort("postgres://u:p@host:5432/db", 15432);
+    expect(rewritten).toContain("sslmode=disable");
+  });
+
+  it("overrides an inherited sslmode=require", () => {
     const rewritten = rewriteHostPort(
       "postgres://u:p@host:5432/db?sslmode=require",
       15432,
     );
-    expect(rewritten).toContain("sslmode=require");
+    expect(rewritten).toContain("sslmode=disable");
+    expect(rewritten).not.toContain("sslmode=require");
   });
 });
 

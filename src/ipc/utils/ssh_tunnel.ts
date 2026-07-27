@@ -208,5 +208,9 @@ export function rewriteHostPort(
   const url = new URL(connectionString);
   url.hostname = "127.0.0.1";
   url.port = String(localPort);
+  // A self-hosted database generally has no TLS, and clients that default to
+  // requiring it fail with "the server does not support SSL connections".
+  // Privacy comes from the SSH channel the traffic is already inside.
+  url.searchParams.set("sslmode", "disable");
   return url.toString();
 }

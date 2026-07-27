@@ -28,6 +28,7 @@ import { generateNeonMigrationStatements } from "../utils/migration_utils";
 import { executePostgresStatementsInTransaction } from "@/postgres_admin/postgres_context";
 import { getConnectionUri } from "@/neon_admin/neon_context";
 import * as fs from "fs";
+import { getGitHubApiBase } from "./github_handlers";
 
 const logger = log.scope("coolify_handlers");
 
@@ -248,6 +249,70 @@ async function resolveDevConnectionString(app: {
   });
 }
 
+/**
+ * Authorises Coolify to clone the app's private repository.
+ *
+ * Coolify clones with the key Dyad registered, so that key's public half has
+ * to be a deploy key on the repository or the clone fails with "permission
+ * denied (publickey)". Dyad is already authenticated with GitHub, so add it
+ * rather than asking the user to copy it across by hand.
+ */
+async function ensureGithubDeployKey({
+  appId,
+  owner,
+  repo,
+}: {
+  appId: number;
+  owner: string;
+  repo: string;
+}): Promise<void> {
+  const publicKey = readPublicKey();
+  if (!publicKey) {
+    throw new DyadError(
+      "No deploy key found. Generate one in the Coolify section first.",
+      DyadErrorKind.Validation,
+    );
+  }
+  const accessToken = readSettings().githubAccessToken?.value;
+  if (!accessToken) {
+    throw new DyadError(
+      "Not authenticated with GitHub, so the deploy key could not be added to " +
+        `${owner}/${repo}. Reconnect GitHub and try again.`,
+      DyadErrorKind.Auth,
+    );
+  }
+
+  const res = await fetch(`${getGitHubApiBase()}/repos/${owner}/${repo}/keys`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      title: "Dyad deploy key (Coolify)",
+      key: publicKey,
+      read_only: true,
+    }),
+  });
+
+  if (res.ok) {
+    update(appId, {}, `Added the deploy key to ${owner}/${repo}.\n`);
+    return;
+  }
+  const body = await res.text();
+  // GitHub answers 422 when the key is already on the repository, which is
+  // exactly the state we want.
+  if (res.status === 422 && /already in use/i.test(body)) {
+    update(appId, {}, `Deploy key already present on ${owner}/${repo}.\n`);
+    return;
+  }
+  throw new DyadError(
+    `Could not add the deploy key to ${owner}/${repo} (${res.status}): ${body.slice(0, 200)}`,
+    DyadErrorKind.External,
+  );
+}
+
 async function runDeploy({
   appId,
   provisionDatabase,
@@ -340,6 +405,11 @@ async function runDeploy({
     let applicationUuid = app.coolifyApplicationUuid;
     if (!applicationUuid) {
       stage(appId, "create-application", "Creating the Coolify application...");
+      await ensureGithubDeployKey({
+        appId,
+        owner: app.githubOrg,
+        repo: app.githubRepo,
+      });
       const privateKey = fs.readFileSync(keyFilePath(), "utf8");
       const key = await client.registerPrivateKey({
         name: "dyad-deploy",
