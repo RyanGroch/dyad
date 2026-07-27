@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { CoolifyClient } from "./coolify_client";
+import { CoolifyClient, resolveServerSshHost } from "./coolify_client";
 
 const client = new CoolifyClient({
   instanceUrl: "http://coolify.test:8000/",
@@ -175,5 +175,51 @@ describe("CoolifyClient", () => {
       "/deployments/applications",
     );
     expect(result.status).toBe("finished");
+  });
+});
+
+describe("resolveServerSshHost", () => {
+  const instanceUrl = "http://203.0.113.7:8000";
+
+  it.each([
+    "host.docker.internal",
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "172.17.0.1",
+  ])(
+    "substitutes the instance host for %s, which only Coolify can reach",
+    (serverIp) => {
+      expect(resolveServerSshHost({ serverIp, instanceUrl })).toBe(
+        "203.0.113.7",
+      );
+    },
+  );
+
+  it("keeps a genuinely remote address", () => {
+    expect(
+      resolveServerSshHost({ serverIp: "198.51.100.9", instanceUrl }),
+    ).toBe("198.51.100.9");
+  });
+
+  it("falls back to the instance host when no address is recorded", () => {
+    expect(resolveServerSshHost({ serverIp: null, instanceUrl })).toBe(
+      "203.0.113.7",
+    );
+  });
+
+  it("handles a hostname-based instance URL", () => {
+    expect(
+      resolveServerSshHost({
+        serverIp: "localhost",
+        instanceUrl: "https://coolify.example.com",
+      }),
+    ).toBe("coolify.example.com");
+  });
+
+  it("returns null rather than a bad guess when the URL is unusable", () => {
+    expect(
+      resolveServerSshHost({ serverIp: "localhost", instanceUrl: "not-a-url" }),
+    ).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ import type {
   CoolifyDeploySnapshot,
   CoolifyDeployStage,
 } from "../types/coolify";
-import { CoolifyClient } from "../utils/coolify_client";
+import { CoolifyClient, resolveServerSshHost } from "../utils/coolify_client";
 import { safeSend } from "../utils/safe_sender";
 import {
   deployKeyExists,
@@ -555,11 +555,20 @@ export function registerCoolifyHandlers() {
 
   createTypedHandler(coolifyContracts.discover, async () => {
     const client = getClient();
+    const instanceUrl = readSettings().coolifyInstanceUrl ?? "";
     const [servers, projects] = await Promise.all([
       client.listServers(),
       client.listProjects(),
     ]);
-    return { servers, projects };
+    return {
+      // Replace addresses Coolify only uses from inside its own container, so
+      // the connector offers something Dyad can actually reach.
+      servers: servers.map((server) => ({
+        ...server,
+        ip: resolveServerSshHost({ serverIp: server.ip, instanceUrl }),
+      })),
+      projects,
+    };
   });
 
   createTypedHandler(coolifyContracts.clearToken, async () => {

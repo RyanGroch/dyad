@@ -33,6 +33,41 @@ export interface CoolifyDeployment {
   status?: string;
 }
 
+// Coolify stores how *it* reaches a server, which for the machine it runs on
+// is an address only meaningful inside its own container. Those are useless to
+// Dyad, which connects from the user's machine.
+const NON_ROUTABLE_HOSTS = new Set([
+  "host.docker.internal",
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "172.17.0.1",
+]);
+
+/**
+ * Resolves the address Dyad should use to reach a Coolify server.
+ *
+ * A server Coolify addresses container-internally is the machine Coolify
+ * itself runs on, so the host from its instance URL is the right substitute.
+ * Genuinely remote servers carry a real address and are left alone.
+ */
+export function resolveServerSshHost({
+  serverIp,
+  instanceUrl,
+}: {
+  serverIp?: string | null;
+  instanceUrl: string;
+}): string | null {
+  if (serverIp && !NON_ROUTABLE_HOSTS.has(serverIp)) {
+    return serverIp;
+  }
+  try {
+    return new URL(instanceUrl).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
 export class CoolifyClient {
   private readonly base: string;
 
