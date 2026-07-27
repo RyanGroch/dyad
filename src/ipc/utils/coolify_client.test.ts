@@ -50,6 +50,32 @@ describe("CoolifyClient", () => {
     expect(init.credentials).toBe("omit");
   });
 
+  it("reports the token length when a proxy rejects oversized headers", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      respond(
+        400,
+        "<html><title>400 Request Header Or Cookie Too Large</title>",
+      ),
+    );
+    const fat = new CoolifyClient({
+      instanceUrl: "http://coolify.test:8000",
+      token: "x".repeat(2000),
+    });
+    await expect(fat.listServers()).rejects.toThrow(
+      /2000 characters, which is far longer/,
+    );
+  });
+
+  it("points elsewhere when headers are oversized but the token is normal", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      respond(
+        400,
+        "<html><title>400 Request Header Or Cookie Too Large</title>",
+      ),
+    );
+    await expect(client.listServers()).rejects.toThrow(/enlarged elsewhere/);
+  });
+
   it("explains which scopes are missing on 403", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(() =>
       respond(403, { message: "Missing required permissions: write" }),

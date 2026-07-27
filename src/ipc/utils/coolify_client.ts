@@ -84,6 +84,11 @@ export class CoolifyClient {
     }
   }
 
+  /** Bearer tokens are short; anything long means we are sending the wrong value. */
+  private tokenLooksWrong(): boolean {
+    return this.options.token.length > 400;
+  }
+
   private toError(
     method: string,
     path: string,
@@ -91,6 +96,21 @@ export class CoolifyClient {
     text: string,
   ): DyadError {
     const detail = text.slice(0, 300);
+    if (/Header Or Cookie Too Large/i.test(text)) {
+      // The proxy in front of Coolify rejected the request before Coolify saw
+      // it. Log the sizes rather than the values so this is diagnosable.
+      logger.error(
+        `Coolify rejected an oversized request header. ` +
+          `url=${this.base}/api/v1${path} tokenChars=${this.options.token.length}`,
+      );
+      return new DyadError(
+        `The Coolify server rejected the request because its headers were too large` +
+          (this.tokenLooksWrong()
+            ? `. The stored API token is ${this.options.token.length} characters, which is far longer than a Coolify token — try disconnecting and pasting it again.`
+            : `. The API token looks a normal length (${this.options.token.length} characters), so the request is being enlarged elsewhere; check whether the instance sits behind a proxy that adds headers.`),
+        DyadErrorKind.External,
+      );
+    }
     if (status === 401) {
       return new DyadError(
         "Coolify rejected the API token. Check that it is correct and has not been revoked.",
