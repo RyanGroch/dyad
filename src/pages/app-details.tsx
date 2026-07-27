@@ -669,14 +669,13 @@ export default function AppDetailsPage() {
               {appId && selectedApp?.supabaseProjectId && (
                 <UnavailableIntegrationCard provider="neon" />
               )}
-              {/* Postgres is Neon-backed for development, so it is offered
-                  only when Neon is not already set up as itself. */}
-              {appId &&
-                !selectedApp?.supabaseProjectId &&
-                (selectedApp?.portableCodegen ||
-                  !selectedApp?.neonProjectId) && (
-                  <PostgresConnector appId={appId} />
-                )}
+              {/* Postgres shares the app's Neon project during development and
+                  differs only in the code generated, so it stays available
+                  whatever the Neon state is; picking it switches the app over
+                  without disconnecting anything. */}
+              {appId && !selectedApp?.supabaseProjectId && (
+                <PostgresConnector appId={appId} />
+              )}
             </>
           )}
           {appId && <CapacitorControls appId={appId} />}

@@ -73,6 +73,9 @@ export function PostgresConnector({ appId }: { appId: number }) {
       }
 
       setIsProvisioning(true);
+      // A Postgres app is Neon-backed in development, so an app that already
+      // has a Neon project just switches to portable code generation and keeps
+      // its database. Creating one here would be rejected anyway.
       if (!hasProject) {
         const project = await ipc.neon.createProject({
           name: app?.name ?? `dyad-app-${appId}`,
@@ -93,10 +96,11 @@ export function PostgresConnector({ appId }: { appId: number }) {
 
   const handleDisconnect = async () => {
     try {
+      // Only stop generating portable code. The database is the app's Neon
+      // project; removing it here would be a surprising amount of destruction.
       await setPortable.mutateAsync(false);
-      await ipc.neon.unsetAppProject({ appId });
       await queryClient.invalidateQueries();
-      toast.success("Postgres disconnected");
+      toast.success("Switched back to Neon-specific code");
     } catch (error) {
       toast.error(getErrorMessage(error));
     }
