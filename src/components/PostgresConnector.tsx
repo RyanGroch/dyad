@@ -17,9 +17,12 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 import { useNeon } from "@/hooks/useNeon";
 import { useSettings } from "@/hooks/useSettings";
 import {
+  acknowledgeConnectionFlow,
   cancelConnectionFlow,
+  reportConnectionFlowResourcesLoaded,
   startConnectionFlow,
   useConnectionFlow,
+  useUnsolicitedConnectionReturn,
 } from "@/hooks/useConnectionFlow";
 import { getErrorMessage } from "@/lib/errors";
 
@@ -43,8 +46,8 @@ export function PostgresConnector({
   const Shell: React.ElementType = embedded ? "div" : Card;
   const { app, refreshApp } = useLoadApp(appId);
   const { isConnected, projectInfo } = useNeon(appId);
-  const { settings } = useSettings();
-  const { isFlowActive } = useConnectionFlow("neon");
+  const { settings, refreshSettings } = useSettings();
+  const { flowState, isFlowActive } = useConnectionFlow("neon");
   const queryClient = useQueryClient();
   const [isProvisioning, setIsProvisioning] = useState(false);
 
@@ -71,12 +74,21 @@ export function PostgresConnector({
       // has a project just switches to portable code generation and keeps its
       // database.
       if (!current.neonProjectId) {
-        const project = await ipc.neon.createProject({
-          name: app?.name ?? `dyad-app-${appId}`,
-          appId,
-        });
-        await ipc.neon.setAppProject({ appId, projectId: project.id });
-        if (project.warning) toast.warning(project.warning);
+        try {
+          const project = await ipc.neon.createProject({
+            name: app?.name ?? `dyad-app-${appId}`,
+            appId,
+          });
+          await ipc.neon.setAppProject({ appId, projectId: project.id });
+          if (project.warning) toast.warning(project.warning);
+        } catch (error) {
+          // A project appearing between the check and the call is the state
+          // this was trying to reach, so carry on rather than reporting it as
+          // a conflict the user has to resolve.
+          if (!/already has a Neon project/i.test(getErrorMessage(error))) {
+            throw error;
+          }
+        }
       }
       await setPortable.mutateAsync(true);
       await queryClient.invalidateQueries();
@@ -117,6 +129,40 @@ export function PostgresConnector({
       toast.error(getErrorMessage(error));
     }
   };
+
+  const refreshAfterConnectRef = useRef<() => Promise<void>>(async () => {});
+  refreshAfterConnectRef.current = async () => {
+    await refreshSettings();
+    await refreshApp();
+  };
+
+  // The sign-in flow pauses until a connector refreshes its state and says so.
+  // The Neon connector does this, but it is not mounted while this tab is
+  // showing, so doing nothing here leaves the flow stuck and the user never
+  // appears connected.
+  useEffect(() => {
+    const flow = flowState;
+    if (flow.status === "loading-resources") {
+      void (async () => {
+        try {
+          await refreshAfterConnectRef.current();
+        } finally {
+          await reportConnectionFlowResourcesLoaded("neon", flow.flowId);
+        }
+      })();
+    } else if (
+      flow.status === "connected" ||
+      flow.status === "failed" ||
+      flow.status === "cancelled"
+    ) {
+      void acknowledgeConnectionFlow("neon", flow.flowId);
+    }
+  }, [flowState]);
+
+  // A return processed with no active flow, such as after a restart.
+  useUnsolicitedConnectionReturn("neon", () => {
+    void refreshAfterConnectRef.current();
+  });
 
   // Finish the job once the user comes back from signing in, rather than
   // making them press the button a second time.
