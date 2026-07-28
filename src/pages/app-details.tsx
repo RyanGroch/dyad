@@ -46,6 +46,7 @@ import { GitHubConnector } from "@/components/GitHubConnector";
 import { SupabaseConnector } from "@/components/SupabaseConnector";
 import { NeonConnector } from "@/components/NeonConnector";
 import { PostgresConnector } from "@/components/PostgresConnector";
+import { useConnectionFlow } from "@/hooks/useConnectionFlow";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { showError, showSuccess } from "@/lib/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -78,12 +79,18 @@ import { queryKeys } from "@/lib/queryKeys";
 function DatabaseModeCard({
   appId,
   isPortable,
-  isLocked,
+  hasDatabase,
 }: {
   appId: number;
   isPortable: boolean;
-  isLocked: boolean;
+  hasDatabase: boolean;
 }) {
+  const { isFlowActive } = useConnectionFlow("neon");
+  // Setting up is the worst moment to switch: the choice has been recorded but
+  // the database does not exist yet, so a switch leaves the recorded mode and
+  // the work in progress disagreeing.
+  const isSettingUp = isFlowActive || (isPortable && !hasDatabase);
+  const isLocked = hasDatabase || isSettingUp;
   const active = isPortable ? "portable" : "neon";
   return (
     <Card className="mt-1">
@@ -115,8 +122,9 @@ function DatabaseModeCard({
       </Tabs>
       {isLocked && (
         <p className="px-6 pb-4 text-xs text-muted-foreground">
-          This app is set up for {isPortable ? "portable Postgres" : "Neon"}.
-          Disconnect the database to choose differently.
+          {isSettingUp && !hasDatabase
+            ? `Setting up ${isPortable ? "portable Postgres" : "Neon"}. Finish or cancel it to choose differently.`
+            : `This app is set up for ${isPortable ? "portable Postgres" : "Neon"}. Disconnect the database to choose differently.`}
         </p>
       )}
     </Card>
@@ -727,7 +735,7 @@ export default function AppDetailsPage() {
                   // Once a database exists the choice is settled: the code
                   // written against it depends on it, so switching silently
                   // would leave the app in a state matching neither.
-                  isLocked={Boolean(selectedApp?.neonProjectId)}
+                  hasDatabase={Boolean(selectedApp?.neonProjectId)}
                 />
               )}
             </>
