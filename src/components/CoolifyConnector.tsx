@@ -85,6 +85,17 @@ export function CoolifyConnector({
   const [sshUser, setSshUser] = useState("root");
   const [sshPort, setSshPort] = useState("22");
 
+  // A finished install already knows the address, so there is no reason to
+  // make the user copy it across.
+  useEffect(() => {
+    if (
+      installSnapshot.status === "succeeded" &&
+      installSnapshot.dashboardUrl
+    ) {
+      setInstanceUrl((current) => current || installSnapshot.dashboardUrl!);
+    }
+  }, [installSnapshot.status, installSnapshot.dashboardUrl]);
+
   useEffect(() => {
     const c = status?.connection;
     if (c) {
