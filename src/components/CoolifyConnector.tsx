@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import { Copy, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -62,6 +72,7 @@ export function CoolifyConnector({
   } = useCoolifyDeploy(appId);
 
   const { app } = useLoadApp(appId);
+  const [isReplacingKey, setIsReplacingKey] = useState(false);
   const [instanceUrl, setInstanceUrl] = useState("");
   const [token, setToken] = useState("");
   const [serverUuid, setServerUuid] = useState("");
@@ -106,8 +117,40 @@ export function CoolifyConnector({
   // Shown from the very first step: the key has to be on the server before
   // Coolify is installed there, so asking for a URL and token first would put
   // the steps in the opposite order from how a server is actually set up.
+  const replaceKeyDialog = (
+    <AlertDialog open={isReplacingKey} onOpenChange={setIsReplacingKey}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Replace this SSH key?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Servers that trust the current key will reject Dyad until the new
+            one is added to them. The old key is kept in your SSH directory
+            rather than deleted, so it stays available for any server still
+            using it.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={async () => {
+              try {
+                await regenerateSshKey();
+                toast.success("New key generated. Add it to your server.");
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          >
+            Replace
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   const sshKeySection = (
     <div className="space-y-2">
+      {replaceKeyDialog}
       {!status.sshKeyExists ? (
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
@@ -151,23 +194,7 @@ export function CoolifyConnector({
               variant="outline"
               size="sm"
               disabled={isRegeneratingSshKey}
-              onClick={async () => {
-                if (
-                  !window.confirm(
-                    "Replace this key with a new one? Servers that trust the " +
-                      "current key will reject Dyad until the new one is added " +
-                      "to them. The old key is kept rather than deleted.",
-                  )
-                ) {
-                  return;
-                }
-                try {
-                  await regenerateSshKey();
-                  toast.success("New key generated. Add it to your server.");
-                } catch (err) {
-                  toast.error(err instanceof Error ? err.message : String(err));
-                }
-              }}
+              onClick={() => setIsReplacingKey(true)}
             >
               {isRegeneratingSshKey ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
