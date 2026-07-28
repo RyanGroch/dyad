@@ -46,6 +46,7 @@ import { GitHubConnector } from "@/components/GitHubConnector";
 import { SupabaseConnector } from "@/components/SupabaseConnector";
 import { NeonConnector } from "@/components/NeonConnector";
 import { PostgresConnector } from "@/components/PostgresConnector";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { showError, showSuccess } from "@/lib/toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
@@ -661,20 +662,40 @@ export default function AppDetailsPage() {
               {appId && selectedApp?.neonProjectId && (
                 <UnavailableIntegrationCard provider="supabase" />
               )}
-              {appId &&
-                !selectedApp?.supabaseProjectId &&
-                !selectedApp?.portableCodegen && (
-                  <NeonConnector appId={appId} />
-                )}
               {appId && selectedApp?.supabaseProjectId && (
                 <UnavailableIntegrationCard provider="neon" />
               )}
-              {/* Postgres shares the app's Neon project during development and
-                  differs only in the code generated, so it stays available
-                  whatever the Neon state is; picking it switches the app over
-                  without disconnecting anything. */}
+              {/* One connection, two ways to use it: the database is a Neon
+                  project either way, and the tabs choose what the model
+                  generates against it. */}
               {appId && !selectedApp?.supabaseProjectId && (
-                <PostgresConnector appId={appId} />
+                <Tabs
+                  defaultValue={
+                    selectedApp?.portableCodegen ? "portable" : "neon"
+                  }
+                  className="mt-1"
+                >
+                  <TabsList>
+                    <TabsTrigger value="neon">Neon</TabsTrigger>
+                    <TabsTrigger value="portable">
+                      Portable Postgres
+                    </TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="neon">
+                    <p className="px-1 pt-2 text-xs text-muted-foreground">
+                      Neon's own client and built-in authentication. Fastest to
+                      build with.
+                    </p>
+                    <NeonConnector appId={appId} />
+                  </TabsContent>
+                  <TabsContent value="portable">
+                    <p className="px-1 pt-2 text-xs text-muted-foreground">
+                      Standard code with no vendor features. Works against any
+                      Postgres, including one on a server you own.
+                    </p>
+                    <PostgresConnector appId={appId} />
+                  </TabsContent>
+                </Tabs>
               )}
             </>
           )}
