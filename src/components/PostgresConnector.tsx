@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Database, ExternalLink, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -48,31 +48,11 @@ export function PostgresConnector({ appId }: { appId: number }) {
     onSuccess: () => refreshApp(),
   });
 
-  // Signing in and creating the database are one action from the user's point
-  // of view, so keep them together behind a single button.
-  const handleSetUp = async () => {
+  // Creates the development database. Kept separate from the button so it can
+  // also run automatically once the user returns from signing in.
+  const provision = async () => {
+    setIsProvisioning(true);
     try {
-      if (!isConnected) {
-        const { started, flowId } = await startConnectionFlow("neon");
-        if (!started) return;
-        try {
-          if (settings?.isTestMode) {
-            await ipc.neon.fakeConnect();
-          } else {
-            await ipc.system.openExternalUrl(
-              "https://oauth.dyad.sh/api/integrations/neon/login",
-            );
-          }
-        } catch (error) {
-          await cancelConnectionFlow("neon", flowId);
-          throw error;
-        }
-        // The rest happens once the user returns and the flow completes; they
-        // press the button again to provision.
-        return;
-      }
-
-      setIsProvisioning(true);
       // Read the app fresh rather than trusting what this component last
       // loaded: signing in through the Neon flow can create the project, and
       // acting on a stale copy means asking to create a second one, which is
@@ -98,6 +78,46 @@ export function PostgresConnector({ appId }: { appId: number }) {
       setIsProvisioning(false);
     }
   };
+
+  // Recording the choice before signing in means the Neon card steps aside
+  // immediately, so the user is not offered a competing project picker for a
+  // database they have already decided how to use.
+  const handleSetUp = async () => {
+    try {
+      await setPortable.mutateAsync(true);
+      if (!isConnected) {
+        const { started, flowId } = await startConnectionFlow("neon");
+        if (!started) return;
+        try {
+          if (settings?.isTestMode) {
+            await ipc.neon.fakeConnect();
+          } else {
+            await ipc.system.openExternalUrl(
+              "https://oauth.dyad.sh/api/integrations/neon/login",
+            );
+          }
+        } catch (error) {
+          await cancelConnectionFlow("neon", flowId);
+          throw error;
+        }
+        // Provisioning continues on its own once the sign-in completes.
+        return;
+      }
+      await provision();
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  };
+
+  // Finish the job once the user comes back from signing in, rather than
+  // making them press the button a second time.
+  const autoProvisioned = useRef(false);
+  useEffect(() => {
+    if (!isPortable || !isConnected || hasProject) return;
+    if (isProvisioning || autoProvisioned.current) return;
+    autoProvisioned.current = true;
+    void provision();
+  }, [isPortable, isConnected, hasProject, isProvisioning]);
 
   const handleDisconnect = async () => {
     try {
@@ -165,12 +185,19 @@ export function PostgresConnector({ appId }: { appId: number }) {
           {(isFlowActive || isProvisioning) && (
             <Loader2 className="h-4 w-4 animate-spin mr-2" />
           )}
-          {isConnected ? "Set up Postgres" : "Sign in to continue"}
+          {isProvisioning
+            ? "Setting up your database"
+            : isPortable && !isConnected
+              ? "Finish signing in"
+              : isConnected
+                ? "Set up Postgres"
+                : "Set up Postgres"}
           {!isConnected && <ExternalLink className="h-4 w-4 ml-2" />}
         </Button>
-        {isFlowActive && (
+        {(isFlowActive || (isPortable && !isConnected)) && (
           <p className="text-xs text-muted-foreground">
-            Finish signing in in your browser, then press the button again.
+            Finish signing in to Neon in your browser. Your database is created
+            automatically once you return.
           </p>
         )}
       </CardContent>
