@@ -73,10 +73,15 @@ export function PostgresConnector({ appId }: { appId: number }) {
       }
 
       setIsProvisioning(true);
+      // Read the app fresh rather than trusting what this component last
+      // loaded: signing in through the Neon flow can create the project, and
+      // acting on a stale copy means asking to create a second one, which is
+      // refused with a message about disconnecting.
+      const current = await ipc.app.getApp(appId);
       // A Postgres app is Neon-backed in development, so an app that already
-      // has a Neon project just switches to portable code generation and keeps
-      // its database. Creating one here would be rejected anyway.
-      if (!hasProject) {
+      // has a project just switches to portable code generation and keeps its
+      // database.
+      if (!current.neonProjectId) {
         const project = await ipc.neon.createProject({
           name: app?.name ?? `dyad-app-${appId}`,
           appId,
