@@ -629,14 +629,17 @@ export function CoolifyConnector({
         <p className="text-sm text-muted-foreground">
           Coolify will host a Postgres database for this app on your server.
         </p>
+      ) : app?.neonProjectId || app?.supabaseProjectId ? (
+        <p className="text-sm text-muted-foreground">
+          Coolify will host this app only. It keeps using the database it is
+          already connected to.
+        </p>
       ) : (
-        !app?.supabaseProjectId && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-            This app has no database configured, so none will be set up and no
-            DATABASE_URL will be provided. If its code expects one, the build
-            will fail. Set up Postgres on the app details page first.
-          </div>
-        )
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          This app has no database connected, so no DATABASE_URL will be
+          provided. If its code expects one, the build will fail. Connect a
+          database on the app details page first.
+        </div>
       )}
 
       <div className="flex items-center gap-2">

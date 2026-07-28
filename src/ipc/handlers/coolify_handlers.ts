@@ -40,6 +40,7 @@ import {
   executePostgresStatementsInTransaction,
 } from "@/postgres_admin/postgres_context";
 import { getConnectionUri } from "@/neon_admin/neon_context";
+import { getProductionBranchId } from "../utils/neon_utils";
 import * as fs from "fs";
 import { getGitHubApiBase } from "./github_handlers";
 
@@ -532,6 +533,31 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
           database.internal_db_url,
         );
         update(appId, {}, "DATABASE_URL wired to the application.\n");
+      }
+    } else if (app.neonProjectId) {
+      // Coolify is hosting the app but not its database. The app still needs
+      // to reach the one it already has, or it deploys with no connection
+      // string at all.
+      try {
+        const { branchId } = await getProductionBranchId(app.neonProjectId);
+        const uri = await getConnectionUri({
+          projectId: app.neonProjectId,
+          branchId,
+        });
+        await client.setEnv(applicationUuid, "DATABASE_URL", uri);
+        update(
+          appId,
+          {},
+          "DATABASE_URL wired to the app's existing database.\n",
+        );
+      } catch (error) {
+        update(
+          appId,
+          {},
+          `Could not resolve the existing database's connection string: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
       }
     }
 
