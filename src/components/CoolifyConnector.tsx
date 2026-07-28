@@ -50,6 +50,7 @@ export function CoolifyConnector({
     isStatusLoading,
     snapshot,
     discovery,
+    isDiscovering,
     discoveryError,
     refetchDiscovery,
     clearToken,
@@ -320,6 +321,25 @@ export function CoolifyConnector({
             </Button>
           </div>
         )}
+
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">
+            Dyad cannot tell when servers or projects change in Coolify, so this
+            list is cached. Refresh after adding one.
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={isDiscovering}
+            onClick={() => refetchDiscovery()}
+          >
+            {isDiscovering ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
 
         <div className="grid grid-cols-2 gap-2">
           <div>

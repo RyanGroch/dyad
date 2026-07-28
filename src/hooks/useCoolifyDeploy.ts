@@ -122,7 +122,7 @@ export function useCoolifyDeploy(appId: number | null) {
     isStatusLoading,
     snapshot,
     discovery: discovery.data ?? null,
-    isDiscovering: discovery.isLoading,
+    isDiscovering: discovery.isFetching,
     discoveryError: discovery.error,
     refetchDiscovery: discovery.refetch,
     clearToken: clearToken.mutateAsync,
