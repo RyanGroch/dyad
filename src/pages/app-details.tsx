@@ -70,6 +70,58 @@ import { AssignAppsToCollectionDialog } from "@/components/AssignAppsToCollectio
 import { useTranslation } from "react-i18next";
 import { queryKeys } from "@/lib/queryKeys";
 
+/**
+ * One database, two ways of using it. The tabs choose what the model generates
+ * against the same Neon project, so once one is connected the choice is fixed
+ * until it is disconnected.
+ */
+function DatabaseModeCard({
+  appId,
+  isPortable,
+  isLocked,
+}: {
+  appId: number;
+  isPortable: boolean;
+  isLocked: boolean;
+}) {
+  const active = isPortable ? "portable" : "neon";
+  return (
+    <Card className="mt-1">
+      <Tabs defaultValue={active}>
+        <div className="px-6 pt-6">
+          <TabsList>
+            <TabsTrigger value="neon" disabled={isLocked && isPortable}>
+              Neon
+            </TabsTrigger>
+            <TabsTrigger value="portable" disabled={isLocked && !isPortable}>
+              Portable Postgres
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="neon" className="mt-0">
+          <p className="px-6 pt-4 text-xs text-muted-foreground">
+            Neon's own client and built-in authentication. Fastest to build
+            with.
+          </p>
+          <NeonConnector appId={appId} embedded />
+        </TabsContent>
+        <TabsContent value="portable" className="mt-0">
+          <p className="px-6 pt-4 text-xs text-muted-foreground">
+            Standard code with no vendor features. Works against any Postgres,
+            including one on a server you own.
+          </p>
+          <PostgresConnector appId={appId} embedded />
+        </TabsContent>
+      </Tabs>
+      {isLocked && (
+        <p className="px-6 pb-4 text-xs text-muted-foreground">
+          This app is set up for {isPortable ? "portable Postgres" : "Neon"}.
+          Disconnect the database to choose differently.
+        </p>
+      )}
+    </Card>
+  );
+}
 function UnavailableIntegrationCard({
   provider,
 }: {
@@ -669,33 +721,14 @@ export default function AppDetailsPage() {
                   project either way, and the tabs choose what the model
                   generates against it. */}
               {appId && !selectedApp?.supabaseProjectId && (
-                <Tabs
-                  defaultValue={
-                    selectedApp?.portableCodegen ? "portable" : "neon"
-                  }
-                  className="mt-1"
-                >
-                  <TabsList>
-                    <TabsTrigger value="neon">Neon</TabsTrigger>
-                    <TabsTrigger value="portable">
-                      Portable Postgres
-                    </TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="neon">
-                    <p className="px-1 pt-2 text-xs text-muted-foreground">
-                      Neon's own client and built-in authentication. Fastest to
-                      build with.
-                    </p>
-                    <NeonConnector appId={appId} />
-                  </TabsContent>
-                  <TabsContent value="portable">
-                    <p className="px-1 pt-2 text-xs text-muted-foreground">
-                      Standard code with no vendor features. Works against any
-                      Postgres, including one on a server you own.
-                    </p>
-                    <PostgresConnector appId={appId} />
-                  </TabsContent>
-                </Tabs>
+                <DatabaseModeCard
+                  appId={appId}
+                  isPortable={Boolean(selectedApp?.portableCodegen)}
+                  // Once a database exists the choice is settled: the code
+                  // written against it depends on it, so switching silently
+                  // would leave the app in a state matching neither.
+                  isLocked={Boolean(selectedApp?.neonProjectId)}
+                />
               )}
             </>
           )}

@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Database, ExternalLink, Loader2 } from "lucide-react";
@@ -31,7 +32,15 @@ import { getErrorMessage } from "@/lib/errors";
  * Neon-specific. That is what lets the same app run against a database the
  * user hosts themselves.
  */
-export function PostgresConnector({ appId }: { appId: number }) {
+export function PostgresConnector({
+  appId,
+  embedded = false,
+}: {
+  appId: number;
+  /** Drops the surrounding card so this can sit inside one. */
+  embedded?: boolean;
+}) {
+  const Shell: React.ElementType = embedded ? "div" : Card;
   const { app, refreshApp } = useLoadApp(appId);
   const { isConnected, projectInfo } = useNeon(appId);
   const { settings } = useSettings();
@@ -133,7 +142,10 @@ export function PostgresConnector({ appId }: { appId: number }) {
 
   if (isPortable && hasProject) {
     return (
-      <Card className="mt-1" data-testid="postgres-connector">
+      <Shell
+        className={embedded ? "" : "mt-1"}
+        data-testid="postgres-connector"
+      >
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-2">
@@ -157,12 +169,12 @@ export function PostgresConnector({ appId }: { appId: number }) {
             </Button>
           </div>
         </CardHeader>
-      </Card>
+      </Shell>
     );
   }
 
   return (
-    <Card className="mt-1" data-testid="postgres-connector">
+    <Shell className={embedded ? "" : "mt-1"} data-testid="postgres-connector">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Database size={18} className="text-muted-foreground" />
@@ -201,6 +213,6 @@ export function PostgresConnector({ appId }: { appId: number }) {
           </p>
         )}
       </CardContent>
-    </Card>
+    </Shell>
   );
 }
