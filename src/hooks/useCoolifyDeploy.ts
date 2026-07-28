@@ -83,6 +83,7 @@ export function useCoolifyDeploy(appId: number | null) {
 
   const install = useMutation({
     mutationFn: async (input: {
+      adminEmail: string;
       sshHost: string;
       sshUser: string;
       sshPort: number;

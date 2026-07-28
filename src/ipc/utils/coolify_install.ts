@@ -8,9 +8,11 @@ import { randomInt } from "crypto";
 const UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const LOWER = "abcdefghijkmnopqrstuvwxyz";
 const DIGITS = "23456789";
-// Deliberately excludes quotes, backslash, backtick and $ so the value stays
-// safe inside the single-quoted shell assignment below.
-const SYMBOLS = "!@#%^*_-+=";
+// Excludes quotes, backslash, backtick and $ so the value survives the
+// single-quoted shell assignment below, and also # and ! because installers
+// commonly write these into a .env file, where # starts a comment and would
+// silently truncate the password.
+const SYMBOLS = "@%^*_-+=";
 
 function pick(alphabet: string): string {
   return alphabet[randomInt(alphabet.length)];
@@ -43,12 +45,14 @@ export interface CoolifyAdminCredentials {
 }
 
 export function generateAdminCredentials(
-  host: string,
+  email: string,
 ): CoolifyAdminCredentials {
   return {
     username: "dyad-admin",
-    // Coolify wants a well-formed address; nothing ever sends mail to it.
-    email: `admin@${host.replace(/[^A-Za-z0-9.-]/g, "-")}.invalid`,
+    // Asked for rather than invented: a made-up address on a reserved domain
+    // fails validation that checks the domain resolves, and this is the
+    // address the user signs in with.
+    email,
     password: generateAdminPassword(),
   };
 }

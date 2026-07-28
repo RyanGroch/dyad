@@ -648,7 +648,10 @@ function updateInstall(
   broadcastInstall();
 }
 
-async function runInstall(target: SshTarget): Promise<void> {
+async function runInstall(
+  target: SshTarget,
+  adminEmail: string,
+): Promise<void> {
   updateInstall({
     status: "running",
     log: "",
@@ -670,7 +673,7 @@ async function runInstall(target: SshTarget): Promise<void> {
       "SSH OK.\n\nInstalling Coolify. This takes a few minutes.\n",
     );
 
-    const credentials = generateAdminCredentials(target.host);
+    const credentials = generateAdminCredentials(adminEmail);
     const result = await runRemoteStreaming(
       target,
       buildInstallCommand(credentials),
@@ -788,7 +791,7 @@ export function registerCoolifyHandlers() {
 
   createTypedHandler(
     coolifyContracts.install,
-    async (_, { sshHost, sshUser, sshPort }) => {
+    async (_, { adminEmail, sshHost, sshUser, sshPort }) => {
       if (installSnapshot.status === "running") {
         throw new DyadError(
           "An install is already in progress",
@@ -797,7 +800,10 @@ export function registerCoolifyHandlers() {
       }
       // Not awaited: progress reaches the renderer through install-status
       // events while this returns immediately.
-      void runInstall({ host: sshHost, user: sshUser, port: sshPort });
+      void runInstall(
+        { host: sshHost, user: sshUser, port: sshPort },
+        adminEmail,
+      );
     },
   );
 

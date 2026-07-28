@@ -101,6 +101,7 @@ export type CoolifyInstallSnapshot = z.infer<
 >;
 
 export const InstallCoolifyParamsSchema = z.object({
+  adminEmail: z.string().email(),
   sshHost: z.string().min(1),
   sshUser: z.string().min(1).default("root"),
   sshPort: z.number().int().min(1).max(65535).default(22),

@@ -24,6 +24,14 @@ describe("generateAdminPassword", () => {
     }
   });
 
+  it("avoids characters that a .env parser would mishandle", () => {
+    // Installers commonly write these values into a .env file, where # starts
+    // a comment and would silently truncate the password.
+    for (let i = 0; i < 50; i++) {
+      expect(generateAdminPassword()).not.toMatch(/[#!]/);
+    }
+  });
+
   it("does not simply place the required characters first", () => {
     // A predictable prefix would weaken an otherwise random password.
     const prefixes = new Set(
@@ -34,14 +42,16 @@ describe("generateAdminPassword", () => {
 });
 
 describe("generateAdminCredentials", () => {
-  it("builds a well-formed address from the host", () => {
-    const { email } = generateAdminCredentials("203.0.113.7");
-    expect(email).toMatch(/^admin@[A-Za-z0-9.-]+\.invalid$/);
+  it("uses the address it was given rather than inventing one", () => {
+    // An invented address on a reserved domain fails validation that checks
+    // the domain resolves, and is not an address the user can be reached at.
+    const { email } = generateAdminCredentials("someone@example.com");
+    expect(email).toBe("someone@example.com");
   });
 
-  it("strips characters a host should not contribute to an address", () => {
-    const { email } = generateAdminCredentials("bad host/name");
-    expect(email).not.toMatch(/[ /]/);
+  it("still generates a usable password", () => {
+    const { password } = generateAdminCredentials("someone@example.com");
+    expect(password.length).toBeGreaterThanOrEqual(8);
   });
 });
 

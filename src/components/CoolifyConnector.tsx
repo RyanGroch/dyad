@@ -76,6 +76,7 @@ export function CoolifyConnector({
 
   const { app } = useLoadApp(appId);
   const [isReplacingKey, setIsReplacingKey] = useState(false);
+  const [adminEmail, setAdminEmail] = useState("");
   const [instanceUrl, setInstanceUrl] = useState("");
   const [token, setToken] = useState("");
   const [serverUuid, setServerUuid] = useState("");
@@ -228,6 +229,19 @@ export function CoolifyConnector({
               you over SSH. You will not need a terminal.
             </p>
           </div>
+          <div>
+            <Label htmlFor="install-email">Your email</Label>
+            <Input
+              id="install-email"
+              type="email"
+              placeholder="you@example.com"
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Used to sign in to Coolify. Nothing is sent to it.
+            </p>
+          </div>
           <div className="grid grid-cols-3 gap-2">
             <div className="col-span-2">
               <Label htmlFor="install-host">Server address</Label>
@@ -250,10 +264,16 @@ export function CoolifyConnector({
           <Button
             size="sm"
             variant="outline"
-            disabled={isInstalling || !sshHost.trim() || !status.sshKeyExists}
+            disabled={
+              isInstalling ||
+              !sshHost.trim() ||
+              !adminEmail.trim() ||
+              !status.sshKeyExists
+            }
             onClick={async () => {
               try {
                 await install({
+                  adminEmail: adminEmail.trim(),
                   sshHost: sshHost.trim(),
                   sshUser: sshUser.trim() || "root",
                   sshPort: Number(sshPort) || 22,
