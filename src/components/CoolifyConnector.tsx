@@ -103,12 +103,89 @@ export function CoolifyConnector({
   const isDeploying = snapshot.status === "running";
   const willProvisionDatabase = shouldProvisionDatabase(app ?? {});
 
+  // Shown from the very first step: the key has to be on the server before
+  // Coolify is installed there, so asking for a URL and token first would put
+  // the steps in the opposite order from how a server is actually set up.
+  const sshKeySection = (
+    <div className="space-y-2">
+      {!status.sshKeyExists ? (
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Dyad needs SSH access to your server to reach the database when
+            applying schema changes. This is separate from the API token.
+          </p>
+          <Button
+            size="sm"
+            onClick={() => generateSshKey()}
+            disabled={isGeneratingSshKey}
+          >
+            {isGeneratingSshKey && (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            )}
+            Generate SSH key
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <Label>Add this key to your server</Label>
+          <p className="text-xs text-muted-foreground">
+            Append it to <code>~/.ssh/authorized_keys</code> on the server.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">
+              {status.sshPublicKey}
+            </code>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await navigator.clipboard.writeText(status.sshPublicKey ?? "");
+                toast.success("Public key copied");
+              }}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isRegeneratingSshKey}
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    "Replace this key with a new one? Servers that trust the " +
+                      "current key will reject Dyad until the new one is added " +
+                      "to them. The old key is kept rather than deleted.",
+                  )
+                ) {
+                  return;
+                }
+                try {
+                  await regenerateSshKey();
+                  toast.success("New key generated. Add it to your server.");
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {isRegeneratingSshKey ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                "Replace"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   // --- Step 1: instance URL + API token ---
   if (!status.hasToken) {
     return (
       <div className="space-y-3">
+        {sshKeySection}
         <p className="text-sm text-muted-foreground">
-          Install Coolify on your server, then create an API token under Keys
+          Then install Coolify on that server and create an API token under Keys
           &amp; Tokens. It needs the <code>read</code>,{" "}
           <code>read:sensitive</code>, <code>write</code>, and{" "}
           <code>deploy</code> scopes.
@@ -155,78 +232,7 @@ export function CoolifyConnector({
   if (!status.connection) {
     return (
       <div className="space-y-3">
-        {!status.sshKeyExists ? (
-          <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">
-              Dyad needs SSH access to your server to reach the database when
-              applying schema changes. This is separate from the API token.
-            </p>
-            <Button
-              size="sm"
-              onClick={() => generateSshKey()}
-              disabled={isGeneratingSshKey}
-            >
-              {isGeneratingSshKey && (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              )}
-              Generate SSH key
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <Label>Add this key to your server</Label>
-            <p className="text-xs text-muted-foreground">
-              Append it to <code>~/.ssh/authorized_keys</code> on the server.
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">
-                {status.sshPublicKey}
-              </code>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(
-                    status.sshPublicKey ?? "",
-                  );
-                  toast.success("Public key copied");
-                }}
-              >
-                <Copy className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isRegeneratingSshKey}
-                onClick={async () => {
-                  if (
-                    !window.confirm(
-                      "Replace this key with a new one? Servers that trust the " +
-                        "current key will reject Dyad until the new one is added " +
-                        "to them. The old key is kept rather than deleted.",
-                    )
-                  ) {
-                    return;
-                  }
-                  try {
-                    await regenerateSshKey();
-                    toast.success("New key generated. Add it to your server.");
-                  } catch (err) {
-                    toast.error(
-                      err instanceof Error ? err.message : String(err),
-                    );
-                  }
-                }}
-              >
-                {isRegeneratingSshKey ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  "Replace"
-                )}
-              </Button>
-            </div>
-          </div>
-        )}
+        {sshKeySection}
 
         {discoveryError && (
           <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
