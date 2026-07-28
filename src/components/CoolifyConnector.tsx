@@ -111,8 +111,10 @@ export function CoolifyConnector({
       {!status.sshKeyExists ? (
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
-            Dyad needs SSH access to your server to reach the database when
-            applying schema changes. This is separate from the API token.
+            Start here. Dyad needs SSH access to your server to reach the
+            database when applying schema changes, so add this key while you are
+            setting the server up, before installing Coolify. It is separate
+            from the API token.
           </p>
           <Button
             size="sm"
