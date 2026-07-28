@@ -37,6 +37,19 @@ describe("getPortablePostgresSystemPrompt", () => {
     expect(other).toContain("0.0.0.0");
   });
 
+  it("requires the connection to be made lazily", () => {
+    // A pool opened, or a missing DATABASE_URL thrown on, at module scope
+    // makes the app fail to build rather than fail to serve, because builds
+    // evaluate server modules.
+    expect(nextjs).toMatch(/no-db-at-module-scope/);
+    expect(nextjs).toContain("getPool()");
+    expect(nextjs).toMatch(/lazily/i);
+  });
+
+  it("does not also tell the model to connect at module scope", () => {
+    expect(nextjs).not.toMatch(/Create it once at module scope/);
+  });
+
   it("routes schema changes through the existing execute-sql tag", () => {
     expect(nextjs).toContain("<dyad-execute-sql>");
   });

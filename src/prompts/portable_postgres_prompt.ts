@@ -37,30 +37,44 @@ self-hosted production database. Never introduce anything tied to one provider.
   database. All queries run on the server.
 - **no-orm-swap**: If the app already uses a query builder or ORM, keep using
   it. Do not replace it with raw SQL, or raw SQL with an ORM.
+- **no-db-at-module-scope**: NEVER open a connection, or throw for a missing
+  \`DATABASE_URL\`, while a module is being loaded. Builds evaluate server
+  modules, so doing either makes the app fail to build rather than fail to
+  serve. Connect on first use instead.
 
 ## Connecting
 
 Put the connection in a single server-only module and import it everywhere
-else. Create it once at module scope; do not open a client per request.
+else. Reuse one pool across requests; do not open a client per request.
+
+Create that pool **lazily**, on first use. Building evaluates server modules to
+analyse routes, so a pool created — or a missing \`DATABASE_URL\` thrown on — at
+module scope makes the app fail to build rather than fail to serve.
 
 \`\`\`ts
 ${isNextJs ? "// app/lib/db.ts (server-only)" : "// server/db.ts (server-only)"}
 import { Pool } from "pg";
 
-// Managed Postgres usually requires TLS and puts sslmode in the URL, while a
-// self-hosted database often has none. Deciding from the URL keeps one code
-// path working in both places.
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set");
-}
-const sslmode = new URL(connectionString).searchParams.get("sslmode");
-const needsSsl = sslmode !== null && sslmode !== "disable";
+let pool: Pool | undefined;
 
-export const pool = new Pool({
-  connectionString,
-  ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
-});
+export function getPool(): Pool {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not set");
+    }
+    // Managed Postgres usually requires TLS and puts sslmode in the URL, while
+    // a self-hosted database often has none. Deciding from the URL keeps one
+    // code path working in both places.
+    const sslmode = new URL(connectionString).searchParams.get("sslmode");
+    const needsSsl = sslmode !== null && sslmode !== "disable";
+    pool = new Pool({
+      connectionString,
+      ssl: needsSsl ? { rejectUnauthorized: false } : undefined,
+    });
+  }
+  return pool;
+}
 \`\`\`
 
 ## Querying
@@ -68,11 +82,11 @@ export const pool = new Pool({
 Always use parameterised queries. Never build SQL by concatenating user input.
 
 \`\`\`ts
-const { rows } = await pool.query(
+const { rows } = await getPool().query(
   "SELECT id, title, done FROM todos ORDER BY id DESC",
 );
 
-const { rows: inserted } = await pool.query(
+const { rows: inserted } = await getPool().query(
   "INSERT INTO todos (title) VALUES ($1) RETURNING id, title, done",
   [title],
 );
