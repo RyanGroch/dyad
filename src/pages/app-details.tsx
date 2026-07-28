@@ -46,6 +46,7 @@ import { GitHubConnector } from "@/components/GitHubConnector";
 import { SupabaseConnector } from "@/components/SupabaseConnector";
 import { NeonConnector } from "@/components/NeonConnector";
 import { PostgresConnector } from "@/components/PostgresConnector";
+import * as React from "react";
 import { useConnectionFlow } from "@/hooks/useConnectionFlow";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { showError, showSuccess } from "@/lib/toast";
@@ -86,21 +87,36 @@ function DatabaseModeCard({
   hasDatabase: boolean;
 }) {
   const { isFlowActive } = useConnectionFlow("neon");
+  const active = isPortable ? "portable" : "neon";
+  // Controlled, so the selection cannot be moved by anything but the user.
+  // Leaving it to the tabs' own state meant a trigger briefly disabling itself
+  // mid-setup, when the choice had been recorded but the app had not caught
+  // up, which bounced the user into the other tab.
+  const [tab, setTab] = React.useState<string>(active);
+  React.useEffect(() => {
+    // Follow the app once its database settles the question, but never pull
+    // the user out of the tab they are working in.
+    if (hasDatabase) setTab(active);
+  }, [hasDatabase, active]);
+
   // Setting up is the worst moment to switch: the choice has been recorded but
   // the database does not exist yet, so a switch leaves the recorded mode and
   // the work in progress disagreeing.
   const isSettingUp = isFlowActive || (isPortable && !hasDatabase);
   const isLocked = hasDatabase || isSettingUp;
-  const active = isPortable ? "portable" : "neon";
+  const lockedTo = tab === "portable" ? "portable Postgres" : "Neon";
   return (
     <Card className="mt-1">
-      <Tabs defaultValue={active}>
+      <Tabs value={tab} onValueChange={setTab}>
         <div className="px-6 pt-6">
           <TabsList>
-            <TabsTrigger value="neon" disabled={isLocked && isPortable}>
+            <TabsTrigger value="neon" disabled={isLocked && tab !== "neon"}>
               Neon
             </TabsTrigger>
-            <TabsTrigger value="portable" disabled={isLocked && !isPortable}>
+            <TabsTrigger
+              value="portable"
+              disabled={isLocked && tab !== "portable"}
+            >
               Portable Postgres
             </TabsTrigger>
           </TabsList>
@@ -123,8 +139,8 @@ function DatabaseModeCard({
       {isLocked && (
         <p className="px-6 pb-4 text-xs text-muted-foreground">
           {isSettingUp && !hasDatabase
-            ? `Setting up ${isPortable ? "portable Postgres" : "Neon"}. Finish or cancel it to choose differently.`
-            : `This app is set up for ${isPortable ? "portable Postgres" : "Neon"}. Disconnect the database to choose differently.`}
+            ? `Setting up ${lockedTo}. Finish or cancel it to choose differently.`
+            : `This app is set up for ${lockedTo}. Disconnect the database to choose differently.`}
         </p>
       )}
     </Card>
