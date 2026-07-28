@@ -386,6 +386,11 @@ export function writeSettings(settings: Partial<UserSettings>): void {
         newSettings.coolifyAccessToken.value,
       );
     }
+    if (newSettings.coolifyAdminPassword) {
+      newSettings.coolifyAdminPassword = encrypt(
+        newSettings.coolifyAdminPassword.value,
+      );
+    }
     if (newSettings.supabase) {
       // Encrypt legacy tokens (kept for backwards compat)
       if (newSettings.supabase.accessToken) {
@@ -650,6 +655,19 @@ function readExistingSettingsFile(
       combinedSettings.coolifyAccessToken = resolved;
     } else {
       delete combinedSettings.coolifyAccessToken;
+    }
+  }
+  if (combinedSettings.coolifyAdminPassword) {
+    const resolved = resolveStoredSecret(
+      combinedSettings.coolifyAdminPassword,
+      "Coolify admin password",
+      ["coolifyAdminPassword"],
+      ctx,
+    );
+    if (resolved) {
+      combinedSettings.coolifyAdminPassword = resolved;
+    } else {
+      delete combinedSettings.coolifyAdminPassword;
     }
   }
   for (const provider in combinedSettings.providerSettings) {

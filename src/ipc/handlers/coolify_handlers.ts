@@ -9,6 +9,7 @@ import { createTypedHandler } from "./base";
 import { coolifyContracts, coolifyEvents } from "../types/coolify";
 import type {
   CoolifyConnection,
+  CoolifyInstallSnapshot,
   CoolifyDeploySnapshot,
   CoolifyDeployStage,
 } from "../types/coolify";
@@ -22,10 +23,17 @@ import {
   isSshAvailable,
   keyFilePath,
   readPublicKey,
+  runRemoteStreaming,
   testConnection,
   type SshTarget,
 } from "../utils/ssh_utils";
 import { withDatabaseTunnel } from "../utils/ssh_tunnel";
+import {
+  buildInstallCommand,
+  dashboardUrl,
+  generateAdminCredentials,
+  waitForDashboard,
+} from "../utils/coolify_install";
 import { generateNeonMigrationStatements } from "../utils/migration_utils";
 import {
   executePostgresSql,
@@ -606,6 +614,109 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Install
+// ---------------------------------------------------------------------------
+
+let installSnapshot: CoolifyInstallSnapshot = {
+  status: "idle",
+  log: "",
+  error: null,
+  dashboardUrl: null,
+  credentials: null,
+};
+
+function broadcastInstall(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      safeSend(window.webContents, coolifyEvents.installStatus.channel, {
+        snapshot: installSnapshot,
+      });
+    }
+  }
+}
+
+function updateInstall(
+  patch: Partial<CoolifyInstallSnapshot>,
+  appendLog?: string,
+): void {
+  installSnapshot = { ...installSnapshot, ...patch };
+  if (appendLog) {
+    installSnapshot.log = (installSnapshot.log + appendLog).slice(
+      -MAX_LOG_CHARS,
+    );
+  }
+  broadcastInstall();
+}
+
+async function runInstall(target: SshTarget): Promise<void> {
+  updateInstall({
+    status: "running",
+    log: "",
+    error: null,
+    dashboardUrl: null,
+    credentials: null,
+  });
+  try {
+    updateInstall({}, "Checking SSH access...\n");
+    const reachable = await testConnection(target);
+    if (!reachable.ok) {
+      throw new DyadError(
+        `Cannot reach the server over SSH: ${reachable.error}`,
+        DyadErrorKind.External,
+      );
+    }
+    updateInstall(
+      {},
+      "SSH OK.\n\nInstalling Coolify. This takes a few minutes.\n",
+    );
+
+    const credentials = generateAdminCredentials(target.host);
+    const result = await runRemoteStreaming(
+      target,
+      buildInstallCommand(credentials),
+      { onOutput: (chunk) => updateInstall({}, chunk) },
+    );
+    if (!result.ok) {
+      throw new DyadError(
+        `The install did not finish: ${result.error ?? "unknown error"}`,
+        DyadErrorKind.External,
+      );
+    }
+
+    updateInstall({}, "\nWaiting for the dashboard to answer...\n");
+    const up = await waitForDashboard(target.host);
+    if (!up) {
+      throw new DyadError(
+        "Coolify installed but its dashboard did not start answering. It may " +
+          "still be starting; check the server before retrying.",
+        DyadErrorKind.External,
+      );
+    }
+
+    // Stored so the user can sign in again later, not only from this screen.
+    writeSettings({
+      coolifyAdminUsername: credentials.username,
+      coolifyAdminEmail: credentials.email,
+      coolifyAdminPassword: { value: credentials.password },
+    });
+
+    updateInstall({
+      status: "succeeded",
+      dashboardUrl: dashboardUrl(target.host),
+      credentials,
+    });
+    logger.info("Coolify install finished");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`Coolify install failed: ${message}`);
+    updateInstall(
+      { status: "failed", error: message },
+      `\nFailed: ${message}\n`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -674,6 +785,26 @@ export function registerCoolifyHandlers() {
   createTypedHandler(coolifyContracts.generateSshKey, async () => {
     return { publicKey: await ensureDeployKey() };
   });
+
+  createTypedHandler(
+    coolifyContracts.install,
+    async (_, { sshHost, sshUser, sshPort }) => {
+      if (installSnapshot.status === "running") {
+        throw new DyadError(
+          "An install is already in progress",
+          DyadErrorKind.Validation,
+        );
+      }
+      // Not awaited: progress reaches the renderer through install-status
+      // events while this returns immediately.
+      void runInstall({ host: sshHost, user: sshUser, port: sshPort });
+    },
+  );
+
+  createTypedHandler(
+    coolifyContracts.getInstallSnapshot,
+    async () => installSnapshot,
+  );
 
   createTypedHandler(coolifyContracts.regenerateSshKey, async () => {
     return { publicKey: await regenerateDeployKey() };

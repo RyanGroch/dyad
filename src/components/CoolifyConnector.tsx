@@ -57,6 +57,8 @@ export function CoolifyConnector({
     isClearingToken,
     createProject,
     isCreatingProject,
+    installSnapshot,
+    install,
     saveToken,
     isSavingToken,
     generateSshKey,
@@ -211,9 +213,115 @@ export function CoolifyConnector({
 
   // --- Step 1: instance URL + API token ---
   if (!status.hasToken) {
+    const isInstalling = installSnapshot.status === "running";
     return (
       <div className="space-y-3">
         {sshKeySection}
+
+        <div className="rounded-md border border-border p-3 space-y-3">
+          <div>
+            <p className="text-sm font-medium">
+              Don't have Coolify installed yet?
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Once the key above is on your server, Dyad can install Coolify for
+              you over SSH. You will not need a terminal.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="col-span-2">
+              <Label htmlFor="install-host">Server address</Label>
+              <Input
+                id="install-host"
+                placeholder="203.0.113.7"
+                value={sshHost}
+                onChange={(e) => setSshHost(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="install-user">User</Label>
+              <Input
+                id="install-user"
+                value={sshUser}
+                onChange={(e) => setSshUser(e.target.value)}
+              />
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isInstalling || !sshHost.trim() || !status.sshKeyExists}
+            onClick={async () => {
+              try {
+                await install({
+                  sshHost: sshHost.trim(),
+                  sshUser: sshUser.trim() || "root",
+                  sshPort: Number(sshPort) || 22,
+                });
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          >
+            {isInstalling && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+            Install Coolify on this server
+          </Button>
+
+          {installSnapshot.status === "succeeded" &&
+            installSnapshot.credentials && (
+              <div className="rounded-md border border-green-300 bg-green-50 p-3 text-sm dark:border-green-800 dark:bg-green-950/40">
+                <p className="font-medium">Coolify is installed.</p>
+                <p className="mt-1 text-xs">
+                  Sign in at{" "}
+                  <a
+                    href={installSnapshot.dashboardUrl ?? "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    {installSnapshot.dashboardUrl}
+                  </a>{" "}
+                  with <code>{installSnapshot.credentials.email}</code> and the
+                  password below, then create an API token under Keys &amp;
+                  Tokens and paste it here.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">
+                    {installSnapshot.credentials.password}
+                  </code>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      await navigator.clipboard.writeText(
+                        installSnapshot.credentials?.password ?? "",
+                      );
+                      toast.success("Password copied");
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Save this password somewhere safe. Dyad keeps a copy, but it
+                  is the only way into the dashboard.
+                </p>
+              </div>
+            )}
+
+          {installSnapshot.status === "failed" && (
+            <p className="text-sm text-red-600 dark:text-red-400">
+              {installSnapshot.error}
+            </p>
+          )}
+
+          {installSnapshot.log && (
+            <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
+              {installSnapshot.log}
+            </pre>
+          )}
+        </div>
+
         <p className="text-sm text-muted-foreground">
           Then install Coolify on that server and create an API token under Keys
           &amp; Tokens. It needs the <code>read</code>,{" "}

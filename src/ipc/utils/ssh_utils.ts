@@ -279,6 +279,60 @@ export async function runRemote(
   }
 }
 
+/**
+ * Runs a long command remotely, reporting output as it arrives.
+ *
+ * `runRemote` buffers and times out in seconds, which suits a status check but
+ * not an install that takes minutes and says a lot on the way.
+ */
+export function runRemoteStreaming(
+  target: SshTarget,
+  command: string,
+  {
+    onOutput,
+    timeoutMs = 15 * 60 * 1000,
+  }: { onOutput: (chunk: string) => void; timeoutMs?: number },
+): Promise<{ ok: boolean; code: number | null; error?: string }> {
+  if (!isSshAvailable()) {
+    return Promise.resolve({
+      ok: false,
+      code: null,
+      error: "OpenSSH client not found on this machine",
+    });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(
+      findSshBinary("ssh"),
+      [...sshConnectionArgs(target), command],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let tail = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const handle = (chunk: Buffer) => {
+      const text = chunk.toString();
+      tail = (tail + text).slice(-4000);
+      onOutput(text);
+    };
+    child.stdout.on("data", handle);
+    child.stderr.on("data", handle);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, code: null, error: err.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        ok: code === 0,
+        code,
+        error:
+          code === 0
+            ? undefined
+            : `Command exited with code ${code}. ${tail.slice(-500)}`,
+      });
+    });
+  });
+}
+
 export async function testConnection(
   target: SshTarget,
 ): Promise<SshCheckResult> {

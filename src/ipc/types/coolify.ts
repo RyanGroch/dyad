@@ -81,6 +81,31 @@ export const CoolifyDeploySnapshotSchema = z.object({
 
 export type CoolifyDeploySnapshot = z.infer<typeof CoolifyDeploySnapshotSchema>;
 
+export const CoolifyInstallSnapshotSchema = z.object({
+  status: z.enum(["idle", "running", "succeeded", "failed"]),
+  log: z.string(),
+  error: z.string().nullable(),
+  dashboardUrl: z.string().nullable(),
+  // Shown once so the user can sign in; also kept in settings.
+  credentials: z
+    .object({
+      username: z.string(),
+      email: z.string(),
+      password: z.string(),
+    })
+    .nullable(),
+});
+
+export type CoolifyInstallSnapshot = z.infer<
+  typeof CoolifyInstallSnapshotSchema
+>;
+
+export const InstallCoolifyParamsSchema = z.object({
+  sshHost: z.string().min(1),
+  sshUser: z.string().min(1).default("root"),
+  sshPort: z.number().int().min(1).max(65535).default(22),
+});
+
 export const CoolifyAppParamsSchema = z.object({ appId: z.number() });
 
 export const SaveCoolifyTokenParamsSchema = z.object({
@@ -135,6 +160,18 @@ export const coolifyContracts = {
     channel: "coolify:generate-ssh-key",
     input: z.void(),
     output: z.object({ publicKey: z.string() }),
+  }),
+
+  install: defineContract({
+    channel: "coolify:install",
+    input: InstallCoolifyParamsSchema,
+    output: z.void(),
+  }),
+
+  getInstallSnapshot: defineContract({
+    channel: "coolify:get-install-snapshot",
+    input: z.void(),
+    output: CoolifyInstallSnapshotSchema,
   }),
 
   regenerateSshKey: defineContract({
@@ -201,6 +238,11 @@ export const coolifyContracts = {
 // =============================================================================
 
 export const coolifyEvents = {
+  installStatus: defineEvent({
+    channel: "coolify:install-status",
+    payload: z.object({ snapshot: CoolifyInstallSnapshotSchema }),
+  }),
+
   deployStatus: defineEvent({
     channel: "coolify:deploy-status",
     payload: z.object({

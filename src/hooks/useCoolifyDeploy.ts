@@ -5,8 +5,17 @@ import {
   coolifyEventClient,
   type CoolifyConnection,
   type CoolifyDeploySnapshot,
+  type CoolifyInstallSnapshot,
 } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
+
+const IDLE_INSTALL: CoolifyInstallSnapshot = {
+  status: "idle",
+  log: "",
+  error: null,
+  dashboardUrl: null,
+  credentials: null,
+};
 
 const IDLE: CoolifyDeploySnapshot = {
   status: "idle",
@@ -52,6 +61,33 @@ export function useCoolifyDeploy(appId: number | null) {
       });
     }
   };
+
+  const [installSnapshot, setInstallSnapshot] =
+    useState<CoolifyInstallSnapshot>(IDLE_INSTALL);
+
+  // The main process owns install state, so re-read it on mount and then
+  // follow pushed updates; an install outlives this component.
+  useEffect(() => {
+    let disposed = false;
+    void ipc.coolify.getInstallSnapshot().then((current) => {
+      if (!disposed) setInstallSnapshot(current);
+    });
+    const unsubscribe = coolifyEventClient.onInstallStatus((payload) => {
+      setInstallSnapshot(payload.snapshot);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const install = useMutation({
+    mutationFn: async (input: {
+      sshHost: string;
+      sshUser: string;
+      sshPort: number;
+    }) => ipc.coolify.install(input),
+  });
 
   const saveToken = useMutation({
     mutationFn: async (input: { instanceUrl: string; token: string }) =>
@@ -129,6 +165,8 @@ export function useCoolifyDeploy(appId: number | null) {
     isClearingToken: clearToken.isPending,
     createProject: createProject.mutateAsync,
     isCreatingProject: createProject.isPending,
+    installSnapshot,
+    install: install.mutateAsync,
     saveToken: saveToken.mutateAsync,
     isSavingToken: saveToken.isPending,
     generateSshKey: generateSshKey.mutateAsync,

@@ -41,6 +41,7 @@ export { coolifyContracts, coolifyEvents, coolifyEventClient } from "./coolify";
 export type {
   CoolifyConnection,
   CoolifyDeploySnapshot,
+  CoolifyInstallSnapshot,
   CoolifyStatus,
   CoolifyDiscovery,
   CoolifyServer,
