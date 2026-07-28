@@ -18,6 +18,7 @@ import { shouldProvisionDatabase } from "@/shared/coolify_provisioning";
 import {
   deployKeyExists,
   ensureDeployKey,
+  regenerateDeployKey,
   isSshAvailable,
   keyFilePath,
   readPublicKey,
@@ -658,6 +659,10 @@ export function registerCoolifyHandlers() {
 
   createTypedHandler(coolifyContracts.generateSshKey, async () => {
     return { publicKey: await ensureDeployKey() };
+  });
+
+  createTypedHandler(coolifyContracts.regenerateSshKey, async () => {
+    return { publicKey: await regenerateDeployKey() };
   });
 
   createTypedHandler(

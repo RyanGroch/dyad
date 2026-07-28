@@ -89,6 +89,11 @@ export function useCoolifyDeploy(appId: number | null) {
     onSuccess: invalidate,
   });
 
+  const regenerateSshKey = useMutation({
+    mutationFn: async () => ipc.coolify.regenerateSshKey(),
+    onSuccess: invalidate,
+  });
+
   const testSsh = useMutation({
     mutationFn: async (input: {
       sshHost: string;
@@ -127,6 +132,8 @@ export function useCoolifyDeploy(appId: number | null) {
     saveToken: saveToken.mutateAsync,
     isSavingToken: saveToken.isPending,
     generateSshKey: generateSshKey.mutateAsync,
+    regenerateSshKey: regenerateSshKey.mutateAsync,
+    isRegeneratingSshKey: regenerateSshKey.isPending,
     isGeneratingSshKey: generateSshKey.isPending,
     testSsh: testSsh.mutateAsync,
     isTestingSsh: testSsh.isPending,

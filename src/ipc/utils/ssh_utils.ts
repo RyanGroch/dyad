@@ -151,6 +151,29 @@ export async function ensureDeployKey(
   return publicKey;
 }
 
+/**
+ * Replaces the key with a freshly generated one and returns its public half.
+ *
+ * The old pair is kept alongside rather than deleted: it is still the only way
+ * back into any server that trusts it, and losing it silently would be worse
+ * than leaving a stale file behind.
+ */
+export async function regenerateDeployKey(
+  keyName: string = DEFAULT_KEY_NAME,
+): Promise<string> {
+  const keyPath = keyFilePath(keyName);
+  if (fs.existsSync(keyPath)) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backup = `${keyPath}.replaced-${stamp}`;
+    fs.renameSync(keyPath, backup);
+    if (fs.existsSync(`${keyPath}.pub`)) {
+      fs.renameSync(`${keyPath}.pub`, `${backup}.pub`);
+    }
+    logger.info(`Kept the previous deploy key at ${backup}`);
+  }
+  return ensureDeployKey(keyName);
+}
+
 /** Maps ssh's stderr to an actionable category for connector UIs. */
 export function classifySshError(
   stderr: string,

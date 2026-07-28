@@ -137,6 +137,12 @@ export const coolifyContracts = {
     output: z.object({ publicKey: z.string() }),
   }),
 
+  regenerateSshKey: defineContract({
+    channel: "coolify:regenerate-ssh-key",
+    input: z.void(),
+    output: z.object({ publicKey: z.string() }),
+  }),
+
   testSsh: defineContract({
     channel: "coolify:test-ssh",
     input: z.object({

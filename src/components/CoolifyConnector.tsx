@@ -50,6 +50,8 @@ export function CoolifyConnector({
     isSavingToken,
     generateSshKey,
     isGeneratingSshKey,
+    regenerateSshKey,
+    isRegeneratingSshKey,
     testSsh,
     isTestingSsh,
     sshTestResult,
@@ -191,6 +193,36 @@ export function CoolifyConnector({
                 }}
               >
                 <Copy className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isRegeneratingSshKey}
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      "Replace this key with a new one? Servers that trust the " +
+                        "current key will reject Dyad until the new one is added " +
+                        "to them. The old key is kept rather than deleted.",
+                    )
+                  ) {
+                    return;
+                  }
+                  try {
+                    await regenerateSshKey();
+                    toast.success("New key generated. Add it to your server.");
+                  } catch (err) {
+                    toast.error(
+                      err instanceof Error ? err.message : String(err),
+                    );
+                  }
+                }}
+              >
+                {isRegeneratingSshKey ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Replace"
+                )}
               </Button>
             </div>
           </div>
