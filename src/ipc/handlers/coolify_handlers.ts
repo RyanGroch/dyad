@@ -556,7 +556,21 @@ async function runDeploy({ appId }: { appId: number }): Promise<void> {
         if (logs) {
           const tail = logs.slice(-4000);
           update(appId, {}, `\n--- deployment log ---\n${tail}\n`);
-          detail = ` Check the deployment log above.`;
+          detail = " Check the deployment log above.";
+          // A build killed rather than failed is nearly always the server
+          // running out of memory or disk, which the log reports only as a
+          // negative exit status.
+          if (
+            /exit status -1|signal: killed|\bKilled\b|cannot allocate memory|no space left on device/i.test(
+              logs,
+            )
+          ) {
+            detail +=
+              " The build was killed rather than failing, which usually means" +
+              " the server ran out of memory or disk. Building needs more" +
+              " headroom than running the app does, so a server that hosts it" +
+              " fine can still fail to build it.";
+          }
         }
       }
       throw new DyadError(
