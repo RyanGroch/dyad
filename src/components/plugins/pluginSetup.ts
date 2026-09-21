@@ -13,6 +13,9 @@ function isInputSatisfied(server: McpServer, input: CatalogInput): boolean {
     case "oauthClientId":
     case "oauthClientSecret":
       return !!server.oauthClientId;
+    // Stored when the server is added from the catalog.
+    case "vendoredOAuthClient":
+      return true;
   }
 }
 

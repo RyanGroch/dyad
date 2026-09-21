@@ -7,9 +7,10 @@ import {
   getRemoteMcpCatalog,
   peekRemoteMcpCatalog,
 } from "@/ipc/shared/remote_mcp_catalog";
-import type {
-  HttpCatalogEntry,
-  McpCatalogEntry,
+import {
+  userSuppliedInputs,
+  type HttpCatalogEntry,
+  type McpCatalogEntry,
 } from "@/ipc/types/mcp_catalog";
 import { oauthStateHasTokens } from "@/ipc/utils/mcp_oauth_provider";
 import { readSettings, tryWriteSettings } from "@/main/settings";
@@ -162,7 +163,7 @@ export async function collectSuggestablePlugins({
       (entry): entry is HttpCatalogEntry =>
         entry.featured === true &&
         entry.transport === "http" &&
-        (entry.inputs?.length ?? 0) === 0 &&
+        userSuppliedInputs(entry.inputs).length === 0 &&
         !declined?.has(entry.slug) &&
         !neverSuggest.has(entry.slug),
     )

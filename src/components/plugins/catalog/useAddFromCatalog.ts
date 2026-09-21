@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { McpCatalogEntry } from "@/ipc/types/mcp_catalog";
+import {
+  userSuppliedInputs,
+  type McpCatalogEntry,
+} from "@/ipc/types/mcp_catalog";
 import { ipc } from "@/ipc/types";
 import { showSuccess } from "@/lib/toast";
 import { invalidateMcpQueries } from "../invalidateMcpQueries";
@@ -58,7 +61,7 @@ export function useAddFromCatalog() {
     // A server that declares inputs was added disabled and needs the user
     // to fill them in, so send them to its setup page instead of
     // connecting.
-    if ((entry.inputs?.length ?? 0) > 0) {
+    if (userSuppliedInputs(entry.inputs).length > 0) {
       navigate({
         to: "/plugins/$serverId",
         params: { serverId: created.id },

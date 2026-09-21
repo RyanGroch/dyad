@@ -2,27 +2,27 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { CatalogInput } from "@/ipc/types/mcp_catalog";
+import type { UserSuppliedInput } from "@/ipc/types/mcp_catalog";
 import type { McpServer } from "@/ipc/types";
 import type { McpServerUpdate } from "@/ipc/types/mcp";
 import { useOauthCallbackPort } from "./AddPluginDialog";
 
 // A stable key per input, and where its value is stored, both derive from
 // `kind` (plus `name` for the ones that address a specific header/var).
-function keyOf(input: CatalogInput): string {
+function keyOf(input: UserSuppliedInput): string {
   if (input.kind === "header") return `header:${input.name}`;
   if (input.kind === "env") return `env:${input.name}`;
   return input.kind;
 }
 
-function labelOf(input: CatalogInput): string {
+function labelOf(input: UserSuppliedInput): string {
   if (input.kind === "oauthClientId") return "Client ID";
   if (input.kind === "oauthClientSecret") return "Client secret";
   return input.label;
 }
 
 // The client ID is a public identifier; keys and secrets are masked.
-function isSecret(input: CatalogInput): boolean {
+function isSecret(input: UserSuppliedInput): boolean {
   return input.kind !== "oauthClientId";
 }
 
@@ -38,7 +38,7 @@ export function PluginSetupSection({
   onSave,
 }: {
   server: McpServer;
-  inputs: CatalogInput[];
+  inputs: UserSuppliedInput[];
   isSaving: boolean;
   onSave: (update: McpServerUpdate) => Promise<void>;
 }) {
