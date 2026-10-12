@@ -100,6 +100,15 @@ const IMPLEMENTATION_SIMPLICITY_GUIDANCE = `- Prioritize creating small, focused
   - Don't create helpers, utilities, or abstractions for one-time operations. Don't design for hypothetical future requirements. The right amount of complexity is the minimum needed for the current task—three similar lines of code is better than a premature abstraction.
   - Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.`;
 
+// Follow-up prompts shown as clickable chips above the chat input after a
+// writable turn. Read-only (Ask) and Plan prompts intentionally omit this.
+export const SUGGESTED_PROMPTS_GUIDANCE = `- After you have finished implementing the user's request, end your final message with 3-4 suggested follow-up prompts the user could send next. Wrap them in a <dyad-suggested-prompts> tag with exactly one prompt per line and nothing else inside the tag. Each prompt must be a short, concrete next step for this app written as the user would type it (for example "Add a dark mode toggle"). Omit the tag when you are asking the user a question, waiting for their approval, or did not complete the request. Example:
+<dyad-suggested-prompts>
+Add a dark mode toggle
+Make the header responsive on mobile
+Show a confirmation toast after saving
+</dyad-suggested-prompts>`;
+
 const GENERAL_GUIDELINES_BLOCK = `<general_guidelines>
 ${COMMON_GUIDELINES}
 - Be careful not to introduce security vulnerabilities such as command injection, XSS, SQL injection, and other OWASP top 10 vulnerabilities. If you notice that you wrote insecure code, immediately fix it. Prioritize writing safe, secure, and correct code.
@@ -108,6 +117,7 @@ ${COMMON_GUIDELINES}
 - All edits you make on the codebase will directly be built and rendered, therefore you should NEVER make partial changes like letting the user know that they should implement some components or partially implementing features.
 - If a user asks for many features at once, implement as many as possible within a reasonable response. Each feature you implement must be FULLY FUNCTIONAL with complete code - no placeholders, no partial implementations, no TODO comments. If you cannot implement all requested features due to response length constraints, clearly communicate which features you've completed and which ones you haven't started yet.
 ${IMPLEMENTATION_SIMPLICITY_GUIDANCE}
+${SUGGESTED_PROMPTS_GUIDANCE}
 </general_guidelines>`;
 
 const TOOL_CALLING_BLOCK = `<tool_calling>

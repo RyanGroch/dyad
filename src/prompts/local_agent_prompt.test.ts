@@ -4,6 +4,7 @@ import {
   constructImplementerPrompt,
   constructLocalAgentPrompt,
   resolveImplementerProvider,
+  SUGGESTED_PROMPTS_GUIDANCE,
 } from "@/prompts/local_agent_prompt";
 import {
   SUPABASE_DISCONNECTED_SYSTEM_PROMPT,
@@ -740,5 +741,28 @@ describe("build agent prompt", () => {
     expect(prompt).not.toContain('<app_blueprint mode="required">');
     expect(prompt).toContain("**Clarify (when needed):**");
     expect(prompt).toContain("**Implement:**");
+  });
+});
+
+describe("suggested follow-up prompts guidance", () => {
+  it("is included for writable Pro, Basic, and Build prompts", () => {
+    expect(constructLocalAgentPrompt(undefined)).toContain(
+      SUGGESTED_PROMPTS_GUIDANCE,
+    );
+    expect(
+      constructLocalAgentPrompt(undefined, undefined, { basicAgentMode: true }),
+    ).toContain(SUGGESTED_PROMPTS_GUIDANCE);
+    expect(constructBuildAgentPrompt(undefined)).toContain(
+      SUGGESTED_PROMPTS_GUIDANCE,
+    );
+  });
+
+  it("is omitted from read-only and Implementer prompts", () => {
+    expect(
+      constructLocalAgentPrompt(undefined, undefined, { readOnly: true }),
+    ).not.toContain("dyad-suggested-prompts");
+    expect(constructImplementerPrompt(undefined)).not.toContain(
+      "dyad-suggested-prompts",
+    );
   });
 });
