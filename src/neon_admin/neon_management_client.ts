@@ -6,6 +6,7 @@ import { IS_TEST_BUILD } from "../ipc/utils/test_utils";
 import { fetchWithRetry } from "../ipc/utils/retryWithRateLimit";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getNeonErrorMessage } from "./neon_errors";
+import { instrumentAxiosInstance } from "../ipc/utils/external_api_errors";
 
 const logger = log.scope("neon_management_client");
 
@@ -389,16 +390,16 @@ export async function getNeonClient(): Promise<Api<unknown>> {
       );
     }
 
-    return createApiClient({
-      apiKey: newAccessToken,
-      baseURL: getNeonApiBaseUrl(),
-    });
+    return createNeonApiClient(newAccessToken);
   }
 
-  return createApiClient({
-    apiKey: neonAccessToken,
-    baseURL: getNeonApiBaseUrl(),
-  });
+  return createNeonApiClient(neonAccessToken);
+}
+
+function createNeonApiClient(apiKey: string): Api<unknown> {
+  const client = createApiClient({ apiKey, baseURL: getNeonApiBaseUrl() });
+  instrumentAxiosInstance("neon", client.instance);
+  return client;
 }
 
 // Overridable so benchmarks/tests can point the management client at a local

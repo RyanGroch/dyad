@@ -1219,3 +1219,47 @@ describe("getInitialLoadTelemetryProperties pagefile", () => {
     expect(properties).not.toHaveProperty("pagefile_mode");
   });
 });
+
+describe("external_api:error telemetry", () => {
+  function apiErrorEvent(properties: Record<string, unknown>) {
+    return {
+      event: "external_api:error",
+      properties: {
+        api_service: "neon",
+        api_method: "POST",
+        api_route: "/projects/{id}/branches",
+        api_status: 422,
+        api_error_code: "BRANCHES_LIMIT_EXCEEDED",
+        ...properties,
+      },
+    };
+  }
+
+  it("is never sampled out", () => {
+    expect(shouldBypassNonProTelemetrySampling(apiErrorEvent({}))).toBe(true);
+  });
+
+  it("deduplicates repeats of the same API error", () => {
+    const deduper = new PostHogErrorDeduper();
+
+    expect(deduper.process(apiErrorEvent({}), false, 0)).not.toBeNull();
+    expect(deduper.process(apiErrorEvent({}), false, 1_000)).toBeNull();
+  });
+
+  it("does not let one API error suppress a different one", () => {
+    const deduper = new PostHogErrorDeduper();
+
+    expect(deduper.process(apiErrorEvent({}), false, 0)).not.toBeNull();
+    for (const different of [
+      { api_service: "vercel" },
+      { api_method: "GET" },
+      { api_route: "/projects/{id}/endpoints" },
+      { api_status: 404 },
+      { api_error_code: "NOT_FOUND" },
+    ]) {
+      expect(
+        deduper.process(apiErrorEvent(different), false, 1_000),
+      ).not.toBeNull();
+    }
+  });
+});

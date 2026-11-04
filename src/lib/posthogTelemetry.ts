@@ -38,6 +38,13 @@ const ERROR_FINGERPRINT_CONTEXT_KEYS = [
   "failure_category",
   "provider",
   "source",
+  // `external_api:error` has no exception fields; these keep one API error
+  // from suppressing a different one.
+  "api_service",
+  "api_method",
+  "api_route",
+  "api_status",
+  "api_error_code",
 ] as const;
 
 type TelemetryStorage = Pick<Storage, "getItem" | "setItem">;

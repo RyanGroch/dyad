@@ -79,6 +79,7 @@ export function getVercelDeploymentError(error: unknown): Error {
       error.statusCode === 400 || error.statusCode === 422
         ? DyadErrorKind.Precondition
         : getVercelErrorKind(error.statusCode),
+      { cause: error },
     );
   }
   return error instanceof Error
@@ -115,6 +116,7 @@ export function getVercelProjectCreationError(error: unknown): Error {
     return new DyadError(
       `Vercel project setup failed (HTTP ${error.statusCode}): ${(detail || fallback).slice(0, 4000)}${recovery}`,
       getVercelErrorKind(error.statusCode),
+      { cause: error },
     );
   }
 

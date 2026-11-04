@@ -2,6 +2,8 @@ import { Vercel } from "@vercel/sdk";
 import { readSettings } from "../../main/settings";
 import log from "electron-log";
 import { IS_TEST_BUILD } from "./test_utils";
+import { HTTPClient } from "@vercel/sdk/lib/http.js";
+import { createExternalApiFetch } from "./external_api_errors";
 
 const logger = log.scope("vercel_utils");
 
@@ -18,9 +20,13 @@ export const VERCEL_API_BASE = IS_TEST_BUILD
   ? `${TEST_SERVER_BASE}/vercel/api`
   : "https://api.vercel.com";
 
+/** Fetch for Vercel API calls made outside the SDK, so failures are reported. */
+export const fetchVercel = createExternalApiFetch("vercel");
+
 export function createVercelClient(token: string): Vercel {
   return new Vercel({
     bearerToken: token,
+    httpClient: new HTTPClient({ fetcher: fetchVercel }),
     ...(IS_TEST_BUILD && { serverURL: VERCEL_API_BASE }),
   });
 }
@@ -37,12 +43,15 @@ export async function getVercelTeamSlug(
       return null;
     }
 
-    const response = await fetch(`${VERCEL_API_BASE}/v2/teams/${teamId}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const response = await fetchVercel(
+      `${VERCEL_API_BASE}/v2/teams/${teamId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       logger.error(

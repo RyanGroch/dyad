@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import log from "electron-log";
 import {
   createVercelClient,
+  fetchVercel,
   VERCEL_API_BASE,
   type VercelProjectFramework,
 } from "../utils/vercel_utils";
@@ -76,7 +77,7 @@ async function getVercelProjects(
     url.searchParams.set("search", options.search);
   }
 
-  const response = await fetch(url.toString(), {
+  const response = await fetchVercel(url.toString(), {
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",

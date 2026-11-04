@@ -320,3 +320,32 @@ describe("GitLab errors are not reported at all", () => {
     expect(shouldFilterTelemetryException(transportError)).toBe(true);
   });
 });
+
+describe("API failures already reported as external_api:error", () => {
+  it("are not also sent as exceptions, even when wrapped", async () => {
+    const { markExternalApiFailureReported } =
+      await import("./external_api_error_marks");
+    const response = new Response(null, { status: 503 });
+    markExternalApiFailureReported(response);
+    const sdkError = Object.assign(new Error("Service Unavailable"), {
+      rawResponse: response,
+    });
+
+    expect(shouldFilterTelemetryException(sdkError)).toBe(true);
+    expect(
+      shouldFilterTelemetryException(
+        new DyadError("Vercel request failed", DyadErrorKind.External, {
+          cause: sdkError,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not hide unrelated exceptions", () => {
+    expect(
+      shouldFilterTelemetryException(
+        new DyadError("Vercel request failed", DyadErrorKind.External),
+      ),
+    ).toBe(false);
+  });
+});

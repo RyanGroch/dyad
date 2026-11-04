@@ -15,6 +15,7 @@ import {
   GITLAB_REQUEST_ERROR_NAME,
   GITLAB_TRANSPORT_ERROR_NAME,
 } from "@/shared/gitlab_error_names";
+import { isExternalApiFailureReported } from "./external_api_error_marks";
 
 const logger = log.scope("telemetry");
 const FILTERED_EXCEPTION_MESSAGES = new Set([
@@ -134,6 +135,11 @@ function framesOnly(err: Error): string | undefined {
 }
 
 export function shouldFilterTelemetryException(error: unknown): boolean {
+  // Already sent as `external_api:error`, which carries the status and route.
+  if (isExternalApiFailureReported(error)) {
+    return true;
+  }
+
   // Ahead of the kind check, which returns for every DyadError: this one is a
   // DyadError too. A non-2xx from a self-hosted Coolify is that instance
   // rejecting a request rather than a fault here, and its message carries
