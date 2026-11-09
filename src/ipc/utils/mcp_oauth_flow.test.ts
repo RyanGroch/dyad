@@ -73,6 +73,8 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
+  // App-specific plugin configurations; these tests only use plugin rows.
+  mcpAppConfigs: { id: "app_config_id", oauthState: "app_config_oauth_state" },
   mcpServers: { id: "id", oauthState: "oauth_state" },
 }));
 

@@ -211,7 +211,9 @@ export const QueryInvalidationScopeSchema = z.discriminatedUnion("family", [
   z.object({ family: z.literal("mcp-catalog") }),
   z.object({
     family: z.literal("mcp-tools"),
-    serverId: z.number().int().positive().optional(),
+    // A connection id: negative for an app-specific plugin configuration
+    // (src/shared/mcp_connection_id.ts).
+    serverId: z.number().int().optional(),
   }),
 ]);
 export type QueryInvalidationScope = z.infer<

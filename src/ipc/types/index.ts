@@ -274,6 +274,8 @@ export type {
 // MCP types
 export type {
   McpServer,
+  McpAppConfig,
+  McpConnectionConfig,
   McpTransport,
   CreateMcpServer,
   McpServerUpdate,

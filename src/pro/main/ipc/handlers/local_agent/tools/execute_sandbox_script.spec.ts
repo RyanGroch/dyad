@@ -620,6 +620,7 @@ describe("executeSandboxScriptTool", () => {
       toolKey: "srv__hello",
       serverId: 1,
       serverName: "srv",
+      displayName: "srv",
       toolName: "hello",
       inputSchema: { type: "object" } as any,
     };
@@ -696,6 +697,7 @@ describe("buildExecuteSandboxScriptDescription (search mode)", () => {
       toolKey: `${serverName}__${toolName}`,
       serverId: 1,
       serverName,
+      displayName: serverName,
       toolName,
       inputSchema: { type: "object" } as any,
     };

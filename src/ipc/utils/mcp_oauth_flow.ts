@@ -6,15 +6,18 @@ import {
 } from "node:http";
 import log from "electron-log";
 import { auth } from "@ai-sdk/mcp";
-import { eq } from "drizzle-orm";
-import { db } from "../../db";
-import { mcpServers } from "../../db/schema";
 import {
   DyadOAuthClientProvider,
   decryptFromString,
   issueMcpOAuthWriteAuthority,
+  oauthStateHasTokens,
   revokeMcpOAuthWriteAuthority,
 } from "./mcp_oauth_provider";
+import {
+  listPluginOAuthStates,
+  readMcpConnection,
+  type McpConnectionRecord,
+} from "./mcp_connection_store";
 import { DEFAULT_OAUTH_CALLBACK_PORT } from "../types/mcp";
 import { mcpManager } from "./mcp_manager";
 import { DyadError, DyadErrorKind } from "../../errors/dyad_error";
@@ -387,11 +390,9 @@ async function prepareAndRunOAuthFlow(
         : "MCP server configuration is changing; retry OAuth in a moment.",
     };
   }
-  const rows = await db
-    .select()
-    .from(mcpServers)
-    .where(eq(mcpServers.id, params.serverId));
-  const server = rows[0];
+  // `serverId` is a connection id: a plugin or an app-specific
+  // configuration of one.
+  const server = await readMcpConnection(params.serverId);
   if (
     oauthShuttingDown ||
     mutatingServers.has(params.serverId) ||
@@ -415,7 +416,7 @@ async function prepareAndRunOAuthFlow(
   if (!server.url) {
     return {
       success: false,
-      error: `MCP server "${server.name}" has no URL; OAuth requires HTTP transport.`,
+      error: `MCP server "${server.displayName}" has no URL; OAuth requires HTTP transport.`,
     };
   }
   if (server.transport !== "http") {
@@ -442,10 +443,11 @@ async function prepareAndRunOAuthFlow(
       DyadErrorKind.Precondition,
     );
   }
+  const requestAccountSelection = await anotherConfigurationIsConnected(server);
   const expectedState = generateState();
-  const writeAuthority = issueMcpOAuthWriteAuthority(server.id);
+  const writeAuthority = issueMcpOAuthWriteAuthority(server.connectionId);
   const provider = new DyadOAuthClientProvider({
-    serverId: server.id,
+    serverId: server.connectionId,
     callbackPort,
     scope,
     preregisteredClientId: server.oauthClientId ?? undefined,
@@ -453,13 +455,14 @@ async function prepareAndRunOAuthFlow(
     flowState: expectedState,
     allowInteractive: true,
     writeAuthority,
+    requestAccountSelection,
   });
 
   let silentlyAuthorized = false;
   onAdmitted();
   const result = await mcpOAuthRegistry.connect({
     port: callbackPort,
-    serverId: server.id,
+    serverId: server.connectionId,
     rendererMessageId: params.rendererMessageId,
     expectedState,
     authorize: async (authorizationCode) => {
@@ -477,14 +480,31 @@ async function prepareAndRunOAuthFlow(
 
   if (result.success) {
     if (silentlyAuthorized) {
-      await mcpManager.dispose(server.id);
+      await mcpManager.dispose(server.connectionId);
     } else {
-      void mcpManager.dispose(server.id).catch(() => {});
+      void mcpManager.dispose(server.connectionId).catch(() => {});
     }
   } else {
-    logger.warn(`OAuth flow failed for server ${server.id}: ${result.error}`);
+    logger.warn(
+      `OAuth flow failed for server ${server.connectionId}: ${result.error}`,
+    );
   }
   return result;
+}
+
+/**
+ * Whether a different configuration of the same plugin already holds
+ * tokens. Signing in another one is then most likely meant for a different
+ * account, so the flow asks the provider for its account chooser.
+ */
+async function anotherConfigurationIsConnected(
+  server: McpConnectionRecord,
+): Promise<boolean> {
+  const states = await listPluginOAuthStates(server.serverId);
+  return states.some(
+    ({ connectionId, oauthState }) =>
+      connectionId !== server.connectionId && oauthStateHasTokens(oauthState),
+  );
 }
 
 export async function disconnectOAuth(
@@ -494,11 +514,7 @@ export async function disconnectOAuth(
     serverId,
     "OAuth flow cancelled because the server was disconnected.",
     async () => {
-      const rows = await db
-        .select({ id: mcpServers.id })
-        .from(mcpServers)
-        .where(eq(mcpServers.id, serverId));
-      if (!rows[0]) {
+      if (!(await readMcpConnection(serverId))) {
         throw new DyadError(
           `MCP server not found: ${serverId}`,
           DyadErrorKind.NotFound,

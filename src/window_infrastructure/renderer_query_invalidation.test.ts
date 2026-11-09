@@ -153,6 +153,7 @@ describe("RendererQueryInvalidationConsumer", () => {
       queryKeys.settings.all,
       queryKeys.neon.all,
       queryKeys.mcp.servers,
+      queryKeys.mcp.appConfigs,
       queryKeys.mcp.catalog,
       queryKeys.mcp.toolsByServer.all,
     ]);

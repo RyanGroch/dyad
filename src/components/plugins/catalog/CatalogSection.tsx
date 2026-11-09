@@ -117,6 +117,7 @@ export function CatalogSection() {
                   serverBySlug,
                   connectingServerId,
                 })}
+                appConfigCount={serverBySlug.get(entry.slug)?.appConfigCount}
                 isAdding={addingSlug === entry.slug}
                 onAdd={addFromCatalog}
               />
@@ -140,6 +141,7 @@ export function CatalogSection() {
                   serverBySlug,
                   connectingServerId,
                 })}
+                appConfigCount={serverBySlug.get(entry.slug)?.appConfigCount}
                 isAdding={addingSlug === entry.slug}
                 onAdd={addFromCatalog}
               />

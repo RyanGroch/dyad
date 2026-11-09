@@ -6,8 +6,9 @@ import {
   isRequiredInput,
   type UserSuppliedInput,
 } from "@/ipc/types/mcp_catalog";
-import type { McpServer } from "@/ipc/types";
+import type { McpConnectionConfig } from "@/ipc/types";
 import type { McpServerUpdate } from "@/ipc/types/mcp";
+import { isAppConfigConnectionId } from "@/shared/mcp_connection_id";
 import { useOauthCallbackPort } from "./AddPluginDialog";
 
 // A stable key per input, and where its value is stored, both derive from
@@ -45,7 +46,7 @@ export function PluginSetupSection({
   variant = "setup",
   disabled = false,
 }: {
-  server: McpServer;
+  server: McpConnectionConfig;
   inputs: UserSuppliedInput[];
   isSaving: boolean;
   onSave: (update: McpServerUpdate) => Promise<void>;
@@ -69,9 +70,12 @@ export function PluginSetupSection({
   );
 
   const save = async () => {
-    const update: McpServerUpdate = isSetup
-      ? { id: server.id, enabled: true }
-      : { id: server.id };
+    // Finishing setup turns a plugin on. An app-specific configuration has
+    // no switch of its own; it follows its plugin's.
+    const update: McpServerUpdate =
+      isSetup && !isAppConfigConnectionId(server.id)
+        ? { id: server.id, enabled: true }
+        : { id: server.id };
     const headers: Record<string, string> = { ...server.headersJson };
     const env: Record<string, string> = { ...server.envJson };
     let wroteHeader = false;

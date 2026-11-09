@@ -364,6 +364,7 @@ it("keeps third-party MCP tools visible when the sandbox description exceeds the
       toolKey: "Stripe__create_customer",
       serverId: 1,
       serverName: "Stripe",
+      displayName: "Stripe",
       toolName: "create_customer",
       description: "Create a Stripe customer. ".repeat(200),
       inputSchema: { type: "object", properties: {} },

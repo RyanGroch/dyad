@@ -11,9 +11,10 @@ import {
   type McpToolSet,
 } from "@/ipc/utils/mcp_manager";
 import { SANDBOX_HOST_CALL_NAMES } from "@/ipc/utils/sandbox/capabilities";
-import { mcpServers } from "@/db/schema";
-import { db } from "@/db";
-import { eq } from "drizzle-orm";
+import {
+  resolveMcpConnectionsForApp,
+  type ResolvedMcpConnection,
+} from "@/ipc/utils/mcp_app_scoping";
 import { sanitizeMcpName } from "@/ipc/utils/mcp_tool_utils";
 import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
 import { readSettings } from "@/main/settings";
@@ -46,8 +47,12 @@ export interface McpToolDef {
   jsName: string;
   /** Original MCP tool key (serverName__toolName, matching getMcpTools). */
   toolKey: string;
+  /** Connection id: the plugin, or the app-specific configuration in use. */
   serverId: number;
+  /** The plugin's name, which the agent sees and tool keys are built from. */
   serverName: string;
+  /** Shown to the user; names the app-specific configuration when one is used. */
+  displayName: string;
   toolName: string;
   description?: string;
   /** Tool input schema, normalized to JSON Schema at collection time. */
@@ -73,7 +78,7 @@ function toJsIdentifier(name: string): string {
 }
 
 export interface LoadedMcpServerTools {
-  server: typeof mcpServers.$inferSelect;
+  server: ResolvedMcpConnection;
   tools: McpToolSet;
 }
 
@@ -84,16 +89,16 @@ export interface LoadedMcpServerTools {
  * that fail or time out are skipped; results keep the servers' query order.
  */
 export async function loadEnabledMcpServerTools({
+  appId,
   abortSignal,
   onWarningMessage,
 }: {
+  /** The chat's app; picks which configuration of each plugin is used. */
+  appId: number;
   abortSignal?: AbortSignal;
   onWarningMessage?: (message: string) => void;
-} = {}): Promise<LoadedMcpServerTools[]> {
-  const servers = await db
-    .select()
-    .from(mcpServers)
-    .where(eq(mcpServers.enabled, true as any));
+}): Promise<LoadedMcpServerTools[]> {
+  const servers = await resolveMcpConnectionsForApp(appId);
   if (servers.length === 0) return [];
 
   const startedAt = performance.now();
@@ -101,11 +106,11 @@ export async function loadEnabledMcpServerTools({
     servers.map(async (server) => {
       const serverStartedAt = performance.now();
       try {
-        const tools = await mcpManager.listToolsWithin(server.id, {
+        const tools = await mcpManager.listToolsWithin(server.connectionId, {
           signal: abortSignal,
         });
         logger.info(
-          `Loaded ${Object.keys(tools).length} tools from MCP server ${server.id} (${server.name}) in ${elapsedMs(serverStartedAt)}ms`,
+          `Loaded ${Object.keys(tools).length} tools from MCP server ${server.connectionId} (${server.displayName}) in ${elapsedMs(serverStartedAt)}ms`,
         );
         return { server, tools };
       } catch (error) {
@@ -113,14 +118,14 @@ export async function loadEnabledMcpServerTools({
         if (error instanceof McpListToolsTimeoutError) {
           const seconds = MCP_LIST_TOOLS_TIMEOUT_MS / 1000;
           logger.warn(
-            `MCP server ${server.id} (${server.name}, ${server.transport}) did not return tools within ${seconds}s; skipping it for this turn`,
+            `MCP server ${server.connectionId} (${server.displayName}, ${server.transport}) did not return tools within ${seconds}s; skipping it for this turn`,
           );
           onWarningMessage?.(
-            `MCP server "${server.name}" didn't respond within ${seconds}s, so its tools weren't available for this response.`,
+            `MCP server "${server.displayName}" didn't respond within ${seconds}s, so its tools weren't available for this response.`,
           );
         } else {
           logger.warn(
-            `Failed to load tools for MCP server ${server.id} (${server.name})`,
+            `Failed to load tools for MCP server ${server.connectionId} (${server.displayName})`,
             error,
           );
         }
@@ -143,7 +148,7 @@ function elapsedMs(startedAt: number): number {
 }
 
 export async function collectMcpToolDefs(
-  options: Parameters<typeof loadEnabledMcpServerTools>[0] = {},
+  options: Parameters<typeof loadEnabledMcpServerTools>[0],
 ): Promise<McpToolDef[]> {
   let loadedServers: LoadedMcpServerTools[];
   try {
@@ -166,7 +171,7 @@ export async function collectMcpToolDefs(
   // maps are merged.
   const seenJsNames = new Set<string>(SANDBOX_HOST_CALL_NAMES);
   for (const { server: s, tools: toolSet } of loadedServers) {
-    const serverNameSanitized = sanitizeMcpName(s.name || "");
+    const serverNameSanitized = sanitizeMcpName(s.pluginName || "");
     for (const [toolName, mcpTool] of Object.entries(toolSet)) {
       const sanitizedToolName = sanitizeMcpName(toolName);
       const toolKey = `${serverNameSanitized}__${sanitizedToolName}`;
@@ -191,8 +196,9 @@ export async function collectMcpToolDefs(
       defs.push({
         jsName,
         toolKey,
-        serverId: s.id,
-        serverName: s.name || "",
+        serverId: s.connectionId,
+        serverName: s.pluginName || "",
+        displayName: s.displayName || s.pluginName || "",
         toolName,
         description: mcpTool.description,
         inputSchema,
@@ -249,7 +255,7 @@ export function buildMcpCapabilityMap(params: {
         params.event,
         {
           serverId: def.serverId,
-          serverName: def.serverName,
+          serverName: def.displayName,
           toolName: def.toolName,
           toolDescription: def.description,
           inputPreview,
@@ -279,7 +285,7 @@ export function buildMcpCapabilityMap(params: {
         ? ` auto-approved-reason="${escapeXmlAttr(autoApprovedReason)}"`
         : "";
       params.ctx.onXmlComplete(
-        `<dyad-mcp-tool-call server="${escapeXmlAttr(def.serverName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}"${autoApprovedAttr}${truncatedFromAttr(argsPreview)}>\n${escapeXmlContent(argsPreview.text)}\n</dyad-mcp-tool-call>`,
+        `<dyad-mcp-tool-call server="${escapeXmlAttr(def.displayName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}"${autoApprovedAttr}${truncatedFromAttr(argsPreview)}>\n${escapeXmlContent(argsPreview.text)}\n</dyad-mcp-tool-call>`,
       );
 
       let executionStarted = false;
@@ -334,7 +340,7 @@ export function buildMcpCapabilityMap(params: {
           transcriptBudget,
         );
         params.ctx.onXmlComplete(
-          `<dyad-mcp-tool-result server="${escapeXmlAttr(def.serverName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}"${truncatedFromAttr(resultPreview)}${toolTruncatedAttr(safeResult.truncated)}>\n${escapeXmlContent(resultPreview.text)}\n</dyad-mcp-tool-result>`,
+          `<dyad-mcp-tool-result server="${escapeXmlAttr(def.displayName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}"${truncatedFromAttr(resultPreview)}${toolTruncatedAttr(safeResult.truncated)}>\n${escapeXmlContent(resultPreview.text)}\n</dyad-mcp-tool-result>`,
         );
         return safeResult.value;
       } catch (error) {
@@ -357,7 +363,7 @@ export function buildMcpCapabilityMap(params: {
           transcriptBudget,
         );
         params.ctx.onXmlComplete(
-          `<dyad-mcp-tool-result server="${escapeXmlAttr(def.serverName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}" is-error="true"${truncatedFromAttr(errorPreview)}>\n${escapeXmlContent(errorPreview.text)}\n</dyad-mcp-tool-result>`,
+          `<dyad-mcp-tool-result server="${escapeXmlAttr(def.displayName)}" tool="${escapeXmlAttr(def.toolName)}" call-id="${escapeXmlAttr(callId)}" is-error="true"${truncatedFromAttr(errorPreview)}>\n${escapeXmlContent(errorPreview.text)}\n</dyad-mcp-tool-result>`,
         );
         const outputMessage = previewMcpPayload(
           safeErrorMessage,

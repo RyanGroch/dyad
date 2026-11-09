@@ -1,18 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  servers: [] as Array<{ id: number; name: string; transport: string }>,
+  servers: [] as Array<{
+    connectionId: number;
+    serverId: number;
+    pluginName: string;
+    displayName: string;
+    transport: string;
+  }>,
+  resolveMcpConnectionsForApp: vi.fn(),
   listToolsWithin: vi.fn(),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: async () => mocks.servers,
-      }),
-    }),
-  },
+vi.mock("@/ipc/utils/mcp_app_scoping", () => ({
+  resolveMcpConnectionsForApp: mocks.resolveMcpConnectionsForApp,
 }));
 
 vi.mock("@/ipc/utils/mcp_manager", () => {
@@ -39,8 +40,18 @@ const { McpListToolsTimeoutError } = await import("@/ipc/utils/mcp_manager");
 const { collectMcpToolDefs, getCachedMcpToolDefs, loadEnabledMcpServerTools } =
   await import("./mcp_type_defs");
 
-const figma = { id: 1, name: "Figma", transport: "http" };
-const stripe = { id: 2, name: "Stripe", transport: "http" };
+function connection(id: number, name: string) {
+  return {
+    connectionId: id,
+    serverId: id,
+    pluginName: name,
+    displayName: name,
+    transport: "http",
+  };
+}
+const figma = connection(1, "Figma");
+const stripe = connection(2, "Stripe");
+const APP_ID = 7;
 const stripeTools = {
   list_customers: { description: "List customers", inputSchema: {} },
 };
@@ -48,18 +59,24 @@ const stripeTools = {
 describe("loadEnabledMcpServerTools", () => {
   beforeEach(() => {
     mocks.servers = [figma, stripe];
+    mocks.resolveMcpConnectionsForApp.mockImplementation(
+      async () => mocks.servers,
+    );
     mocks.listToolsWithin.mockReset();
   });
 
   it("skips a server that times out, keeps the others, and warns the user", async () => {
     mocks.listToolsWithin.mockImplementation(async (serverId: number) => {
-      if (serverId === figma.id)
+      if (serverId === figma.connectionId)
         throw new McpListToolsTimeoutError(serverId, 10_000);
       return stripeTools;
     });
     const onWarningMessage = vi.fn();
 
-    const loaded = await loadEnabledMcpServerTools({ onWarningMessage });
+    const loaded = await loadEnabledMcpServerTools({
+      appId: APP_ID,
+      onWarningMessage,
+    });
 
     expect(loaded).toEqual([{ server: stripe, tools: stripeTools }]);
     expect(onWarningMessage).toHaveBeenCalledTimes(1);
@@ -73,20 +90,22 @@ describe("loadEnabledMcpServerTools", () => {
     const started: number[] = [];
     mocks.listToolsWithin.mockImplementation(async (serverId: number) => {
       started.push(serverId);
-      if (serverId === figma.id) {
+      if (serverId === figma.connectionId) {
         await new Promise<void>((resolve) => (releaseFigma = resolve));
         return {};
       }
       return stripeTools;
     });
 
-    const loading = loadEnabledMcpServerTools();
-    await vi.waitFor(() => expect(started).toEqual([figma.id, stripe.id]));
+    const loading = loadEnabledMcpServerTools({ appId: APP_ID });
+    await vi.waitFor(() =>
+      expect(started).toEqual([figma.connectionId, stripe.connectionId]),
+    );
     releaseFigma();
 
-    expect((await loading).map(({ server }) => server.id)).toEqual([
-      figma.id,
-      stripe.id,
+    expect((await loading).map(({ server }) => server.connectionId)).toEqual([
+      figma.connectionId,
+      stripe.connectionId,
     ]);
   });
 
@@ -102,6 +121,7 @@ describe("loadEnabledMcpServerTools", () => {
     const onWarningMessage = vi.fn();
 
     const loading = loadEnabledMcpServerTools({
+      appId: APP_ID,
       abortSignal: controller.signal,
       onWarningMessage,
     });
@@ -121,14 +141,19 @@ describe("loadEnabledMcpServerTools", () => {
 
   it("does not warn for ordinary failures such as a missing OAuth connection", async () => {
     mocks.listToolsWithin.mockImplementation(async (serverId: number) => {
-      if (serverId === figma.id) throw new Error("401 Unauthorized");
+      if (serverId === figma.connectionId) throw new Error("401 Unauthorized");
       return stripeTools;
     });
     const onWarningMessage = vi.fn();
 
-    const loaded = await loadEnabledMcpServerTools({ onWarningMessage });
+    const loaded = await loadEnabledMcpServerTools({
+      appId: APP_ID,
+      onWarningMessage,
+    });
 
-    expect(loaded.map(({ server }) => server.id)).toEqual([stripe.id]);
+    expect(loaded.map(({ server }) => server.connectionId)).toEqual([
+      stripe.connectionId,
+    ]);
     expect(onWarningMessage).not.toHaveBeenCalled();
   });
 });
@@ -136,24 +161,51 @@ describe("loadEnabledMcpServerTools", () => {
 describe("collectMcpToolDefs", () => {
   beforeEach(() => {
     mocks.servers = [figma, stripe];
+    mocks.resolveMcpConnectionsForApp.mockImplementation(
+      async () => mocks.servers,
+    );
     mocks.listToolsWithin.mockReset();
+  });
+
+  it("uses the configuration the chat's app uses, keyed by the plugin's name", async () => {
+    mocks.servers = [
+      {
+        connectionId: -5,
+        serverId: stripe.serverId,
+        pluginName: "Stripe",
+        displayName: "Stripe (Test account)",
+        transport: "http",
+      },
+    ];
+    mocks.listToolsWithin.mockResolvedValue(stripeTools);
+
+    const [def] = await collectMcpToolDefs({ appId: APP_ID });
+
+    expect(mocks.resolveMcpConnectionsForApp).toHaveBeenCalledWith(APP_ID);
+    expect(mocks.listToolsWithin).toHaveBeenCalledWith(-5, expect.anything());
+    expect(def).toMatchObject({
+      toolKey: "Stripe__list_customers",
+      serverId: -5,
+      serverName: "Stripe",
+      displayName: "Stripe (Test account)",
+    });
   });
 
   it("builds defs from the servers that answered", async () => {
     mocks.listToolsWithin.mockImplementation(async (serverId: number) => {
-      if (serverId === figma.id)
+      if (serverId === figma.connectionId)
         throw new McpListToolsTimeoutError(serverId, 10_000);
       return stripeTools;
     });
 
-    const defs = await collectMcpToolDefs();
+    const defs = await collectMcpToolDefs({ appId: APP_ID });
 
     expect(defs.map((d) => d.toolKey)).toEqual(["Stripe__list_customers"]);
   });
 
   it("keeps the last complete cache when the turn is stopped mid-load", async () => {
     mocks.listToolsWithin.mockResolvedValue(stripeTools);
-    await collectMcpToolDefs();
+    await collectMcpToolDefs({ appId: APP_ID });
     const complete = getCachedMcpToolDefs();
     expect(complete).toHaveLength(2);
 
@@ -165,7 +217,10 @@ describe("collectMcpToolDefs", () => {
           signal.addEventListener("abort", () => reject(signal.reason));
         }),
     );
-    const loading = collectMcpToolDefs({ abortSignal: controller.signal });
+    const loading = collectMcpToolDefs({
+      appId: APP_ID,
+      abortSignal: controller.signal,
+    });
     await vi.waitFor(() => {
       expect(mocks.listToolsWithin).toHaveBeenCalledTimes(4);
     });

@@ -411,6 +411,7 @@ export const queryKeys = {
   mcp: {
     all: ["mcp"] as const,
     servers: ["mcp", "servers"] as const,
+    appConfigs: ["mcp", "app-configs"] as const,
     toolsByServer: {
       all: ["mcp", "tools-by-server"] as const,
       list: ({ serverIds }: { serverIds: number[] }) =>

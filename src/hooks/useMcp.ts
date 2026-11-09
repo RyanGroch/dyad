@@ -7,6 +7,8 @@ import {
 } from "@tanstack/react-query";
 import { ipc } from "@/ipc/types";
 import type {
+  McpAppConfig,
+  McpConnectionConfig,
   McpServer,
   McpServerUpdate,
   McpTool,
@@ -15,11 +17,16 @@ import type {
   McpListToolsResult,
 } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
+import { useSettings } from "@/hooks/useSettings";
 
 export type Transport = "stdio" | "http";
 
 export function useMcp() {
   const queryClient = useQueryClient();
+  // App-specific configurations only exist for the user while the
+  // experiment is on; with it off, none are listed or connected to.
+  const { settings } = useSettings();
+  const appScopedPluginsEnabled = !!settings?.enableAppScopedPlugins;
 
   const serversQuery = useQuery<McpServer[], Error>({
     queryKey: queryKeys.mcp.servers,
@@ -30,9 +37,31 @@ export function useMcp() {
     meta: { showErrorToast: true },
   });
 
+  const appConfigsQuery = useQuery<McpAppConfig[], Error>({
+    queryKey: queryKeys.mcp.appConfigs,
+    queryFn: () => ipc.mcp.listAppConfigs(),
+    enabled: appScopedPluginsEnabled,
+    meta: { showErrorToast: true },
+  });
+  const appConfigs = useMemo(
+    () => (appScopedPluginsEnabled ? (appConfigsQuery.data ?? []) : []),
+    [appScopedPluginsEnabled, appConfigsQuery.data],
+  );
+
+  // Tools, status and approvals are keyed by connection id: a plugin's id,
+  // or an app-specific configuration's (negative) one.
   const serverIds = useMemo(
-    () => (serversQuery.data || []).map((s) => s.id).sort((a, b) => a - b),
-    [serversQuery.data],
+    () =>
+      [
+        ...(serversQuery.data || []).map((s) => s.id),
+        ...appConfigs.map((config) => config.id),
+      ].sort((a, b) => a - b),
+    [serversQuery.data, appConfigs],
+  );
+
+  const connections = useMemo<McpConnectionConfig[]>(
+    () => [...(serversQuery.data || []), ...appConfigs],
+    [serversQuery.data, appConfigs],
   );
 
   const toolsByServerQuery = useQuery<
@@ -116,12 +145,52 @@ export function useMcp() {
     return map;
   }, [consentsQuery.data]);
 
+  const invalidateServers = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcp.appConfigs }),
+    ]);
+
+  const invalidateServersAndTools = async () => {
+    await invalidateServers();
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.mcp.toolsByServer.all,
+    });
+  };
+
+  const createAppConfigMutation = useMutation({
+    mutationFn: (params: {
+      serverId: number;
+      name: string;
+      appIds: number[];
+    }) => ipc.mcp.createAppConfig(params),
+    onSuccess: invalidateServersAndTools,
+    meta: { showErrorToast: true },
+  });
+
+  const setAppConfigAppsMutation = useMutation({
+    mutationFn: (params: { appConfigId: number; appIds: number[] }) =>
+      ipc.mcp.setAppConfigApps(params),
+    onSuccess: invalidateServersAndTools,
+    meta: { showErrorToast: true },
+  });
+
+  const setPluginAvailabilityMutation = useMutation({
+    mutationFn: (params: {
+      serverId: number;
+      defaultScope: McpServer["defaultScope"];
+      defaultAppIds: number[];
+    }) => ipc.mcp.setPluginAvailability(params),
+    onSuccess: invalidateServersAndTools,
+    meta: { showErrorToast: true },
+  });
+
   const createServerMutation = useMutation({
     mutationFn: async (params: CreateMcpServer) => {
       return ipc.mcp.createServer(params);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
+      await invalidateServers();
       await queryClient.invalidateQueries({
         queryKey: queryKeys.mcp.toolsByServer.all,
       });
@@ -147,7 +216,7 @@ export function useMcp() {
           return next;
         },
       );
-      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
+      await invalidateServers();
       await queryClient.invalidateQueries({
         queryKey: queryKeys.mcp.toolsByServer.all,
       });
@@ -160,7 +229,7 @@ export function useMcp() {
       return ipc.mcp.deleteServer(id);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers });
+      await invalidateServers();
       await queryClient.invalidateQueries({
         queryKey: queryKeys.mcp.toolsByServer.all,
       });
@@ -180,7 +249,7 @@ export function useMcp() {
     },
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
+        invalidateServers(),
         queryClient.invalidateQueries({
           queryKey: queryKeys.mcp.toolsByServer.all,
         }),
@@ -195,7 +264,7 @@ export function useMcp() {
     },
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.mcp.servers }),
+        invalidateServers(),
         queryClient.invalidateQueries({
           queryKey: queryKeys.mcp.toolsByServer.all,
         }),
@@ -260,6 +329,10 @@ export function useMcp() {
 
   return {
     servers: serversQuery.data || [],
+    appConfigs,
+    /** Every connectable configuration: plugins and app-specific ones. */
+    connections,
+    appScopedPluginsEnabled,
     toolsByServer,
     statusByServer,
     errorByServer,
@@ -286,6 +359,9 @@ export function useMcp() {
     setToolConsent,
     startOAuth,
     disconnectOAuth,
+    createAppConfig: createAppConfigMutation.mutateAsync,
+    setAppConfigApps: setAppConfigAppsMutation.mutateAsync,
+    setPluginAvailability: setPluginAvailabilityMutation.mutateAsync,
 
     // Status flags
     isCreating: createServerMutation.isPending,
@@ -295,5 +371,9 @@ export function useMcp() {
     isSettingConsent: setConsentMutation.isPending,
     isStartingOAuth: startOAuthMutation.isPending,
     isDisconnectingOAuth: disconnectOAuthMutation.isPending,
+    isSavingAppScope:
+      createAppConfigMutation.isPending ||
+      setAppConfigAppsMutation.isPending ||
+      setPluginAvailabilityMutation.isPending,
   } as const;
 }

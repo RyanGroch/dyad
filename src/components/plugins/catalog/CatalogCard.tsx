@@ -39,11 +39,14 @@ export type CatalogCardStatus =
 export function CatalogCard({
   entry,
   status,
+  appConfigCount = 0,
   isAdding,
   onAdd,
 }: {
   entry: McpCatalogEntry;
   status: CatalogCardStatus;
+  /** App-specific configurations of the added plugin. */
+  appConfigCount?: number;
   isAdding: boolean;
   onAdd: (entry: McpCatalogEntry) => void;
 }) {
@@ -111,7 +114,11 @@ export function CatalogCard({
                 ? "Connecting…"
                 : status === "needs-connect"
                   ? "Not connected"
-                  : "Added"}
+                  : appConfigCount > 0
+                    ? `Added · ${appConfigCount} app-specific configuration${
+                        appConfigCount === 1 ? "" : "s"
+                      }`
+                    : "Added"}
             </span>
           )}
         </div>

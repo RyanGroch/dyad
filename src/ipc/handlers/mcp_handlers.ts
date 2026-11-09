@@ -2,15 +2,34 @@ import log from "electron-log";
 import { getRemoteMcpCatalog } from "@/ipc/shared/remote_mcp_catalog";
 import { isRequiredInput, userSuppliedInputs } from "@/ipc/types/mcp_catalog";
 import { db } from "../../db";
-import { mcpServers, mcpToolConsents } from "../../db/schema";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { mcpAppConfigs, mcpServers } from "../../db/schema";
+import { eq, isNotNull } from "drizzle-orm";
 import { createTypedHandler } from "./base";
 import { DyadError, DyadErrorKind } from "../../errors/dyad_error";
 
-import { getStoredConsent } from "../utils/mcp_consent";
+import {
+  getStoredConsent,
+  listStoredConsents,
+  setStoredConsent,
+} from "../utils/mcp_consent_store";
+import {
+  assertAppScopedPluginsEnabled,
+  catalogEntryConnectionValues,
+  createAppConfig,
+  listAppConfigConnectionIds,
+  listAppConfigs,
+  pluginSwitchColumns,
+  readAppConfig,
+  readPluginScopeFields,
+  setAppConfigApps,
+  setPluginAvailability,
+  type PluginScopeFields,
+} from "../utils/mcp_app_configs";
+import { parseMcpConnectionId } from "@/shared/mcp_connection_id";
 import { mcpManager } from "../utils/mcp_manager";
 import { safeGithubOpsErrorMessage } from "../services/github_ops_safe_error";
 import {
+  cancelMcpOAuthForServer,
   disconnectOAuth,
   runOAuthFlow,
   withMcpOAuthServerMutation,
@@ -25,7 +44,9 @@ import {
 import {
   mcpContracts,
   DEFAULT_OAUTH_CALLBACK_PORT,
+  type McpAppConfig,
   type McpServer,
+  type McpServerUpdate,
   type McpTransport,
   type McpConsentValue,
 } from "../types/mcp";
@@ -140,7 +161,10 @@ function parseSecretMapField(
 
 // Convert a DB row into the shape sent to the UI. Drops the encrypted
 // `oauthState` / `oauthClientSecret`; sends `oauthConnected` instead.
-function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
+function toMcpServer(
+  dbServer: typeof mcpServers.$inferSelect,
+  scope: PluginScopeFields,
+): McpServer {
   const env = readServerSecretMap(dbServer.envEncrypted, dbServer.envJson);
   const headers = readServerSecretMap(
     dbServer.headersEncrypted,
@@ -157,7 +181,7 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
     envUnreadable: env.status === "unreadable",
     headersUnreadable: headers.status === "unreadable",
     url: dbServer.url,
-    enabled: dbServer.enabled,
+    ...scope,
     oauthEnabled: dbServer.oauthEnabled,
     ...getOAuthStateStatus(dbServer.oauthState),
     oauthCallbackPort: dbServer.oauthCallbackPort,
@@ -168,11 +192,138 @@ function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
   };
 }
 
+async function toMcpServers(
+  rows: (typeof mcpServers.$inferSelect)[],
+): Promise<McpServer[]> {
+  const scopeById = await readPluginScopeFields(rows);
+  return rows.map((row) => toMcpServer(row, scopeById.get(row.id)!));
+}
+
+async function toOneMcpServer(
+  row: typeof mcpServers.$inferSelect,
+): Promise<McpServer> {
+  const [server] = await toMcpServers([row]);
+  return server;
+}
+
+async function readMcpServer(serverId: number): Promise<McpServer> {
+  const [row] = await db
+    .select()
+    .from(mcpServers)
+    .where(eq(mcpServers.id, serverId));
+  if (!row) {
+    throw new DyadError(
+      `MCP server not found: ${serverId}`,
+      DyadErrorKind.NotFound,
+    );
+  }
+  return toOneMcpServer(row);
+}
+
+// Edits an app-specific configuration. Mirrors the plugin update below,
+// except that the on/off switch belongs to the plugin.
+async function updateAppConfig(params: McpServerUpdate): Promise<McpAppConfig> {
+  assertAppScopedPluginsEnabled();
+  const ref = parseMcpConnectionId(params.id);
+  if (ref.kind !== "app-config") {
+    throw new DyadError(
+      `Not an app-specific configuration: ${params.id}`,
+      DyadErrorKind.Validation,
+    );
+  }
+  if (params.enabled !== undefined) {
+    throw new DyadError(
+      "An app-specific configuration is turned on and off with its plugin.",
+      DyadErrorKind.Validation,
+    );
+  }
+  const update: Partial<typeof mcpAppConfigs.$inferInsert> = {};
+  if (params.name !== undefined) {
+    const name = params.name.trim();
+    if (!name) {
+      throw new DyadError(
+        "Configuration name is required.",
+        DyadErrorKind.Validation,
+      );
+    }
+    update.name = name;
+  }
+  if (params.transport !== undefined) update.transport = params.transport;
+  if (params.command !== undefined) update.command = params.command;
+  if (params.args !== undefined)
+    update.args = parseJsonField<string[]>(params.args, "args");
+  if (params.envJson !== undefined) {
+    update.envEncrypted = encryptSecretMap(
+      parseSecretMapField(params.envJson, "envJson"),
+    );
+  }
+  if (params.headersJson !== undefined) {
+    update.headersEncrypted = encryptSecretMap(
+      parseSecretMapField(params.headersJson, "headersJson"),
+    );
+  }
+  if (params.url !== undefined) update.url = params.url;
+  if (params.oauthEnabled !== undefined) {
+    update.oauthEnabled = !!params.oauthEnabled;
+    if (!params.oauthEnabled) {
+      update.oauthState = null;
+      update.oauthClientId = null;
+      update.oauthClientSecret = null;
+      update.oauthScope = null;
+      update.oauthCallbackPort = null;
+    }
+  }
+  if (
+    params.oauthClientId !== undefined ||
+    params.oauthClientSecret !== undefined
+  ) {
+    update.oauthState = null;
+  }
+  if (params.oauthClientId !== undefined)
+    update.oauthClientId = params.oauthClientId;
+  if (params.oauthClientSecret !== undefined)
+    update.oauthClientSecret = params.oauthClientSecret
+      ? encryptToString(params.oauthClientSecret)
+      : null;
+  if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;
+  update.updatedAt = new Date();
+
+  const mutate = async () => {
+    const result = await db
+      .update(mcpAppConfigs)
+      .set(update)
+      .where(eq(mcpAppConfigs.id, ref.appConfigId))
+      .returning({ id: mcpAppConfigs.id });
+    if (!result[0]) {
+      throw new DyadError(
+        `App-specific configuration not found: ${ref.appConfigId}`,
+        DyadErrorKind.NotFound,
+      );
+    }
+    void mcpManager.dispose(params.id).catch(() => {});
+    return readAppConfig(params.id);
+  };
+  const oauthRelevant =
+    params.transport !== undefined ||
+    params.url !== undefined ||
+    params.oauthEnabled !== undefined ||
+    params.oauthClientId !== undefined ||
+    params.oauthClientSecret !== undefined ||
+    params.oauthScope !== undefined;
+  return oauthRelevant
+    ? await withMcpOAuthServerMutation(
+        params.id,
+        "OAuth flow cancelled because its configuration changed.",
+        mutate,
+      )
+    : await mutate();
+}
+
 export function registerMcpHandlers() {
   // CRUD for MCP servers
   createTypedHandler(mcpContracts.listServers, async () => {
     const servers = await db.select().from(mcpServers);
-    return servers.map(toMcpServer);
+    return toMcpServers(servers);
   });
 
   createTypedHandler(mcpContracts.listCatalog, async () => {
@@ -230,7 +381,7 @@ export function registerMcpHandlers() {
           .select()
           .from(mcpServers)
           .where(eq(mcpServers.id, existing[0].id));
-        return toMcpServer(refreshed ?? existing[0]);
+        return toOneMcpServer(refreshed ?? existing[0]);
       }
 
       // A stdio add must run exactly the command the consent prompt showed.
@@ -260,39 +411,14 @@ export function registerMcpHandlers() {
       // connect or spawn until configured. Optional-only inputs don't
       // hold it back; they can be set later from the server's editor.
       const needsSetup = userSuppliedInputs(entry.inputs).some(isRequiredInput);
-      // Only kept for an entry that uses OAuth, matching the sync, which
-      // leaves OAuth-disabled servers alone.
-      const vendoredClient =
-        entry.transport === "http" && entry.oauth
-          ? entry.inputs?.find((input) => input.kind === "vendoredOAuthClient")
-          : undefined;
-      const values =
-        entry.transport === "stdio"
-          ? {
-              name: entry.name,
-              transport: "stdio" as const,
-              command: entry.command,
-              args: entry.args,
-              envJson: null,
-              envEncrypted: encryptSecretMap(entry.env),
-              enabled: !needsSetup,
-              catalogSlug: entry.slug,
-            }
-          : {
-              name: entry.name,
-              transport: "http" as const,
-              url: entry.url,
-              headersJson: null,
-              headersEncrypted: encryptSecretMap(entry.headers),
-              enabled: !needsSetup,
-              oauthEnabled: entry.oauth != null,
-              oauthScope: entry.oauth?.scope ?? null,
-              oauthClientId: vendoredClient?.clientId ?? null,
-              oauthClientSecret: vendoredClient?.clientSecret
-                ? encryptToString(vendoredClient.clientSecret)
-                : null,
-              catalogSlug: entry.slug,
-            };
+      const values = {
+        name: entry.name,
+        ...catalogEntryConnectionValues(entry),
+        envJson: null,
+        headersJson: null,
+        enabled: !needsSetup,
+        catalogSlug: entry.slug,
+      };
       const [created] = await db
         .insert(mcpServers)
         .values(values)
@@ -310,10 +436,10 @@ export function registerMcpHandlers() {
           );
         }
         clearNeverSuggestPlugin(slug);
-        return toMcpServer(row);
+        return toOneMcpServer(row);
       }
       clearNeverSuggestPlugin(slug);
-      return toMcpServer(created);
+      return toOneMcpServer(created);
     },
   );
 
@@ -371,10 +497,22 @@ export function registerMcpHandlers() {
         "Failed to create MCP server.",
         DyadErrorKind.Internal,
       );
-    return toMcpServer(result[0]);
+    return toOneMcpServer(result[0]);
   });
 
   createTypedHandler(mcpContracts.updateServer, async (_, params) => {
+    // An app-specific configuration's connection id. The contract returns
+    // McpServer; the renderer refetches both lists, so only the shared
+    // connection fields matter to the caller.
+    if (parseMcpConnectionId(params.id).kind === "app-config") {
+      const config = await updateAppConfig(params);
+      return {
+        ...config,
+        defaultScope: "all" as const,
+        defaultAppIds: [],
+        appConfigCount: 0,
+      };
+    }
     const update: Partial<typeof mcpServers.$inferInsert> = {};
     if (params.name !== undefined) update.name = params.name;
     if (params.transport !== undefined) update.transport = params.transport;
@@ -397,7 +535,9 @@ export function registerMcpHandlers() {
       update.headersJson = null;
     }
     if (params.url !== undefined) update.url = params.url;
-    if (params.enabled !== undefined) update.enabled = !!params.enabled;
+    // Read inside `mutate` so the switch is computed from the row it
+    // updates.
+    const enabled = params.enabled;
     if (params.oauthEnabled !== undefined) {
       update.oauthEnabled = !!params.oauthEnabled;
       // Scrub OAuth columns so a stale client secret / token blob
@@ -430,6 +570,14 @@ export function registerMcpHandlers() {
     if (params.oauthScope !== undefined) update.oauthScope = params.oauthScope;
 
     const mutate = async () => {
+      if (enabled !== undefined) {
+        const [current] = await db
+          .select()
+          .from(mcpServers)
+          .where(eq(mcpServers.id, params.id));
+        if (current)
+          Object.assign(update, pluginSwitchColumns(current, enabled));
+      }
       const result = await db
         .update(mcpServers)
         .set(update)
@@ -444,7 +592,7 @@ export function registerMcpHandlers() {
       // use rebuilds the transport with the updated row. Fire-and-forget: a
       // hung transport's close must not block the handler.
       void mcpManager.dispose(params.id).catch(() => {});
-      return toMcpServer(result[0]);
+      return toOneMcpServer(result[0]);
     };
     const oauthRelevant =
       params.enabled === false ||
@@ -464,11 +612,38 @@ export function registerMcpHandlers() {
   });
 
   createTypedHandler(mcpContracts.deleteServer, async (_, id) => {
+    const ref = parseMcpConnectionId(id);
+    if (ref.kind === "app-config") {
+      return await withMcpOAuthServerMutation(
+        id,
+        "OAuth flow cancelled because its configuration was deleted.",
+        async () => {
+          void mcpManager.dispose(id).catch(() => {});
+          await db
+            .delete(mcpAppConfigs)
+            .where(eq(mcpAppConfigs.id, ref.appConfigId));
+          return { success: true };
+        },
+      );
+    }
     return await withMcpOAuthServerMutation(
       id,
       "OAuth flow cancelled because its server was deleted.",
       async () => {
-        void mcpManager.dispose(id).catch(() => {});
+        // The plugin's app-specific configurations are deleted with it;
+        // stop their flows and connections too.
+        const configIds = await listAppConfigConnectionIds(id);
+        await Promise.all(
+          configIds.map((configId) =>
+            cancelMcpOAuthForServer(
+              configId,
+              "OAuth flow cancelled because its plugin was deleted.",
+            ),
+          ),
+        );
+        for (const connectionId of [id, ...configIds]) {
+          void mcpManager.dispose(connectionId).catch(() => {});
+        }
         await db.delete(mcpServers).where(eq(mcpServers.id, id));
         return { success: true };
       },
@@ -520,52 +695,11 @@ export function registerMcpHandlers() {
 
   // Consents
   createTypedHandler(mcpContracts.getToolConsents, async () => {
-    const consents = await db.select().from(mcpToolConsents);
-    return consents.map((c) => ({
-      ...c,
-      consent: c.consent as McpConsentValue,
-    }));
+    return listStoredConsents();
   });
 
   createTypedHandler(mcpContracts.setToolConsent, async (_, params) => {
-    const existing = await db
-      .select()
-      .from(mcpToolConsents)
-      .where(
-        and(
-          eq(mcpToolConsents.serverId, params.serverId),
-          eq(mcpToolConsents.toolName, params.toolName),
-        ),
-      );
-    if (existing.length > 0) {
-      const result = await db
-        .update(mcpToolConsents)
-        .set({ consent: params.consent })
-        .where(
-          and(
-            eq(mcpToolConsents.serverId, params.serverId),
-            eq(mcpToolConsents.toolName, params.toolName),
-          ),
-        )
-        .returning();
-      return {
-        ...result[0],
-        consent: result[0].consent as McpConsentValue,
-      };
-    } else {
-      const result = await db
-        .insert(mcpToolConsents)
-        .values({
-          serverId: params.serverId,
-          toolName: params.toolName,
-          consent: params.consent,
-        })
-        .returning();
-      return {
-        ...result[0],
-        consent: result[0].consent as McpConsentValue,
-      };
-    }
+    return setStoredConsent(params.serverId, params.toolName, params.consent);
   });
 
   // OAuth: kick off the full flow against the named MCP server. The
@@ -637,6 +771,24 @@ export function registerMcpHandlers() {
   // next tool call to require a fresh consent flow.
   createTypedHandler(mcpContracts.disconnectOAuth, async (_, serverId) => {
     return await disconnectOAuth(serverId);
+  });
+
+  // App-scoped plugins experiment.
+  createTypedHandler(mcpContracts.listAppConfigs, async () => {
+    return listAppConfigs();
+  });
+
+  createTypedHandler(mcpContracts.createAppConfig, async (_, params) => {
+    return createAppConfig(params);
+  });
+
+  createTypedHandler(mcpContracts.setAppConfigApps, async (_, params) => {
+    return setAppConfigApps(params);
+  });
+
+  createTypedHandler(mcpContracts.setPluginAvailability, async (_, params) => {
+    await setPluginAvailability(params);
+    return readMcpServer(params.serverId);
   });
 
   // Drives the no-keyring banner on the MCP settings page.

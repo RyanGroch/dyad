@@ -1,7 +1,4 @@
-import { db } from "../../db";
-import { mcpServers } from "../../db/schema";
 import { createMCPClient, type MCPClient } from "@ai-sdk/mcp";
-import { eq } from "drizzle-orm";
 
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
@@ -16,6 +13,7 @@ import {
 } from "./secret_storage";
 import { settleWithinTimeout } from "./promise_utils";
 import { syncVendoredOAuthClient } from "./vendored_oauth_client";
+import { readMcpConnection } from "./mcp_connection_store";
 
 // Connecting without a secret we know exists would talk to the server
 // unauthenticated, so refuse and point at the likely cause.
@@ -165,11 +163,9 @@ export class McpManager {
     // including on the silent token refresh path. Cached-only: building a
     // client must not wait on a catalog fetch.
     await syncVendoredOAuthClient(serverId, { cachedOnly: true });
-    const server = await db
-      .select()
-      .from(mcpServers)
-      .where(eq(mcpServers.id, serverId));
-    const s = server.find((x) => x.id === serverId);
+    // `serverId` is a connection id: a plugin or an app-specific
+    // configuration of one. The store reads either kind.
+    const s = await readMcpConnection(serverId);
     if (!s) throw new Error(`MCP server not found: ${serverId}`);
 
     let client: MCPClient;
@@ -178,7 +174,7 @@ export class McpManager {
       const env =
         requireReadableSecret(
           readServerSecretMap(s.envEncrypted, s.envJson),
-          s.name,
+          s.displayName,
           "environment variables",
         ) ?? undefined;
       if (!s.command) throw new Error("MCP server command is required");
@@ -192,14 +188,14 @@ export class McpManager {
       if (!s.url) throw new Error(`http MCP requires url`);
       const authProvider = s.oauthEnabled
         ? new DyadOAuthClientProvider({
-            serverId: s.id,
+            serverId: s.connectionId,
             callbackPort: s.oauthCallbackPort ?? undefined,
             scope: s.oauthScope ?? undefined,
             preregisteredClientId: s.oauthClientId ?? undefined,
             preregisteredClientSecret: s.oauthClientSecret
               ? decryptFromString(s.oauthClientSecret) || undefined
               : undefined,
-            writeAuthority: captureMcpOAuthWriteAuthority(s.id),
+            writeAuthority: captureMcpOAuthWriteAuthority(s.connectionId),
           })
         : undefined;
       client = await createMCPClient({
@@ -209,7 +205,7 @@ export class McpManager {
           headers:
             requireReadableSecret(
               readServerSecretMap(s.headersEncrypted, s.headersJson),
-              s.name,
+              s.displayName,
               "headers",
             ) ?? undefined,
           authProvider,

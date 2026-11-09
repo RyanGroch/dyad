@@ -18,7 +18,12 @@ export const DEFAULT_OAUTH_CALLBACK_PORT = 53682;
 export const McpTransportEnum = z.enum(["stdio", "sse", "http"]);
 export type McpTransport = z.infer<typeof McpTransportEnum>;
 
-export const McpServerSchema = z.object({
+// Fields every connectable configuration has: a plugin's default
+// configuration (McpServer) and an app-specific one (McpAppConfig). `id` is
+// a connection id (src/shared/mcp_connection_id.ts), which every
+// per-configuration channel below (tools, OAuth, approvals, updates)
+// accepts.
+export const McpConnectionConfigSchema = z.object({
   id: z.number(),
   name: z.string(),
   transport: McpTransportEnum,
@@ -48,13 +53,37 @@ export const McpServerSchema = z.object({
   // would otherwise show.
   envUnreadable: z.boolean(),
   headersUnreadable: z.boolean(),
-  // Set when the server was added from the curated catalog.
+  // Set when the server was added from the curated catalog. An
+  // app-specific configuration reports its plugin's.
   catalogSlug: z.string().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 
+export type McpConnectionConfig = z.infer<typeof McpConnectionConfigSchema>;
+
+export const PluginDefaultScopeSchema = z.enum(["all", "selected", "none"]);
+
+export const McpServerSchema = McpConnectionConfigSchema.extend({
+  // App-scoped plugins experiment; "all" with no app configurations when
+  // it's off. Which apps the default configuration serves; see
+  // mcp_plugin_availability.ts.
+  defaultScope: PluginDefaultScopeSchema,
+  defaultAppIds: z.array(z.number()),
+  appConfigCount: z.number().int(),
+});
+
 export type McpServer = z.infer<typeof McpServerSchema>;
+
+// An app-specific configuration of a plugin. `id` is its (negative)
+// connection id, `serverId` its plugin, and `enabled` mirrors the plugin's
+// switch.
+export const McpAppConfigSchema = McpConnectionConfigSchema.extend({
+  serverId: z.number(),
+  appIds: z.array(z.number()),
+});
+
+export type McpAppConfig = z.infer<typeof McpAppConfigSchema>;
 
 // OAuth scope tokens use only printable ASCII (no space, quote, or
 // backslash), separated by single spaces. Catches typos like
@@ -106,6 +135,7 @@ export const CreateMcpServerSchema = z.object({
 export type CreateMcpServer = z.infer<typeof CreateMcpServerSchema>;
 
 export const McpServerUpdateSchema = z.object({
+  // Connection id. `enabled` only applies to a plugin.
   id: z.number(),
   name: z.string().optional(),
   transport: McpTransportEnum.optional(),
@@ -234,7 +264,7 @@ export const mcpContracts = {
 
   deleteServer: defineContract({
     channel: "mcp:delete-server",
-    input: z.number(), // serverId
+    input: z.number(), // connection id
     output: z.object({ success: z.boolean() }),
     invalidates: () => [
       { family: "mcp-servers" },
@@ -291,6 +321,53 @@ export const mcpContracts = {
     channel: "mcp:disconnect-oauth",
     input: z.number(), // serverId
     output: z.object({ success: z.boolean() }),
+    invalidates: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+    originHandles: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+  }),
+
+  // App-scoped plugins experiment. The mutations below are refused while
+  // the experiment is off.
+  listAppConfigs: defineContract({
+    channel: "mcp:list-app-configs",
+    input: z.void(),
+    output: z.array(McpAppConfigSchema),
+  }),
+
+  createAppConfig: defineContract({
+    channel: "mcp:create-app-config",
+    input: z.object({
+      serverId: z.number().int().positive(),
+      name: z.string().trim().min(1).max(100),
+      // Apps already using another configuration of the plugin move to
+      // this one.
+      appIds: z.array(z.number().int().positive()).max(10_000),
+    }),
+    output: McpAppConfigSchema,
+    invalidates: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+    originHandles: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+  }),
+
+  setAppConfigApps: defineContract({
+    channel: "mcp:set-app-config-apps",
+    input: z.object({
+      // Connection id of the app-specific configuration.
+      appConfigId: z.number().int().negative(),
+      appIds: z.array(z.number().int().positive()).max(10_000),
+    }),
+    output: McpAppConfigSchema,
+    invalidates: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+    originHandles: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
+  }),
+
+  setPluginAvailability: defineContract({
+    channel: "mcp:set-plugin-availability",
+    input: z.object({
+      serverId: z.number().int().positive(),
+      defaultScope: PluginDefaultScopeSchema,
+      // The apps a "selected" default serves; ignored otherwise.
+      defaultAppIds: z.array(z.number().int().positive()).max(10_000),
+    }),
+    output: McpServerSchema,
     invalidates: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
     originHandles: () => [{ family: "mcp-servers" }, { family: "mcp-tools" }],
   }),

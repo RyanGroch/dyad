@@ -260,6 +260,20 @@ vi.mock("@/db", () => ({
   },
 }));
 
+// Every mock MCP server is enabled and serves the chat's app through its
+// default configuration.
+vi.mock("@/ipc/utils/mcp_app_scoping", () => ({
+  resolveMcpConnectionsForApp: vi.fn(async () =>
+    mockMcpServers.map((server) => ({
+      connectionId: server.id,
+      serverId: server.id,
+      pluginName: server.name,
+      displayName: server.name,
+      transport: "stdio",
+    })),
+  ),
+}));
+
 vi.mock("@/ipc/utils/chat_history_loader", () => ({
   loadAgentHistoryMessages: vi.fn(async () => mockChatData?.messages ?? []),
 }));

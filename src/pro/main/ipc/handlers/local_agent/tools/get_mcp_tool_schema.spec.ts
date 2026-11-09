@@ -11,6 +11,7 @@ function def(
     toolKey: `${overrides.serverName ?? "srv"}__${overrides.toolName}`,
     serverId: 1,
     serverName: "srv",
+    displayName: "srv",
     description: undefined,
     inputSchema: { type: "object" },
     ...overrides,

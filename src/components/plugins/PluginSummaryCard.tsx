@@ -8,6 +8,22 @@ import { CatalogBadge } from "./CatalogBadge";
 import { PluginIcon } from "./PluginIcon";
 import type { ConnectFeedback } from "./usePluginConnect";
 
+// Only set while the app-scoped plugins experiment is in use for this
+// plugin; otherwise the card reads exactly as before.
+function appScopeSummary(s: McpServer): string | null {
+  const parts: string[] = [];
+  if (s.defaultScope === "selected") parts.push("Default: some apps");
+  if (s.defaultScope === "none") parts.push("Default: no apps");
+  if (s.appConfigCount > 0) {
+    parts.push(
+      `${s.appConfigCount} app-specific configuration${
+        s.appConfigCount === 1 ? "" : "s"
+      }`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function PluginSummaryCard({
   server: s,
   iconUrl,
@@ -103,6 +119,11 @@ export function PluginSummaryCard({
               {s.url ? ` · ${s.url}` : ""}
               {s.command ? ` · ${s.command}` : ""}
             </div>
+            {appScopeSummary(s) && (
+              <div className="text-xs text-muted-foreground truncate">
+                {appScopeSummary(s)}
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-3 flex items-center justify-between gap-2">

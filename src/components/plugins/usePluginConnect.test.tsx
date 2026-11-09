@@ -64,6 +64,9 @@ function makeServer(overrides: Partial<McpServer> = {}): McpServer {
     headersUnreadable: false,
     // No catalog slug, so a 401 here reads as "enable OAuth".
     catalogSlug: null,
+    defaultScope: "all",
+    defaultAppIds: [],
+    appConfigCount: 0,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { atom, useAtom } from "jotai";
 import { useMcp } from "@/hooks/useMcp";
 import { useMcpCatalog } from "@/hooks/useMcpCatalog";
-import type { McpServer } from "@/ipc/types";
+import type { McpConnectionConfig, McpServer } from "@/ipc/types";
 import { ipc } from "@/ipc/types";
 import { showError, showInfo, showSuccess } from "@/lib/toast";
 import { useOauthCallbackPort } from "./AddPluginDialog";
@@ -30,8 +30,15 @@ const disconnectingServerIdAtom = atom<number | null>(null);
 // Shared OAuth connect/probe handling for the plugins list and the
 // plugin detail page.
 export function usePluginConnect() {
-  const { servers, statusByServer, updateServer, startOAuth, disconnectOAuth } =
-    useMcp();
+  // Connections: plugins and their app-specific configurations, which
+  // connect the same way.
+  const {
+    connections,
+    statusByServer,
+    updateServer,
+    startOAuth,
+    disconnectOAuth,
+  } = useMcp();
   const [connectingServerId, setConnectingServerId] = useAtom(
     connectingServerIdAtom,
   );
@@ -174,7 +181,7 @@ export function usePluginConnect() {
   };
 
   const onConnect = async (serverId: number) => {
-    const server = servers.find((s) => s.id === serverId);
+    const server = connections.find((s) => s.id === serverId);
     // Catalog rows are added without a saved callback port, so a
     // Connect from the card would fall back to the default port and
     // fail if it's occupied. Use the probed port for rows with none
@@ -229,7 +236,7 @@ export function usePluginConnect() {
   // An OAuth-off server that returns 401 needs auth; surface that from
   // the live probe status so the alert stays put. Auth kinds are built
   // on each read, so they clear as soon as discovery stops seeing a 401.
-  const feedbackFor = (server: McpServer): ConnectFeedback | null => {
+  const feedbackFor = (server: McpConnectionConfig): ConnectFeedback | null => {
     if (connectFeedback && connectFeedback.serverId === server.id) {
       return connectFeedback;
     }

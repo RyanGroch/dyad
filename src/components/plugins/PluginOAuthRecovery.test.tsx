@@ -23,6 +23,9 @@ const server = McpServerSchema.parse({
   envUnreadable: false,
   headersUnreadable: false,
   catalogSlug: null,
+  defaultScope: "all",
+  defaultAppIds: [],
+  appConfigCount: 0,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 });
@@ -30,6 +33,8 @@ vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/hooks/useMcp", () => ({
   useMcp: () => ({
     servers: [server],
+    appConfigs: [],
+    appScopedPluginsEnabled: false,
     toolsByServer: {},
     statusByServer: {},
     errorByServer: {},
@@ -37,6 +42,7 @@ vi.mock("@/hooks/useMcp", () => ({
     isServersLoading: false,
   }),
 }));
+vi.mock("@/hooks/useLoadApps", () => ({ useLoadApps: () => ({ apps: [] }) }));
 vi.mock("@/hooks/useMcpCatalog", () => ({
   useMcpCatalog: () => ({ data: { entries: [] }, isLoading: false }),
 }));

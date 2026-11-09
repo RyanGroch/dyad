@@ -16,6 +16,12 @@ const mocks = vi.hoisted(() => ({
   connectNewServer: vi.fn(),
   connectingServerId: null as number | null,
   showError: vi.fn(),
+  navigate: vi.fn(),
+  listServers: vi.fn(async (): Promise<unknown[]> => []),
+}));
+
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => mocks.navigate,
 }));
 
 vi.mock("react-i18next", () => ({
@@ -38,6 +44,10 @@ vi.mock("react-i18next", () => ({
           return "Don't suggest again";
         case "suggestPlugin.neverTitle":
           return `Won't suggest ${values?.name} again`;
+        case "suggestPlugin.unavailableTitle":
+          return `${values?.name} isn't set up for this app`;
+        case "suggestPlugin.openPluginSettings":
+          return "Open plugin settings";
         default:
           return key;
       }
@@ -63,6 +73,7 @@ vi.mock("@/ipc/types", () => ({
       addFromCatalog: mocks.addFromCatalog,
       probeConnection: mocks.probeConnection,
       updateServer: mocks.updateServer,
+      listServers: mocks.listServers,
     },
   },
 }));
@@ -116,6 +127,40 @@ function renderCard(
 
 const connectButton = () =>
   screen.getByRole<HTMLButtonElement>("button", { name: "Connect Vercel" });
+
+describe("DyadSuggestPlugin for a plugin not set up for the chat's app", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.pending = new Map();
+  });
+
+  it("links to the plugin's settings", async () => {
+    mocks.listServers.mockResolvedValue([{ id: 12, catalogSlug: "vercel" }]);
+    renderCard({ requestId: undefined, outcome: "unavailable" });
+
+    expect(screen.getByText("Vercel isn't set up for this app")).toBeTruthy();
+    const open = screen.getByRole("button", { name: "Open plugin settings" });
+    await waitFor(() => expect(mocks.listServers).toHaveBeenCalled());
+    await waitFor(() => {
+      fireEvent.click(open);
+      expect(mocks.navigate).toHaveBeenLastCalledWith({
+        to: "/plugins/$serverId",
+        params: { serverId: 12 },
+      });
+    });
+  });
+
+  it("falls back to the plugins list when the plugin is gone", async () => {
+    mocks.listServers.mockResolvedValue([]);
+    renderCard({ requestId: undefined, outcome: "unavailable" });
+
+    await waitFor(() => expect(mocks.listServers).toHaveBeenCalled());
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open plugin settings" }),
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: "/plugins" });
+  });
+});
 
 describe("DyadSuggestPlugin", () => {
   beforeEach(() => {
