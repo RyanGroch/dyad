@@ -219,10 +219,18 @@ export function SupabaseSelfHostedLinkSection({
   const field = (
     key: keyof typeof EMPTY_FORM,
     label: string,
-    options: { placeholder?: string; secret?: boolean; optional?: boolean },
+    options: {
+      placeholder?: string;
+      secret?: boolean;
+      optional?: boolean;
+      hint?: string;
+    },
   ) => (
     <div className="space-y-1">
       <Label htmlFor={`supabase-self-hosted-${key}`}>{label}</Label>
+      {options.hint && (
+        <p className="text-xs text-muted-foreground">{options.hint}</p>
+      )}
       <Input
         id={`supabase-self-hosted-${key}`}
         type={options.secret ? "password" : "text"}
@@ -239,183 +247,217 @@ export function SupabaseSelfHostedLinkSection({
   );
 
   return (
-    <Card data-testid="supabase-self-hosted-link-section">
-      <CardHeader>
-        <CardTitle>Self-hosted Supabase</CardTitle>
-        <CardDescription>
-          Connect this app to a Supabase instance you run yourself, such as one
-          deployed with Docker Compose or Coolify.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {instances.length > 0 && (
-          <div className="flex items-end gap-2">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="supabase-self-hosted-select">Instance</Label>
-              <Select
-                value={selectedId ?? ""}
-                onValueChange={(value) => setSelectedId(value || null)}
-              >
-                <SelectTrigger id="supabase-self-hosted-select">
-                  <SelectValue>
-                    {(value) =>
-                      instances.find((instance) => instance.id === value)
-                        ?.name ?? "Select an instance"
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {instances.map((instance) => (
-                    <SelectItem key={instance.id} value={instance.id}>
-                      {instance.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button
-              onClick={() => selectedId && link(selectedId)}
-              disabled={!selectedId || isLinking}
+    <div className="space-y-4" data-testid="supabase-self-hosted-link-section">
+      <p className="text-sm text-muted-foreground">
+        Connect this app to a Supabase instance you run yourself, such as one
+        deployed with Docker Compose or Coolify.
+      </p>
+      {instances.length > 0 && (
+        <div className="flex items-end gap-2">
+          <div className="flex-1 space-y-1">
+            <Label htmlFor="supabase-self-hosted-select">Instance</Label>
+            <Select
+              value={selectedId ?? ""}
+              onValueChange={(value) => setSelectedId(value || null)}
             >
-              Connect
-            </Button>
+              <SelectTrigger id="supabase-self-hosted-select">
+                <SelectValue>
+                  {(value) =>
+                    instances.find((instance) => instance.id === value)?.name ??
+                    "Select an instance"
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {instances.map((instance) => (
+                  <SelectItem key={instance.id} value={instance.id}>
+                    {instance.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
-        )}
+          <Button
+            onClick={() => selectedId && link(selectedId)}
+            disabled={!selectedId || isLinking}
+          >
+            Connect
+          </Button>
+        </div>
+      )}
 
-        {isFormOpen ? (
-          <form className="space-y-3" onSubmit={handleAdd}>
-            {field("name", "Name", { placeholder: "My Supabase" })}
-            {field("url", "API URL", {
-              placeholder: "https://supabase.example.com",
-            })}
-            {field("anonKey", "Anon or publishable key", { secret: true })}
-            {field("serviceKey", "Service role or secret key", {
-              secret: true,
-            })}
-            {field("studioUrl", "Studio URL (optional)", { optional: true })}
-            <div className="space-y-3 rounded-md border p-3">
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="supabase-self-hosted-use-ssh"
-                  aria-label="Enable edge functions"
-                  checked={useSsh}
-                  onCheckedChange={setUseSsh}
-                />
-                <Label htmlFor="supabase-self-hosted-use-ssh">
-                  Enable edge functions
-                </Label>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Enable this if you intend to run edge functions on your Supabase
-                instance. This will require SSH credentials.
-              </p>
-              {useSsh && (
-                <>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                      {field("sshHost", "SSH host", {
-                        placeholder: hostOf(form.url) || "supabase.example.com",
-                        optional: true,
-                      })}
-                    </div>
-                    <div className="w-24">{field("sshPort", "Port", {})}</div>
-                  </div>
-                  {field("sshUsername", "SSH user", { placeholder: "root" })}
-                  <div className="space-y-1">
-                    <Label htmlFor="supabase-self-hosted-sshPrivateKey">
-                      Private key
-                    </Label>
-                    <Textarea
-                      id="supabase-self-hosted-sshPrivateKey"
-                      required
-                      rows={4}
-                      className="font-mono text-xs"
-                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                      value={form.sshPrivateKey}
-                      onChange={(event) => {
-                        setForm((current) => ({
-                          ...current,
-                          sshPrivateKey: event.target.value,
-                        }));
-                        setFormError(null);
-                      }}
-                    />
-                  </div>
-                </>
-              )}
+      {isFormOpen ? (
+        <form className="space-y-3" onSubmit={handleAdd}>
+          {field("name", "Name", { placeholder: "My Supabase" })}
+          {field("url", "API URL", {
+            placeholder: "https://supabase.example.com",
+            hint: "SUPABASE_PUBLIC_URL in your Docker Compose .env file, or the Supabase Kong URL in Coolify.",
+          })}
+          {field("anonKey", "Publishable key", {
+            secret: true,
+            hint: "On older versions of Supabase, use the anon key instead.",
+          })}
+          {field("serviceKey", "Secret key", {
+            secret: true,
+            hint: "On older versions of Supabase, use the service_role key instead.",
+          })}
+          {field("studioUrl", "Studio URL (optional)", {
+            optional: true,
+            hint: "Lets you open your instance's dashboard from Dyad. Usually the same as the API URL.",
+          })}
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="supabase-self-hosted-use-ssh"
+                aria-label="Enable edge functions"
+                checked={useSsh}
+                onCheckedChange={setUseSsh}
+              />
+              <Label htmlFor="supabase-self-hosted-use-ssh">
+                Enable edge functions
+              </Label>
             </div>
             <p className="text-xs text-muted-foreground">
-              Email isn&apos;t set up by default on self-hosted Supabase. To use
-              email sign-up, configure SMTP on your instance.
+              Enable this if you intend to run edge functions on your Supabase
+              instance. This will require SSH credentials.
             </p>
-            {formError && (
-              <Alert
-                variant="destructive"
-                data-testid="supabase-self-hosted-form-error"
-              >
-                <Info className="h-4 w-4" />
-                <AlertDescription>{formError}</AlertDescription>
-              </Alert>
+            {useSsh && (
+              <>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    {field("sshHost", "SSH host", {
+                      placeholder: hostOf(form.url) || "supabase.example.com",
+                      optional: true,
+                    })}
+                  </div>
+                  <div className="w-24">{field("sshPort", "Port", {})}</div>
+                </div>
+                {field("sshUsername", "SSH user", { placeholder: "root" })}
+                <div className="space-y-1">
+                  <Label htmlFor="supabase-self-hosted-sshPrivateKey">
+                    Private key
+                  </Label>
+                  <Textarea
+                    id="supabase-self-hosted-sshPrivateKey"
+                    required
+                    rows={4}
+                    className="font-mono text-xs"
+                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                    value={form.sshPrivateKey}
+                    onChange={(event) => {
+                      setForm((current) => ({
+                        ...current,
+                        sshPrivateKey: event.target.value,
+                      }));
+                      setFormError(null);
+                    }}
+                  />
+                </div>
+              </>
             )}
-            <div className="flex gap-2">
-              <Button type="submit" disabled={addInstance.isPending}>
-                {addInstance.isPending && (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                )}
-                {addInstance.isPending
-                  ? "Checking instance"
-                  : "Add and connect"}
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setIsFormOpen(false);
-                  setFormError(null);
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1"
-            onClick={() => setIsFormOpen(true)}
-            data-testid="supabase-self-hosted-add-button"
-          >
-            <Plus className="h-4 w-4" />
-            Add self-hosted instance
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Email isn&apos;t set up by default on self-hosted Supabase. To use
+            email sign-up, configure SMTP on your instance.
+          </p>
+          {formError && (
+            <Alert
+              variant="destructive"
+              data-testid="supabase-self-hosted-form-error"
+            >
+              <Info className="h-4 w-4" />
+              <AlertDescription>{formError}</AlertDescription>
+            </Alert>
+          )}
+          <div className="flex gap-2">
+            <Button type="submit" disabled={addInstance.isPending}>
+              {addInstance.isPending && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              {addInstance.isPending ? "Checking instance" : "Add and connect"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setIsFormOpen(false);
+                setFormError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1"
+          onClick={() => setIsFormOpen(true)}
+          data-testid="supabase-self-hosted-add-button"
+        >
+          <Plus className="h-4 w-4" />
+          Add self-hosted instance
+        </Button>
+      )}
+    </div>
   );
 }
+
+type InstanceListItem = NonNullable<
+  ReturnType<typeof useSupabaseSelfHostedInstances>["data"]
+>[number];
 
 /** Settings list of saved instances, for removing ones no longer needed. */
 export function SupabaseSelfHostedInstancesSettings() {
   const instancesQuery = useSupabaseSelfHostedInstances({ enabled: true });
   const removeInstance = useRemoveSupabaseSelfHostedInstance();
   const instances = instancesQuery.data ?? [];
-  const [confirming, setConfirming] = useState<
-    (typeof instances)[number] | null
-  >(null);
+  // The instances a confirmed Remove or Remove all will remove.
+  const [confirming, setConfirming] = useState<InstanceListItem[] | null>(null);
 
-  const remove = (instance: (typeof instances)[number]) =>
-    removeInstance.mutate(instance.id, {
-      onSuccess: () => toast.success(`Removed ${instance.name}`),
-    });
+  const remove = async (targets: InstanceListItem[]) => {
+    for (const instance of targets) {
+      await removeInstance.mutateAsync(instance.id);
+    }
+    toast.success(
+      targets.length === 1
+        ? `Removed ${targets[0].name}`
+        : `Removed ${targets.length} instances`,
+    );
+  };
+  // Asks first only when removing would disconnect apps.
+  const requestRemove = (targets: InstanceListItem[]) => {
+    if (targets.some((instance) => instance.linkedApps.length > 0)) {
+      setConfirming(targets);
+    } else {
+      void remove(targets).catch(() => {});
+    }
+  };
 
   if (instances.length === 0) return null;
 
+  const linkedApps = (confirming ?? []).flatMap(
+    (instance) => instance.linkedApps,
+  );
+
   return (
     <div data-testid="supabase-self-hosted-settings">
-      <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">
-        Self-hosted Supabase
-      </h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">
+          Self-hosted Supabase
+        </h3>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="flex items-center gap-2"
+          disabled={removeInstance.isPending}
+          onClick={() => requestRemove(instances)}
+        >
+          Remove all
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
       <div className="mt-3 space-y-1">
         {instances.map((instance) => (
           <div
@@ -438,11 +480,7 @@ export function SupabaseSelfHostedInstancesSettings() {
               size="sm"
               className="h-7 shrink-0 px-2 text-muted-foreground hover:text-destructive"
               disabled={removeInstance.isPending}
-              onClick={() =>
-                instance.linkedApps.length > 0
-                  ? setConfirming(instance)
-                  : remove(instance)
-              }
+              onClick={() => requestRemove([instance])}
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
               <span className="text-xs">Remove</span>
@@ -456,13 +494,17 @@ export function SupabaseSelfHostedInstancesSettings() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {confirming?.name}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {confirming?.length === 1
+                ? `Remove ${confirming[0].name}?`
+                : "Remove all self-hosted instances?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               This will disconnect the following apps:
             </AlertDialogDescription>
           </AlertDialogHeader>
           <ul className="list-disc pl-6 text-sm">
-            {confirming?.linkedApps.map((app) => (
+            {linkedApps.map((app) => (
               <li key={app.id}>{app.name}</li>
             ))}
           </ul>
@@ -470,7 +512,7 @@ export function SupabaseSelfHostedInstancesSettings() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (confirming) remove(confirming);
+                if (confirming) void remove(confirming).catch(() => {});
                 setConfirming(null);
               }}
             >

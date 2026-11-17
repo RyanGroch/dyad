@@ -89,8 +89,8 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
     fill("Name", "Home lab");
     fill("API URL", "https://supabase.example.com");
-    fill("Anon or publishable key", "sb_publishable_a");
-    fill("Service role or secret key", "sb_secret_s");
+    fill("Publishable key", "sb_publishable_a");
+    fill("Secret key", "sb_secret_s");
     fireEvent.click(
       screen.getByRole("switch", { name: "Enable edge functions" }),
     );
@@ -138,8 +138,8 @@ describe("SupabaseSelfHostedLinkSection", () => {
     expect(screen.queryByLabelText("Private key")).toBeNull();
     fill("Name", "Home lab");
     fill("API URL", "https://supabase.example.com");
-    fill("Anon or publishable key", "sb_publishable_a");
-    fill("Service role or secret key", "sb_secret_s");
+    fill("Publishable key", "sb_publishable_a");
+    fill("Secret key", "sb_secret_s");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
 
     await waitFor(() => expect(onLinked).toHaveBeenCalled());
@@ -159,8 +159,8 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
     fill("Name", "Home lab");
     fill("API URL", "https://supabase.example.com");
-    fill("Anon or publishable key", "sb_publishable_a");
-    fill("Service role or secret key", "wrong");
+    fill("Publishable key", "sb_publishable_a");
+    fill("Secret key", "wrong");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
 
     expect(
@@ -220,6 +220,29 @@ describe("SupabaseSelfHostedInstancesSettings", () => {
       }),
     );
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("removes every instance, listing the apps all of them disconnect", async () => {
+    mocks.listSelfHostedInstances.mockResolvedValue([
+      { ...INSTANCE, linkedApps: [{ id: 1, name: "Notes" }] },
+      { ...INSTANCE, id: "instance-2", name: "Backup", linkedApps: [] },
+    ]);
+    mocks.removeSelfHostedInstance.mockResolvedValue(undefined);
+    renderWithQuery(<SupabaseSelfHostedInstancesSettings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove all" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(
+      Array.from(dialog.querySelectorAll("li")).map((item) => item.textContent),
+    ).toEqual(["Notes"]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" }).at(-1)!);
+
+    await waitFor(() =>
+      expect(mocks.removeSelfHostedInstance.mock.calls).toEqual([
+        [{ id: "instance-1" }],
+        [{ id: "instance-2" }],
+      ]),
+    );
   });
 
   it("lists the apps it will disconnect before removing", async () => {

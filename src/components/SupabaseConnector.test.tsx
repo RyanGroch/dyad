@@ -1429,14 +1429,25 @@ describe("self-hosted Supabase", () => {
 
   it("offers self-hosted in its own tab for an unlinked app when the experiment is on", () => {
     appState.supabaseProjectId = null;
+    appState.supabaseProjectName = null;
     settingsState.current = { enableSupabaseSelfHosted: true };
 
     renderConnector();
 
-    // Cloud is the tab the card opens on.
+    // The tabs sit inside the project picker, which opens on Cloud.
+    expect(screen.getByText("integrations.supabase.projects")).toBeTruthy();
     expect(screen.queryByTestId("self-hosted-link")).toBeNull();
+    expect(
+      screen.getByText("integrations.supabase.addOrganization"),
+    ).toBeTruthy();
+
     fireEvent.click(screen.getByRole("tab", { name: "Self-hosted" }));
+
     expect(screen.getByTestId("self-hosted-link")).toBeTruthy();
+    // Cloud's account actions don't apply to a self-hosted instance.
+    expect(
+      screen.queryByText("integrations.supabase.addOrganization"),
+    ).toBeNull();
   });
 
   it.each([
