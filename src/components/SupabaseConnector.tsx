@@ -883,7 +883,9 @@ function SupabaseCloudConnector({
               </div>
             )}
           </CardTitle>
-          {showCloudActions && (
+          {/* With tabs, the description moves into the Cloud tab so the
+              tabs sit right under the title. */}
+          {!selfHostedTab && (
             <CardDescription>
               {t("integrations.supabase.selectProjectDescription")}
             </CardDescription>
@@ -892,6 +894,11 @@ function SupabaseCloudConnector({
         <CardContent>
           {withSelfHostedTabs(
             <>
+              {selfHostedTab && (
+                <p className="mb-4 text-sm text-muted-foreground">
+                  {t("integrations.supabase.selectProjectDescription")}
+                </p>
+              )}
               {/* Above the loading and error branches below, not inside one of
           them: a created-but-unlinked failure refetches the project list, so an
           alert further down would be replaced by that refetch's skeleton, or

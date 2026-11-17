@@ -1440,6 +1440,13 @@ describe("self-hosted Supabase", () => {
     expect(
       screen.getByText("integrations.supabase.addOrganization"),
     ).toBeTruthy();
+    // Nothing sits between the title and the tabs: the Cloud description is
+    // inside the Cloud tab.
+    expect(
+      screen
+        .getByText("integrations.supabase.selectProjectDescription")
+        .closest('[role="tabpanel"]'),
+    ).not.toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Self-hosted" }));
 
