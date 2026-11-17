@@ -165,6 +165,22 @@ describe("parseEdgeRuntimeLogs", () => {
     ]);
     expect(entries[0].timestamp).toBe(Date.parse("2026-11-17T17:30:44.785Z"));
   });
+
+  it("drops the runtime's own startup line", () => {
+    // Recorded: Deno.serve prints this whenever a function's worker starts.
+    const entries = parseEdgeRuntimeLogs(
+      [
+        "2026-11-17T18:45:55.804643107Z [Info] Listening on http://localhost:9999/",
+        "2026-11-17T18:45:55.804650000Z ",
+        "2026-11-17T18:45:55.928121582Z [Info] [clear-completed] Listening on http://localhost:9999/",
+        "2026-11-17T18:45:55.928130000Z ",
+      ].join("\n"),
+    );
+
+    expect(entries.map((entry) => entry.message)).toEqual([
+      "[clear-completed] Listening on http://localhost:9999/",
+    ]);
+  });
 });
 
 describe("deploying over SSH", () => {

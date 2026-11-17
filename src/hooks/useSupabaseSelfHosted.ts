@@ -1,9 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ipc,
-  type AddSupabaseSelfHostedInstanceParams,
-  type SupabaseSelfHostedInstance,
-} from "@/ipc/types";
+import { ipc, type AddSupabaseSelfHostedInstanceParams } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function useSupabaseSelfHostedInstances({
@@ -11,7 +7,10 @@ export function useSupabaseSelfHostedInstances({
 }: {
   enabled: boolean;
 }) {
-  return useQuery<SupabaseSelfHostedInstance[], Error>({
+  return useQuery<
+    Awaited<ReturnType<typeof ipc.supabase.listSelfHostedInstances>>,
+    Error
+  >({
     queryKey: queryKeys.supabase.selfHostedInstances,
     queryFn: () => ipc.supabase.listSelfHostedInstances(),
     enabled,

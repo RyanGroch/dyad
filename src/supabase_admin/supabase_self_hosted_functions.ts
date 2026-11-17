@@ -339,6 +339,8 @@ const TIMESTAMPED_LINE =
 const LEVEL_PREFIX = /^\[(Debug|Info|Warning|Error)\] ?(.*)$/;
 // eslint-disable-next-line no-control-regex
 const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g;
+// Printed by Deno.serve each time a function's worker starts.
+const RUNTIME_STARTUP_LINE = /^Listening on http:\/\/localhost:9999\/$/;
 const STACK_FUNCTION = /\/functions\/([A-Za-z][A-Za-z0-9_-]*)\/[^\s:)]+:\d+/;
 
 function parseDockerTimestamp(value: string): number {
@@ -389,6 +391,7 @@ export function parseEdgeRuntimeLogs(
     const level = LEVEL_PREFIX.exec(text);
     if (level) {
       finish();
+      if (RUNTIME_STARTUP_LINE.test(level[2])) continue;
       const parsed = parseDockerTimestamp(timestamp);
       if (!Number.isFinite(parsed)) continue;
       current = { timestamp: parsed, level: level[1], lines: [level[2]] };

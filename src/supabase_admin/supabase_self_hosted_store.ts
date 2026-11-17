@@ -177,14 +177,34 @@ export function getSupabaseSelfHostedInstanceSummary(
   return row ? toSummary(row) : null;
 }
 
+/** An instance as Settings lists it, with the apps connected to it. */
+export interface SupabaseSelfHostedInstanceListItem extends SupabaseSelfHostedInstanceSummary {
+  linkedApps: { id: number; name: string }[];
+}
+
 export async function listSupabaseSelfHostedInstances(): Promise<
-  SupabaseSelfHostedInstanceSummary[]
+  SupabaseSelfHostedInstanceListItem[]
 > {
   const rows = await db
     .select()
     .from(supabaseSelfHostedInstances)
     .orderBy(supabaseSelfHostedInstances.createdAt);
-  return rows.map(toSummary);
+  return rows.map((row) => ({
+    ...toSummary(row),
+    linkedApps: listLinkedApps(row.id),
+  }));
+}
+
+/** Apps whose Supabase project is this instance. */
+export function listLinkedApps(
+  instanceId: string,
+): { id: number; name: string }[] {
+  return db
+    .select({ id: apps.id, name: apps.name })
+    .from(apps)
+    .where(eq(apps.supabaseProjectId, instanceId))
+    .orderBy(apps.name)
+    .all();
 }
 
 export async function insertSupabaseSelfHostedInstance(input: {

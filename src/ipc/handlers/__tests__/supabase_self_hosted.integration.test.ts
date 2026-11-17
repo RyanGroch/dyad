@@ -119,6 +119,7 @@ describe("self-hosted Supabase instances (integration)", () => {
         url: fake!.url,
         studioUrl: null,
         ssh: null,
+        linkedApps: [],
       },
     ]);
 
@@ -144,10 +145,40 @@ describe("self-hosted Supabase instances (integration)", () => {
       },
     });
     await expect(
-      harness!.invokeHandler("supabase:remove-self-hosted-instance", {
-        id: instance.id,
-      }),
-    ).rejects.toMatchObject({ kind: DyadErrorKind.Conflict });
+      harness!.invokeHandler("supabase:list-self-hosted-instances"),
+    ).resolves.toMatchObject([
+      { id: instance.id, linkedApps: [{ id: app.id, name: "Shop" }] },
+    ]);
+  });
+
+  it("disconnects linked apps when removing an instance, without contacting it", async () => {
+    const { instance } = await addInstance();
+    const app = harness!.db
+      .insert(apps)
+      .values({
+        name: "Shop",
+        path: appDirectory,
+        supabaseProjectId: instance.id,
+      })
+      .returning()
+      .get();
+    // The server is gone.
+    await fake!.close();
+    fake = undefined;
+
+    await harness!.invokeHandler("supabase:remove-self-hosted-instance", {
+      id: instance.id,
+    });
+
+    await expect(
+      harness!.invokeHandler("supabase:list-self-hosted-instances"),
+    ).resolves.toEqual([]);
+    await expect(
+      harness!.invokeHandler("get-app", app.id),
+    ).resolves.toMatchObject({
+      supabaseProjectId: null,
+      supabaseSelfHosted: null,
+    });
   });
 
   it("finds the functions container when added with SSH", async () => {

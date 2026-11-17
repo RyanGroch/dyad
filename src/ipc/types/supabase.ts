@@ -358,7 +358,11 @@ export const supabaseContracts = {
   listSelfHostedInstances: defineContract({
     channel: "supabase:list-self-hosted-instances",
     input: z.void(),
-    output: z.array(SupabaseSelfHostedInstanceSchema),
+    output: z.array(
+      SupabaseSelfHostedInstanceSchema.extend({
+        linkedApps: z.array(z.object({ id: z.number(), name: z.string() })),
+      }),
+    ),
   }),
 
   /**
@@ -375,11 +379,15 @@ export const supabaseContracts = {
     invalidates: () => [{ family: "provider-status", provider: "supabase" }],
   }),
 
+  /** Disconnects every app linked to the instance, then removes it. */
   removeSelfHostedInstance: defineContract({
     channel: "supabase:remove-self-hosted-instance",
     input: z.object({ id: z.string().min(1) }),
     output: z.void(),
-    invalidates: () => [{ family: "provider-status", provider: "supabase" }],
+    invalidates: () => [
+      { family: "provider-status", provider: "supabase" },
+      { family: "apps" },
+    ],
   }),
 
   // Test-only channel

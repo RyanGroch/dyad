@@ -5,6 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -32,12 +42,10 @@ import {
 
 // Experimental UI: English only, like the other experiment surfaces.
 
-const NO_SSH_NOTE =
-  "Edge functions aren't deployed to this instance because it was added without SSH access. Dyad keeps their code in supabase/functions.";
-
 function functionsNote(ssh: NonNullable<App["supabaseSelfHosted"]>["ssh"]) {
-  if (!ssh) return NO_SSH_NOTE;
-  return `Edge functions deploy over SSH as ${ssh.username}@${ssh.host}. After an update, the previous version can keep answering for up to a minute after its last request, or a few minutes under steady traffic.`;
+  return ssh
+    ? "This instance can deploy edge functions. Updates to them can take a few minutes to take effect, longer than on Supabase Cloud."
+    : "This instance can't deploy edge functions.";
 }
 
 /** The API URL's host, which is usually the server to SSH into. */
@@ -154,7 +162,7 @@ export function SupabaseSelfHostedLinkSection({
   const [isLinking, setIsLinking] = useState(false);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
-  const [useSsh, setUseSsh] = useState(true);
+  const [useSsh, setUseSsh] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const link = async (projectId: string) => {
@@ -231,7 +239,7 @@ export function SupabaseSelfHostedLinkSection({
   );
 
   return (
-    <Card className="mt-3" data-testid="supabase-self-hosted-link-section">
+    <Card data-testid="supabase-self-hosted-link-section">
       <CardHeader>
         <CardTitle>Self-hosted Supabase</CardTitle>
         <CardDescription>
@@ -289,14 +297,19 @@ export function SupabaseSelfHostedLinkSection({
               <div className="flex items-center gap-2">
                 <Switch
                   id="supabase-self-hosted-use-ssh"
+                  aria-label="Enable edge functions"
                   checked={useSsh}
                   onCheckedChange={setUseSsh}
                 />
                 <Label htmlFor="supabase-self-hosted-use-ssh">
-                  Deploy edge functions over SSH
+                  Enable edge functions
                 </Label>
               </div>
-              {useSsh ? (
+              <p className="text-xs text-muted-foreground">
+                Enable this if you intend to run edge functions on your Supabase
+                instance. This will require SSH credentials.
+              </p>
+              {useSsh && (
                 <>
                   <div className="flex gap-2">
                     <div className="flex-1">
@@ -328,21 +341,12 @@ export function SupabaseSelfHostedLinkSection({
                       }}
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    The user must be able to run docker: root, or a member of
-                    the docker group. Use an OpenSSH key without a passphrase.
-                    Dyad deploys a short-lived test function to find the
-                    instance&apos;s functions container.
-                  </p>
                 </>
-              ) : (
-                <p className="text-xs text-muted-foreground">{NO_SSH_NOTE}</p>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              Dyad checks the instance before saving. The service key stays on
-              this computer and is never added to your app&apos;s code. Email
-              sign-up in your app needs SMTP configured on the instance.
+              Email isn&apos;t set up by default on self-hosted Supabase. To use
+              email sign-up, configure SMTP on your instance.
             </p>
             {formError && (
               <Alert
@@ -396,6 +400,14 @@ export function SupabaseSelfHostedInstancesSettings() {
   const instancesQuery = useSupabaseSelfHostedInstances({ enabled: true });
   const removeInstance = useRemoveSupabaseSelfHostedInstance();
   const instances = instancesQuery.data ?? [];
+  const [confirming, setConfirming] = useState<
+    (typeof instances)[number] | null
+  >(null);
+
+  const remove = (instance: (typeof instances)[number]) =>
+    removeInstance.mutate(instance.id, {
+      onSuccess: () => toast.success(`Removed ${instance.name}`),
+    });
 
   if (instances.length === 0) return null;
 
@@ -417,8 +429,8 @@ export function SupabaseSelfHostedInstancesSettings() {
               </span>
               <span className="truncate text-xs text-muted-foreground">
                 {instance.ssh
-                  ? `Functions over SSH as ${instance.ssh.username}@${instance.ssh.host}`
-                  : "No SSH: functions not deployed"}
+                  ? "Edge functions enabled"
+                  : "Edge functions not enabled"}
               </span>
             </div>
             <Button
@@ -427,9 +439,9 @@ export function SupabaseSelfHostedInstancesSettings() {
               className="h-7 shrink-0 px-2 text-muted-foreground hover:text-destructive"
               disabled={removeInstance.isPending}
               onClick={() =>
-                removeInstance.mutate(instance.id, {
-                  onSuccess: () => toast.success(`Removed ${instance.name}`),
-                })
+                instance.linkedApps.length > 0
+                  ? setConfirming(instance)
+                  : remove(instance)
               }
             >
               <Trash2 className="mr-1 h-3.5 w-3.5" />
@@ -438,6 +450,35 @@ export function SupabaseSelfHostedInstancesSettings() {
           </div>
         ))}
       </div>
+      <AlertDialog
+        open={confirming !== null}
+        onOpenChange={(open) => !open && setConfirming(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {confirming?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will disconnect the following apps:
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="list-disc pl-6 text-sm">
+            {confirming?.linkedApps.map((app) => (
+              <li key={app.id}>{app.name}</li>
+            ))}
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirming) remove(confirming);
+                setConfirming(null);
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

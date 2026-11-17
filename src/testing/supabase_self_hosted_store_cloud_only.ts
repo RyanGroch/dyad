@@ -41,6 +41,8 @@ export const listSupabaseSelfHostedInstances = vi.fn<
   typeof Store.listSupabaseSelfHostedInstances
 >(async () => []);
 
+export const listLinkedApps = vi.fn<typeof Store.listLinkedApps>(() => []);
+
 export const insertSupabaseSelfHostedInstance = vi.fn<
   typeof Store.insertSupabaseSelfHostedInstance
 >(async () => {

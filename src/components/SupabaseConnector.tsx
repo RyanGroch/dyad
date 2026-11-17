@@ -1,3 +1,4 @@
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEffect, useRef, useState } from "react";
 import {
   acknowledgeConnectionFlow,
@@ -107,13 +108,24 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     );
   }
 
+  // Linked to a Cloud project, or self-hosting not offered: Cloud only.
+  if (!settings?.enableSupabaseSelfHosted || !app || app.supabaseProjectId) {
+    return <SupabaseCloudConnector appId={appId} />;
+  }
+
   return (
-    <>
-      <SupabaseCloudConnector appId={appId} />
-      {settings?.enableSupabaseSelfHosted && app && !app.supabaseProjectId && (
+    <Tabs key={appId} defaultValue="cloud">
+      <TabsList>
+        <TabsTrigger value="cloud">Supabase Cloud</TabsTrigger>
+        <TabsTrigger value="self-hosted">Self-hosted</TabsTrigger>
+      </TabsList>
+      <TabsContent value="cloud" className="pt-3">
+        <SupabaseCloudConnector appId={appId} />
+      </TabsContent>
+      <TabsContent value="self-hosted" className="pt-3">
         <SupabaseSelfHostedLinkSection appId={appId} onLinked={refreshApp} />
-      )}
-    </>
+      </TabsContent>
+    </Tabs>
   );
 }
 

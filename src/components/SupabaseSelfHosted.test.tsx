@@ -38,6 +38,7 @@ vi.mock("sonner", () => ({
 
 import {
   SupabaseSelfHostedConnectedCard,
+  SupabaseSelfHostedInstancesSettings,
   SupabaseSelfHostedLinkSection,
 } from "./SupabaseSelfHosted";
 
@@ -90,6 +91,9 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fill("API URL", "https://supabase.example.com");
     fill("Anon or publishable key", "sb_publishable_a");
     fill("Service role or secret key", "sb_secret_s");
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Enable edge functions" }),
+    );
     fill("SSH user", "root");
     fill("Private key", "-----BEGIN OPENSSH PRIVATE KEY-----");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
@@ -120,7 +124,7 @@ describe("SupabaseSelfHostedLinkSection", () => {
     );
   });
 
-  it("adds an instance without SSH when the switch is off", async () => {
+  it("adds an instance without SSH by default", async () => {
     mocks.addSelfHostedInstance.mockResolvedValue({
       instance: { ...INSTANCE, ssh: null },
       warnings: [],
@@ -131,7 +135,6 @@ describe("SupabaseSelfHostedLinkSection", () => {
     );
 
     fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
-    fireEvent.click(screen.getByRole("switch"));
     expect(screen.queryByLabelText("Private key")).toBeNull();
     fill("Name", "Home lab");
     fill("API URL", "https://supabase.example.com");
@@ -158,8 +161,6 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fill("API URL", "https://supabase.example.com");
     fill("Anon or publishable key", "sb_publishable_a");
     fill("Service role or secret key", "wrong");
-    fill("SSH user", "root");
-    fill("Private key", "key");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
 
     expect(
@@ -188,7 +189,7 @@ describe("SupabaseSelfHostedConnectedCard", () => {
 
     expect(screen.getByText("Home lab")).toBeTruthy();
     expect(
-      screen.getByText(/deploy over SSH as root@203\.0\.113\.5/),
+      screen.getByText(/This instance can deploy edge functions/),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Studio/ }));
     expect(mocks.openExternalUrl).toHaveBeenCalledWith(
@@ -200,5 +201,56 @@ describe("SupabaseSelfHostedConnectedCard", () => {
     );
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(mocks.unsetAppProject).toHaveBeenCalledWith({ app: 7 });
+  });
+});
+
+describe("SupabaseSelfHostedInstancesSettings", () => {
+  it("removes an instance no app uses without asking", async () => {
+    mocks.listSelfHostedInstances.mockResolvedValue([
+      { ...INSTANCE, linkedApps: [] },
+    ]);
+    mocks.removeSelfHostedInstance.mockResolvedValue(undefined);
+    renderWithQuery(<SupabaseSelfHostedInstancesSettings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+
+    await waitFor(() =>
+      expect(mocks.removeSelfHostedInstance).toHaveBeenCalledWith({
+        id: "instance-1",
+      }),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("lists the apps it will disconnect before removing", async () => {
+    mocks.listSelfHostedInstances.mockResolvedValue([
+      {
+        ...INSTANCE,
+        linkedApps: [
+          { id: 1, name: "Notes" },
+          { id: 2, name: "Shop" },
+        ],
+      },
+    ]);
+    mocks.removeSelfHostedInstance.mockResolvedValue(undefined);
+    renderWithQuery(<SupabaseSelfHostedInstancesSettings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain(
+      "This will disconnect the following apps:",
+    );
+    expect(
+      Array.from(dialog.querySelectorAll("li")).map((item) => item.textContent),
+    ).toEqual(["Notes", "Shop"]);
+    expect(mocks.removeSelfHostedInstance).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" }).at(-1)!);
+
+    await waitFor(() =>
+      expect(mocks.removeSelfHostedInstance).toHaveBeenCalledWith({
+        id: "instance-1",
+      }),
+    );
   });
 });

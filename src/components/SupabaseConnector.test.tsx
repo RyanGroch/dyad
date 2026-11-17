@@ -72,6 +72,7 @@ const {
       name: string;
       url: string;
       studioUrl: string | null;
+      ssh: null;
     },
   },
   settingsState: { current: {} as Record<string, unknown> },
@@ -1415,6 +1416,7 @@ describe("self-hosted Supabase", () => {
       name: "Home lab",
       url: "https://supabase.example.com",
       studioUrl: null,
+      ssh: null,
     };
 
     renderConnector();
@@ -1425,12 +1427,15 @@ describe("self-hosted Supabase", () => {
     expect(screen.queryByTestId("self-hosted-link")).toBeNull();
   });
 
-  it("offers a self-hosted instance for an unlinked app when the experiment is on", () => {
+  it("offers self-hosted in its own tab for an unlinked app when the experiment is on", () => {
     appState.supabaseProjectId = null;
     settingsState.current = { enableSupabaseSelfHosted: true };
 
     renderConnector();
 
+    // Cloud is the tab the card opens on.
+    expect(screen.queryByTestId("self-hosted-link")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Self-hosted" }));
     expect(screen.getByTestId("self-hosted-link")).toBeTruthy();
   });
 
@@ -1449,6 +1454,7 @@ describe("self-hosted Supabase", () => {
 
       renderConnector();
 
+      expect(screen.queryByRole("tab", { name: "Self-hosted" })).toBeNull();
       expect(screen.queryByTestId("self-hosted-link")).toBeNull();
     },
   );

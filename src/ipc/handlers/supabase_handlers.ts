@@ -16,6 +16,7 @@ import { extractFunctionName } from "../../supabase_admin/supabase_utils";
 import {
   deleteSupabaseSelfHostedInstance,
   insertSupabaseSelfHostedInstance,
+  listLinkedApps,
   listSupabaseSelfHostedInstances,
   type SupabaseSelfHostedSsh,
 } from "../../supabase_admin/supabase_self_hosted_store";
@@ -465,6 +466,15 @@ export function registerSupabaseHandlers() {
   createTypedHandler(
     supabaseContracts.removeSelfHostedInstance,
     async (_, { id }) => {
+      // The renderer asked the user to confirm these. Nothing here contacts
+      // the instance, so this works after its server is gone.
+      const linked = listLinkedApps(id);
+      for (const app of linked) {
+        await disconnectSupabaseProject(app.id);
+      }
+      queryInvalidationBus.publish(
+        linked.map((app) => ({ family: "app" as const, appId: app.id })),
+      );
       await deleteSupabaseSelfHostedInstance(id);
       logger.info(`Removed self-hosted Supabase instance ${id}`);
     },
@@ -569,33 +579,7 @@ export function registerSupabaseHandlers() {
   // project. This legacy contract spells the app id `app`, so it declares the
   // provider operation directly rather than using createAppOperationHandler.
   createTypedHandler(supabaseContracts.unsetAppProject, async (_, params) => {
-    const { app } = params;
-    await appOperationCoordinator.run(
-      {
-        appId: app,
-        operation: "unset-supabase-project",
-        resources: ["provider", "supabase-functions"],
-        // Same reason as the connect above: a recording holds `provider` for
-        // its whole session, so this would queue invisibly behind it.
-        refuseWhenRecording: "disconnect this app's Supabase project",
-      },
-      async () => {
-        await db
-          .update(apps)
-          .set({
-            supabaseProjectId: null,
-            supabaseParentProjectId: null,
-            supabaseOrganizationSlug: null,
-          })
-          .where(eq(apps.id, app));
-
-        const { reconcileRunningSupabasePreview } =
-          await import("../services/app_runtime_service");
-        await reconcileRunningSupabasePreview(app);
-
-        logger.info(`Removed Supabase project association for app ${app}`);
-      },
-    );
+    await disconnectSupabaseProject(params.app);
   });
 
   // Does this app still authenticate with the project's legacy anon key?
@@ -793,6 +777,35 @@ export function registerSupabaseHandlers() {
       logger.info(
         `Set fake Supabase project ${fakeProjectId} for app ${appId} during testing.`,
       );
+    },
+  );
+}
+
+async function disconnectSupabaseProject(app: number): Promise<void> {
+  await appOperationCoordinator.run(
+    {
+      appId: app,
+      operation: "unset-supabase-project",
+      resources: ["provider", "supabase-functions"],
+      // Same reason as the connect above: a recording holds `provider` for
+      // its whole session, so this would queue invisibly behind it.
+      refuseWhenRecording: "disconnect this app's Supabase project",
+    },
+    async () => {
+      await db
+        .update(apps)
+        .set({
+          supabaseProjectId: null,
+          supabaseParentProjectId: null,
+          supabaseOrganizationSlug: null,
+        })
+        .where(eq(apps.id, app));
+
+      const { reconcileRunningSupabasePreview } =
+        await import("../services/app_runtime_service");
+      await reconcileRunningSupabasePreview(app);
+
+      logger.info(`Removed Supabase project association for app ${app}`);
     },
   );
 }

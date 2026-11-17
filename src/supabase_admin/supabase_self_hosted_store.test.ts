@@ -135,6 +135,7 @@ describe("self-hosted instance store", () => {
         url: "https://supabase.example.com",
         studioUrl: null,
         ssh: null,
+        linkedApps: [],
       },
     ]);
     expect(getSupabaseSelfHostedInstance(instance.id)).toMatchObject({
