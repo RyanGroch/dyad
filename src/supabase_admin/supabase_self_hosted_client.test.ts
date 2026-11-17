@@ -249,6 +249,35 @@ describe("checkSupabaseSelfHostedInstance", () => {
     expect(server.liveUserIds.size).toBe(0);
   });
 
+  it("treats localhost and 127.0.0.1 as the same server", async () => {
+    const server = await start("upstream");
+    const { port } = new URL(server.url);
+    server.authLinkOrigin = `http://localhost:${port}`;
+
+    await expect(
+      checkSupabaseSelfHostedInstance({
+        url: server.url,
+        anonKey: server.anonKey,
+        serviceKey: server.serviceKey,
+      }),
+    ).resolves.toEqual({ warnings: [] });
+  });
+
+  it("still warns about a loopback link on another port", async () => {
+    const server = await start("upstream");
+    server.authLinkOrigin = "http://localhost:1";
+
+    const { warnings } = await checkSupabaseSelfHostedInstance({
+      url: server.url,
+      anonKey: server.anonKey,
+      serviceKey: server.serviceKey,
+    });
+
+    expect(warnings).toEqual([
+      expect.stringContaining("link to http://localhost:1"),
+    ]);
+  });
+
   it("refuses an instance that lets the anon key run SQL", async () => {
     const server = await start("upstream");
     server.anonCanQuery = true;

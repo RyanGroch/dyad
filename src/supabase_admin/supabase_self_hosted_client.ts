@@ -238,6 +238,20 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
+ * Whether two URLs reach the same server. Loopback names are one machine, so
+ * a link to localhost matches an instance entered as 127.0.0.1.
+ */
+function isSameServer(a: URL, b: URL): boolean {
+  if (a.origin === b.origin) return true;
+  return (
+    isLoopbackHost(a.hostname) &&
+    isLoopbackHost(b.hostname) &&
+    a.protocol === b.protocol &&
+    a.port === b.port
+  );
+}
+
+/**
  * Connect-time checks for a new instance. Throws a DyadError describing the
  * first requirement that is not met; returns warnings for setups that work but
  * will surprise the user later.
@@ -367,7 +381,7 @@ async function checkAuthLinkHost({
     )?.action_link;
     if (typeof actionLink !== "string") return null;
     const linkOrigin = new URL(actionLink).origin;
-    if (linkOrigin === new URL(url).origin) return null;
+    if (isSameServer(new URL(actionLink), new URL(url))) return null;
     return `Auth emails from this instance link to ${linkOrigin}, which differs from the URL you entered. Confirmation and magic links will not work until the instance's API_EXTERNAL_URL is set to its public URL.`;
   } catch (error) {
     if (signal?.aborted) throw error;

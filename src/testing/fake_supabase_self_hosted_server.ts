@@ -33,6 +33,8 @@ export interface FakeSupabaseSelfHosted {
   anonCanQuery: boolean;
   /** Ids of admin-created users that have not been deleted. */
   liveUserIds: Set<string>;
+  /** Where auth email links point, overriding the mode's default. */
+  authLinkOrigin: string | undefined;
   /** The body /functions/v1/<name> answers with, or undefined for 404. */
   serveFunction: (name: string) => string | undefined;
   close: () => Promise<void>;
@@ -71,6 +73,7 @@ export async function startFakeSupabaseSelfHosted(
     onQuery: () => undefined,
     anonCanQuery: false,
     liveUserIds: new Set(),
+    authLinkOrigin: undefined,
     serveFunction: () => undefined,
     close: async () => {},
   };
@@ -166,7 +169,8 @@ export async function startFakeSupabaseSelfHosted(
       if (path === "/auth/v1/admin/generate_link" && req.method === "POST") {
         if (!isService(req)) return json(res, 403, { msg: "User not allowed" });
         const origin =
-          mode === "coolify" ? "http://supabase-kong:8000" : fake.url;
+          fake.authLinkOrigin ??
+          (mode === "coolify" ? "http://supabase-kong:8000" : fake.url);
         return json(res, 200, {
           action_link: `${origin}/auth/v1/verify?token=fake&type=magiclink&redirect_to=${fake.url}`,
         });
