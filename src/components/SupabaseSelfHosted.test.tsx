@@ -60,6 +60,11 @@ const INSTANCE = {
   name: "Home lab",
   url: "https://supabase.example.com",
   studioUrl: null as string | null,
+  ssh: { host: "203.0.113.5", port: 22, username: "root" } as {
+    host: string;
+    port: number;
+    username: string;
+  } | null,
 };
 
 beforeEach(() => {
@@ -85,6 +90,8 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fill("API URL", "https://supabase.example.com");
     fill("Anon or publishable key", "sb_publishable_a");
     fill("Service role or secret key", "sb_secret_s");
+    fill("SSH user", "root");
+    fill("Private key", "-----BEGIN OPENSSH PRIVATE KEY-----");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
 
     await waitFor(() => expect(onLinked).toHaveBeenCalled());
@@ -94,6 +101,13 @@ describe("SupabaseSelfHostedLinkSection", () => {
       anonKey: "sb_publishable_a",
       serviceKey: "sb_secret_s",
       studioUrl: null,
+      // An empty SSH host means the API URL's host.
+      ssh: {
+        host: "supabase.example.com",
+        port: 22,
+        username: "root",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----",
+      },
     });
     expect(mocks.setAppProject).toHaveBeenCalledWith({
       appId: 7,
@@ -103,6 +117,31 @@ describe("SupabaseSelfHostedLinkSection", () => {
     expect(mocks.toastWarning).toHaveBeenCalledWith(
       "Auth emails link to an internal host.",
       expect.anything(),
+    );
+  });
+
+  it("adds an instance without SSH when the switch is off", async () => {
+    mocks.addSelfHostedInstance.mockResolvedValue({
+      instance: { ...INSTANCE, ssh: null },
+      warnings: [],
+    });
+    const onLinked = vi.fn().mockResolvedValue(undefined);
+    renderWithQuery(
+      <SupabaseSelfHostedLinkSection appId={7} onLinked={onLinked} />,
+    );
+
+    fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
+    fireEvent.click(screen.getByRole("switch"));
+    expect(screen.queryByLabelText("Private key")).toBeNull();
+    fill("Name", "Home lab");
+    fill("API URL", "https://supabase.example.com");
+    fill("Anon or publishable key", "sb_publishable_a");
+    fill("Service role or secret key", "sb_secret_s");
+    fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
+
+    await waitFor(() => expect(onLinked).toHaveBeenCalled());
+    expect(mocks.addSelfHostedInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ ssh: null }),
     );
   });
 
@@ -119,6 +158,8 @@ describe("SupabaseSelfHostedLinkSection", () => {
     fill("API URL", "https://supabase.example.com");
     fill("Anon or publishable key", "sb_publishable_a");
     fill("Service role or secret key", "wrong");
+    fill("SSH user", "root");
+    fill("Private key", "key");
     fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
 
     expect(
@@ -146,6 +187,9 @@ describe("SupabaseSelfHostedConnectedCard", () => {
     );
 
     expect(screen.getByText("Home lab")).toBeTruthy();
+    expect(
+      screen.getByText(/deploy over SSH as root@203\.0\.113\.5/),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Studio/ }));
     expect(mocks.openExternalUrl).toHaveBeenCalledWith(
       "https://studio.example.com",

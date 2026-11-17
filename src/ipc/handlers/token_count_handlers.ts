@@ -24,6 +24,7 @@ import { detectFrameworkType } from "../utils/framework_utils";
 import log from "electron-log";
 import {
   getSupabaseContext,
+  getSupabaseSelfHostedPromptForProject,
   getSupabaseClientCode,
 } from "../../supabase_admin/supabase_context";
 
@@ -170,7 +171,9 @@ export function registerTokenCountHandlers() {
           organizationSlug: chat.app.supabaseOrganizationSlug ?? null,
         });
         systemPrompt +=
-          "\n\n" + getSupabaseAvailableSystemPrompt(supabaseClientCode);
+          "\n\n" +
+          getSupabaseAvailableSystemPrompt(supabaseClientCode) +
+          getSupabaseSelfHostedPromptForProject(chat.app.supabaseProjectId!);
         if (!willUseLocalAgentStream) {
           supabaseContext = await getSupabaseContext({
             supabaseProjectId: chat.app.supabaseProjectId!,

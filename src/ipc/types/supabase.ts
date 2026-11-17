@@ -181,11 +181,20 @@ export const SUPABASE_PROJECT_CREATED_BUT_UNLINKED =
 // Supabase Contracts
 // =============================================================================
 
+/** SSH details shown to the renderer; the private key never leaves main. */
+export const SupabaseSelfHostedSshSummarySchema = z.object({
+  host: z.string(),
+  port: z.number(),
+  username: z.string(),
+});
+
 export const SupabaseSelfHostedInstanceSchema = z.object({
   id: z.string(),
   name: z.string(),
   url: z.string(),
   studioUrl: z.string().nullable(),
+  /** Null when added without SSH; edge functions are then not deployed. */
+  ssh: SupabaseSelfHostedSshSummarySchema.nullable(),
 });
 
 export type SupabaseSelfHostedInstance = z.infer<
@@ -198,6 +207,15 @@ export const AddSupabaseSelfHostedInstanceParamsSchema = z.object({
   studioUrl: z.string().trim().max(2048).nullable(),
   anonKey: z.string().trim().min(1).max(4096),
   serviceKey: z.string().trim().min(1).max(4096),
+  /** SSH access for deploying edge functions, or null to skip them. */
+  ssh: z
+    .object({
+      host: z.string().trim().min(1).max(253),
+      port: z.number().int().min(1).max(65535),
+      username: z.string().trim().min(1).max(64),
+      privateKey: z.string().trim().min(1).max(16384),
+    })
+    .nullable(),
 });
 
 export type AddSupabaseSelfHostedInstanceParams = z.infer<

@@ -105,6 +105,7 @@ import { sendTelemetryEvent } from "../utils/telemetry";
 import { reportFsFailure } from "../utils/fs_failure_telemetry";
 import {
   getSupabaseContext,
+  getSupabaseSelfHostedPromptForProject,
   getSupabaseClientCode,
 } from "../../supabase_admin/supabase_context";
 import { SUMMARIZE_CHAT_SYSTEM_PROMPT } from "../../prompts/summarize_chat_system_prompt";
@@ -2624,6 +2625,9 @@ ${componentSnippet}
           systemPrompt +=
             "\n\n" +
             getSupabaseAvailableSystemPrompt(supabaseClientCode) +
+            getSupabaseSelfHostedPromptForProject(
+              updatedChat.app.supabaseProjectId!,
+            ) +
             "\n\n" +
             // For local agent, we will explicitly fetch the database context when needed.
             (willUseLocalAgentStream

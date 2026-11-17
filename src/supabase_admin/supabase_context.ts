@@ -7,7 +7,11 @@ import {
   runSupabaseQuery,
   type SupabaseApiKey,
 } from "./supabase_management_client";
-import { getSupabaseProjectUrl } from "./supabase_self_hosted_store";
+import {
+  getSupabaseProjectUrl,
+  getSupabaseSelfHostedInstanceSummary,
+} from "./supabase_self_hosted_store";
+import { getSupabaseSelfHostedSystemPrompt } from "@/prompts/supabase_prompt";
 import {
   SUPABASE_SCHEMA_QUERY,
   SUPABASE_FUNCTIONS_QUERY,
@@ -118,6 +122,18 @@ const SUPABASE_PUBLISHABLE_KEY = "${publishableKey}";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);`;
 };
+
+/** Extra prompt rules for a self-hosted instance; empty for Cloud. */
+export function getSupabaseSelfHostedPromptForProject(
+  projectId: string,
+): string {
+  const instance = getSupabaseSelfHostedInstanceSummary(projectId);
+  if (!instance) return "";
+  return getSupabaseSelfHostedSystemPrompt({
+    url: instance.url,
+    functionsDeployed: instance.ssh !== null,
+  });
+}
 
 export async function getSupabaseContext({
   supabaseProjectId,

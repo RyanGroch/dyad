@@ -509,6 +509,31 @@ serve(async (req) => {
 `;
 }
 
+/**
+ * Appended after the Supabase instructions when the app uses a self-hosted
+ * instance, whose edge function URL, secrets and deploys differ from Cloud.
+ */
+export function getSupabaseSelfHostedSystemPrompt({
+  url,
+  functionsDeployed,
+}: {
+  url: string;
+  functionsDeployed: boolean;
+}) {
+  const deploys = functionsDeployed
+    ? `- Edge functions are deployed when you write them. After an update, the function's previous version can keep answering for up to a minute after its last request, or a few minutes under steady traffic, so a test right after an update may still show the old behavior.`
+    : `- Edge functions are NOT deployed to this instance because it was added without SSH access. Their code is saved but does not run. Prefer database features such as RLS policies and Postgres functions, and tell the user when a feature needs an edge function.`;
+  return `
+# Self-hosted Supabase
+
+This app uses a self-hosted Supabase instance at ${url}, not Supabase Cloud. These rules override the edge function instructions above:
+
+- Call edge functions at ${url}/functions/v1/EDGE_FUNCTION_NAME, never at a supabase.co URL.
+- Secrets can't be set from Dyad or Supabase Studio here. Tell the user to add each secret as an environment variable on the server that runs Supabase (its .env file, or the service's environment variables in Coolify) and then restart the edge functions container. Name the exact variables the function reads.
+${deploys}
+`;
+}
+
 export const SUPABASE_NOT_AVAILABLE_SYSTEM_PROMPT = `
 If the user wants to use supabase or do something that requires auth, database or server-side functions (e.g. loading API keys, secrets),
 tell them that they need to add a database to their app.

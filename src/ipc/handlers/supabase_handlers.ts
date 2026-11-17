@@ -17,7 +17,9 @@ import {
   deleteSupabaseSelfHostedInstance,
   insertSupabaseSelfHostedInstance,
   listSupabaseSelfHostedInstances,
+  type SupabaseSelfHostedSsh,
 } from "../../supabase_admin/supabase_self_hosted_store";
+import { checkSupabaseSelfHostedSsh } from "../../supabase_admin/supabase_self_hosted_functions";
 import {
   checkSupabaseSelfHostedInstance,
   normalizeSupabaseSelfHostedUrl,
@@ -431,12 +433,29 @@ export function registerSupabaseHandlers() {
         anonKey: params.anonKey,
         serviceKey: params.serviceKey,
       });
+      let ssh: SupabaseSelfHostedSsh | null = null;
+      if (params.ssh) {
+        const sshInput = {
+          ...params.ssh,
+          // ssh2 wants the key's final newline, which trimming removed.
+          privateKey: `${params.ssh.privateKey}\n`,
+        };
+        ssh = {
+          ...sshInput,
+          ...(await checkSupabaseSelfHostedSsh({
+            url,
+            anonKey: params.anonKey,
+            ssh: sshInput,
+          })),
+        };
+      }
       const instance = await insertSupabaseSelfHostedInstance({
         name: params.name,
         url,
         studioUrl,
         anonKey: params.anonKey,
         serviceKey: params.serviceKey,
+        ssh,
       });
       logger.info(`Added self-hosted Supabase instance ${instance.id}`);
       return { instance, warnings };

@@ -27,7 +27,15 @@ import {
   type SupabaseSelfHostedInstance,
 } from "./supabase_self_hosted_store";
 import { runSupabaseSelfHostedQuery } from "./supabase_self_hosted_client";
-import { assertSupabaseFunctionDeploysSupported } from "./supabase_function_sync_skip";
+import {
+  assertSupabaseFunctionDeploysSupported,
+  SupabaseFunctionsUnsupportedError,
+} from "./supabase_function_sync_skip";
+import {
+  deleteSupabaseSelfHostedFunction,
+  deploySupabaseSelfHostedFunction,
+  readSupabaseSelfHostedFunctionLogs,
+} from "./supabase_self_hosted_functions";
 import {
   appOperationCoordinator,
   readAppResource,
@@ -759,6 +767,12 @@ const SupabaseApiKeySchema = z.object({
 });
 const SupabaseApiKeysSchema = z.array(SupabaseApiKeySchema);
 
+/** The instance's SSH access, which function deploys, deletes and logs need. */
+function withSshOrThrow(instance: SupabaseSelfHostedInstance) {
+  if (!instance.ssh) throw new SupabaseFunctionsUnsupportedError();
+  return { id: instance.id, ssh: instance.ssh };
+}
+
 /**
  * A self-hosted instance's configured keys in the Management API's shape, so key
  * selection treats both backends alike. The service key is withheld unless
@@ -942,6 +956,21 @@ export async function getSupabaseProjectLogs(
   timestampStart?: number,
   organizationSlug?: string,
 ): Promise<SupabaseProjectLogsResponse> {
+  const selfHosted = getSupabaseSelfHostedInstance(projectId);
+  if (selfHosted) {
+    if (!selfHosted.ssh) return { result: [] };
+    const logs = await readSupabaseSelfHostedFunctionLogs({
+      instance: { id: selfHosted.id, ssh: selfHosted.ssh },
+      sinceMs: timestampStart ?? Date.now() - 10 * 60 * 1000,
+    });
+    return {
+      result: logs.map((entry) => ({
+        timestamp: entry.timestamp,
+        event_message: entry.message,
+        level: entry.level,
+      })),
+    };
+  }
   const supabase = await getSupabaseClient({ organizationSlug });
 
   // The unified endpoint is ClickHouse-backed. The time range is applied by
@@ -1148,6 +1177,15 @@ export async function deleteSupabaseFunction({
     `Deleting Supabase function: ${functionName} from project: ${supabaseProjectId}`,
   );
   callerSignal?.throwIfAborted();
+  const selfHosted = getSupabaseSelfHostedInstance(supabaseProjectId);
+  if (selfHosted) {
+    await deleteSupabaseSelfHostedFunction({
+      instance: withSshOrThrow(selfHosted),
+      functionName,
+      signal: callerSignal,
+    });
+    return;
+  }
   const supabase = await abortable(
     getSupabaseClient({ organizationSlug }),
     deploymentSignal(callerSignal),
@@ -1185,6 +1223,15 @@ export async function listSupabaseFunctions({
     return [];
   }
 
+  if (isSupabaseSelfHostedProject(supabaseProjectId)) {
+    // Only pruning lists functions, and pruning never runs on a self-hosted
+    // instance: its functions directory also holds the router and other
+    // apps' functions.
+    throw new DyadError(
+      "Listing edge functions isn't supported on self-hosted Supabase instances.",
+      DyadErrorKind.Precondition,
+    );
+  }
   logger.info(`Listing Supabase functions for project: ${supabaseProjectId}`);
   callerSignal?.throwIfAborted();
   const supabase = await abortable(
@@ -1501,6 +1548,34 @@ async function deploySupabaseFunctionUnqueued({
     };
   }
 
+  const selfHosted = getSupabaseSelfHostedInstance(supabaseProjectId);
+  if (selfHosted) {
+    // Files are written straight into the edge runtime's directory, so the
+    // function is live at once and the batch activation step has no work.
+    await deploySupabaseSelfHostedFunction({
+      instance: withSshOrThrow(selfHosted),
+      functionName,
+      files: await Promise.all(
+        filesToUpload
+          // The edge runtime does not read a per-function import map.
+          .filter((file) => file.relativePath !== importMapRelPath)
+          .map(async (file) => ({
+            relativePath: file.relativePath,
+            content: new Uint8Array(await file.content.arrayBuffer()),
+          })),
+      ),
+      signal,
+    });
+    return {
+      id: functionName,
+      slug: functionName,
+      name: functionName,
+      status: "ACTIVE",
+      version: 1,
+      entrypoint_path: entrypointPath,
+    };
+  }
+
   // 5) Prepare multipart form-data
   const supabase = await abortable(
     getSupabaseClient({ organizationSlug }),
@@ -1609,6 +1684,8 @@ async function bulkUpdateFunctionsUnqueued({
     );
     return;
   }
+  // Self-hosted deploys are live as soon as their files are written.
+  if (isSupabaseSelfHostedProject(supabaseProjectId)) return;
 
   signal?.throwIfAborted();
   const supabase = await abortable(

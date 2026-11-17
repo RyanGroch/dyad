@@ -33,6 +33,8 @@ export interface FakeSupabaseSelfHosted {
   anonCanQuery: boolean;
   /** Ids of admin-created users that have not been deleted. */
   liveUserIds: Set<string>;
+  /** The body /functions/v1/<name> answers with, or undefined for 404. */
+  serveFunction: (name: string) => string | undefined;
   close: () => Promise<void>;
 }
 
@@ -69,6 +71,7 @@ export async function startFakeSupabaseSelfHosted(
     onQuery: () => undefined,
     anonCanQuery: false,
     liveUserIds: new Set(),
+    serveFunction: () => undefined,
     close: async () => {},
   };
 
@@ -106,6 +109,19 @@ export async function startFakeSupabaseSelfHosted(
         return json(res, 401, {
           message: "Invalid authentication credentials",
         });
+      }
+
+      const functionPath = /^\/functions\/v1\/([^/?]+)/.exec(path);
+      if (functionPath) {
+        const answer = fake.serveFunction(functionPath[1]);
+        if (answer === undefined) {
+          return json(res, 404, {
+            code: "NOT_FOUND",
+            message: "Requested function was not found",
+          });
+        }
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return res.end(answer);
       }
 
       if (path === "/auth/v1/health" && req.method === "GET") {

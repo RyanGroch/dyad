@@ -23,6 +23,10 @@ export const getSupabaseSelfHostedInstanceSummary = vi.fn<
   typeof Store.getSupabaseSelfHostedInstanceSummary
 >(() => null);
 
+export const canDeploySupabaseFunctions = vi.fn<
+  typeof Store.canDeploySupabaseFunctions
+>(() => true);
+
 export const getSupabaseProjectUrl = vi.fn<typeof Store.getSupabaseProjectUrl>(
   (projectId) => `https://${projectId}.supabase.co`,
 );

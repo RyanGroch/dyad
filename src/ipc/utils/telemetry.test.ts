@@ -29,6 +29,7 @@ import {
 import {
   SUPABASE_SELF_HOSTED_REQUEST_ERROR_NAME,
   SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME,
+  SUPABASE_SELF_HOSTED_COMMAND_ERROR_NAME,
 } from "@/shared/supabase_self_hosted_error_names";
 import { ResponseValidationError } from "@vercel/sdk/models/responsevalidationerror.js";
 import { SDKError } from "@vercel/sdk/models/sdkerror.js";
@@ -152,10 +153,11 @@ describe("shouldFilterTelemetryException", () => {
     }
   });
 
-  it("filters self-hosted Supabase request and transport errors", () => {
+  it("filters self-hosted Supabase request, transport and command errors", () => {
     for (const name of [
       SUPABASE_SELF_HOSTED_REQUEST_ERROR_NAME,
       SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME,
+      SUPABASE_SELF_HOSTED_COMMAND_ERROR_NAME,
     ]) {
       const error = new DyadError(
         "relation public.customers does not exist",

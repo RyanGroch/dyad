@@ -1,10 +1,20 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInMemoryTestDb, type TestDb } from "@/testing/test_db";
+import { eq } from "drizzle-orm";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   startFakeSupabaseSelfHosted,
   type FakeSupabaseSelfHosted,
 } from "@/testing/fake_supabase_self_hosted_server";
+import {
+  startFakeEdgeRuntimeSsh,
+  type FakeEdgeRuntimeSsh,
+} from "@/testing/fake_supabase_edge_runtime_ssh";
+import { generateSshKeyPair } from "@/testing/fake_ssh_server";
+import { closeSupabaseSelfHostedSessions } from "./supabase_self_hosted_functions";
 import {
   apps,
   supabaseSelfHostedInstances,
@@ -12,6 +22,7 @@ import {
 } from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
 import {
+  canDeploySupabaseFunctions,
   deleteSupabaseSelfHostedInstance,
   getSupabaseProjectUrl,
   getSupabaseSelfHostedInstance,
@@ -21,7 +32,9 @@ import {
   listSupabaseSelfHostedInstances,
 } from "./supabase_self_hosted_store";
 import {
+  deleteSupabaseFunction,
   deploySupabaseFunction,
+  getSupabaseProjectLogs,
   executeSupabaseSql,
   getProjectApiKeys,
   getSupabaseProjectName,
@@ -52,6 +65,8 @@ vi.mock("@/main/settings", () => ({
 
 let db: TestDb;
 let fake: FakeSupabaseSelfHosted | undefined;
+let edgeSsh: FakeEdgeRuntimeSsh | undefined;
+let appDir: string | undefined;
 
 beforeEach(() => {
   db = createInMemoryTestDb();
@@ -62,6 +77,11 @@ afterEach(async () => {
   db.$client.close();
   await fake?.close();
   fake = undefined;
+  closeSupabaseSelfHostedSessions();
+  await edgeSsh?.close();
+  edgeSsh = undefined;
+  if (appDir) fs.rmSync(appDir, { recursive: true, force: true });
+  appDir = undefined;
 });
 
 async function addInstance(overrides: { url?: string } = {}) {
@@ -71,7 +91,35 @@ async function addInstance(overrides: { url?: string } = {}) {
     studioUrl: null,
     anonKey: "sb_publishable_anon",
     serviceKey: "sb_secret_service",
+    ssh: null,
   });
+}
+
+async function addInstanceWithSsh() {
+  edgeSsh = await startFakeEdgeRuntimeSsh();
+  return insertSupabaseSelfHostedInstance({
+    name: "Home lab",
+    url: "https://supabase.example.com",
+    studioUrl: null,
+    anonKey: "sb_publishable_anon",
+    serviceKey: "sb_secret_service",
+    ssh: {
+      host: "127.0.0.1",
+      port: edgeSsh.port,
+      username: "deployer",
+      privateKey: generateSshKeyPair().private,
+      hostKeyFingerprint: edgeSsh.hostKeyFingerprint,
+      functionsContainer: "supabase-edge-functions",
+    },
+  });
+}
+
+function writeAppFunction(name: string, text: string) {
+  appDir ??= fs.mkdtempSync(path.join(os.tmpdir(), "dyad-self-hosted-app-"));
+  const dir = path.join(appDir, "supabase", "functions", name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "index.ts"), text);
+  return appDir;
 }
 
 describe("self-hosted instance store", () => {
@@ -86,6 +134,7 @@ describe("self-hosted instance store", () => {
         name: "Home lab",
         url: "https://supabase.example.com",
         studioUrl: null,
+        ssh: null,
       },
     ]);
     expect(getSupabaseSelfHostedInstance(instance.id)).toMatchObject({
@@ -188,6 +237,7 @@ describe("Supabase operations on a self-hosted project", () => {
       studioUrl: null,
       anonKey: fake.anonKey,
       serviceKey: fake.serviceKey,
+      ssh: null,
     });
 
     await expect(
@@ -233,7 +283,84 @@ describe("Supabase operations on a self-hosted project", () => {
     ).resolves.toEqual([]);
   });
 
-  it("skips edge function deploys rather than failing them", async () => {
+  it("only deploys functions to an instance added with SSH", async () => {
+    const withoutSsh = await addInstance();
+    const withSsh = await addInstanceWithSsh();
+
+    expect(canDeploySupabaseFunctions("abcdefghijklmnopqrst")).toBe(true);
+    expect(canDeploySupabaseFunctions(withoutSsh.id)).toBe(false);
+    expect(canDeploySupabaseFunctions(withSsh.id)).toBe(true);
+    // The renderer sees where functions go, but never the key.
+    expect(withSsh.ssh).toEqual({
+      host: "127.0.0.1",
+      port: edgeSsh!.port,
+      username: "deployer",
+    });
+    const row = db
+      .select()
+      .from(supabaseSelfHostedInstances)
+      .where(eq(supabaseSelfHostedInstances.id, withSsh.id))
+      .get()!;
+    expect(row.sshPrivateKeyEncrypted).toMatch(/^enc:-----BEGIN/);
+  });
+
+  it("deploys every function over SSH and prunes nothing", async () => {
+    const instance = await addInstanceWithSsh();
+    const container = "supabase-edge-functions";
+    // The router and another app's function share the directory.
+    edgeSsh!.files.set(
+      container,
+      new Map([
+        ["main/index.ts", "router"],
+        ["other-app/index.ts", "theirs"],
+      ]),
+    );
+    writeAppFunction("hello", "export {};\n");
+    const appPath = writeAppFunction("goodbye", "export {};\n");
+
+    const errors = await deploySupabaseFunctions({
+      appPath,
+      supabaseProjectId: instance.id,
+      supabaseOrganizationSlug: null,
+      skipPruneEdgeFunctions: false,
+    });
+
+    expect(errors).toEqual([]);
+    expect([...edgeSsh!.files.get(container)!.keys()].sort()).toEqual([
+      "goodbye/index.ts",
+      "hello/index.ts",
+      "main/index.ts",
+      "other-app/index.ts",
+    ]);
+  });
+
+  it("deletes a function and reads its logs over SSH", async () => {
+    const instance = await addInstanceWithSsh();
+    const container = "supabase-edge-functions";
+    edgeSsh!.files.set(container, new Map([["hello/index.ts", "x"]]));
+    edgeSsh!.logs =
+      "2026-11-17T17:30:44.785834986Z [Warning] [hello] slow path\n2026-11-17T17:30:44.785874776Z \n";
+
+    await deleteSupabaseFunction({
+      supabaseProjectId: instance.id,
+      functionName: "hello",
+      organizationSlug: null,
+    });
+    const logs = await getSupabaseProjectLogs(instance.id, 0);
+
+    expect(edgeSsh!.files.get(container)!.size).toBe(0);
+    expect(logs).toEqual({
+      result: [
+        {
+          timestamp: Date.parse("2026-11-17T17:30:44.785Z"),
+          event_message: "[hello] slow path",
+          level: "warn",
+        },
+      ],
+    });
+  });
+
+  it("skips edge function deploys without SSH rather than failing them", async () => {
     const instance = await addInstance();
 
     const single = await deploySupabaseFunction({

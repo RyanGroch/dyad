@@ -24,6 +24,26 @@ export interface SupabaseSelfHostedInstance {
   anonKey: string;
   /** service_role or secret key; never sent to the renderer or app code. */
   serviceKey: string;
+  /** SSH access for edge functions, or null when added without it. */
+  ssh: SupabaseSelfHostedSsh | null;
+}
+
+/** How Dyad reaches the server's edge runtime. Main process only. */
+export interface SupabaseSelfHostedSsh {
+  host: string;
+  port: number;
+  username: string;
+  /** OpenSSH private key without a passphrase. */
+  privateKey: string;
+  hostKeyFingerprint: string;
+  functionsContainer: string;
+}
+
+/** The SSH details the renderer may see: no key. */
+export interface SupabaseSelfHostedSshSummary {
+  host: string;
+  port: number;
+  username: string;
 }
 
 /** What the renderer may see about an instance: no keys. */
@@ -32,6 +52,7 @@ export interface SupabaseSelfHostedInstanceSummary {
   name: string;
   url: string;
   studioUrl: string | null;
+  ssh: SupabaseSelfHostedSshSummary | null;
 }
 
 type InstanceRow = typeof supabaseSelfHostedInstances.$inferSelect;
@@ -42,7 +63,28 @@ function toSummary(row: InstanceRow): SupabaseSelfHostedInstanceSummary {
     name: row.name,
     url: row.url,
     studioUrl: row.studioUrl,
+    ssh: hasSsh(row)
+      ? { host: row.sshHost, port: row.sshPort, username: row.sshUsername }
+      : null,
   };
+}
+
+function hasSsh(row: InstanceRow): row is InstanceRow & {
+  sshHost: string;
+  sshPort: number;
+  sshUsername: string;
+  sshPrivateKeyEncrypted: string;
+  sshHostKeyFingerprint: string;
+  functionsContainer: string;
+} {
+  return (
+    row.sshHost !== null &&
+    row.sshPort !== null &&
+    row.sshUsername !== null &&
+    row.sshPrivateKeyEncrypted !== null &&
+    row.sshHostKeyFingerprint !== null &&
+    row.functionsContainer !== null
+  );
 }
 
 function findRow(projectId: string | null | undefined): InstanceRow | null {
@@ -98,7 +140,28 @@ export function getSupabaseSelfHostedInstance(
     studioUrl: row.studioUrl,
     anonKey: decryptFromString(row.anonKeyEncrypted),
     serviceKey: decryptFromString(row.serviceKeyEncrypted),
+    ssh: hasSsh(row)
+      ? {
+          host: row.sshHost,
+          port: row.sshPort,
+          username: row.sshUsername,
+          privateKey: decryptFromString(row.sshPrivateKeyEncrypted),
+          hostKeyFingerprint: row.sshHostKeyFingerprint,
+          functionsContainer: row.functionsContainer,
+        }
+      : null,
   };
+}
+
+/**
+ * Whether Dyad can deploy edge functions to a project: always for Cloud, and
+ * for a self-hosted instance only when it was added with SSH access.
+ */
+export function canDeploySupabaseFunctions(
+  projectId: string | null | undefined,
+): boolean {
+  const row = findRow(projectId);
+  return row === null || hasSsh(row);
 }
 
 /** The base URL the generated app and Auth Admin calls use for a project. */
@@ -130,6 +193,7 @@ export async function insertSupabaseSelfHostedInstance(input: {
   studioUrl: string | null;
   anonKey: string;
   serviceKey: string;
+  ssh: SupabaseSelfHostedSsh | null;
 }): Promise<SupabaseSelfHostedInstanceSummary> {
   const [row] = await db
     .insert(supabaseSelfHostedInstances)
@@ -140,6 +204,14 @@ export async function insertSupabaseSelfHostedInstance(input: {
       studioUrl: input.studioUrl,
       anonKeyEncrypted: encryptToString(input.anonKey),
       serviceKeyEncrypted: encryptToString(input.serviceKey),
+      sshHost: input.ssh?.host ?? null,
+      sshPort: input.ssh?.port ?? null,
+      sshUsername: input.ssh?.username ?? null,
+      sshPrivateKeyEncrypted: input.ssh
+        ? encryptToString(input.ssh.privateKey)
+        : null,
+      sshHostKeyFingerprint: input.ssh?.hostKeyFingerprint ?? null,
+      functionsContainer: input.ssh?.functionsContainer ?? null,
     })
     .returning();
   return toSummary(row);

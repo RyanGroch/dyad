@@ -13,3 +13,7 @@ export const SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME =
 /** A non-2xx from the instance. */
 export const SUPABASE_SELF_HOSTED_REQUEST_ERROR_NAME =
   "SupabaseSelfHostedRequestError";
+
+/** A command on the instance's server, run over SSH, that failed. */
+export const SUPABASE_SELF_HOSTED_COMMAND_ERROR_NAME =
+  "SupabaseSelfHostedCommandError";

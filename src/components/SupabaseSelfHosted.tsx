@@ -3,6 +3,8 @@ import { ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -30,8 +32,22 @@ import {
 
 // Experimental UI: English only, like the other experiment surfaces.
 
-const FUNCTIONS_NOTE =
-  "Edge functions aren't deployed to self-hosted instances yet. Dyad keeps their code in supabase/functions.";
+const NO_SSH_NOTE =
+  "Edge functions aren't deployed to this instance because it was added without SSH access. Dyad keeps their code in supabase/functions.";
+
+function functionsNote(ssh: NonNullable<App["supabaseSelfHosted"]>["ssh"]) {
+  if (!ssh) return NO_SSH_NOTE;
+  return `Edge functions deploy over SSH as ${ssh.username}@${ssh.host}. After an update, the previous version can keep answering for up to a minute after its last request, or a few minutes under steady traffic.`;
+}
+
+/** The API URL's host, which is usually the server to SSH into. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url.trim()).hostname;
+  } catch {
+    return "";
+  }
+}
 
 async function linkApp(appId: number, projectId: string) {
   await ipc.supabase.setAppProject({
@@ -97,7 +113,7 @@ export function SupabaseSelfHostedConnectedCard({
       <CardContent className="space-y-4">
         <Alert>
           <Info className="h-4 w-4" />
-          <AlertDescription>{FUNCTIONS_NOTE}</AlertDescription>
+          <AlertDescription>{functionsNote(instance.ssh)}</AlertDescription>
         </Alert>
         <Button
           variant="destructive"
@@ -117,6 +133,10 @@ const EMPTY_FORM = {
   anonKey: "",
   serviceKey: "",
   studioUrl: "",
+  sshHost: "",
+  sshPort: "22",
+  sshUsername: "",
+  sshPrivateKey: "",
 };
 
 /** Lets an unlinked app connect to an existing or new self-hosted instance. */
@@ -134,6 +154,7 @@ export function SupabaseSelfHostedLinkSection({
   const [isLinking, setIsLinking] = useState(false);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [useSsh, setUseSsh] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
 
   const link = async (projectId: string) => {
@@ -152,6 +173,14 @@ export function SupabaseSelfHostedLinkSection({
   const handleAdd = async (event: React.FormEvent) => {
     event.preventDefault();
     setFormError(null);
+    const sshPort = Number(form.sshPort);
+    if (
+      useSsh &&
+      !(Number.isInteger(sshPort) && sshPort > 0 && sshPort < 65536)
+    ) {
+      setFormError("Enter an SSH port between 1 and 65535.");
+      return;
+    }
     try {
       const { instance, warnings } = await addInstance.mutateAsync({
         name: form.name,
@@ -159,6 +188,14 @@ export function SupabaseSelfHostedLinkSection({
         anonKey: form.anonKey,
         serviceKey: form.serviceKey,
         studioUrl: form.studioUrl.trim() || null,
+        ssh: useSsh
+          ? {
+              host: form.sshHost.trim() || hostOf(form.url),
+              port: sshPort,
+              username: form.sshUsername,
+              privateKey: form.sshPrivateKey,
+            }
+          : null,
       });
       for (const warning of warnings) {
         toast.warning(warning, { duration: 20_000 });
@@ -248,6 +285,60 @@ export function SupabaseSelfHostedLinkSection({
               secret: true,
             })}
             {field("studioUrl", "Studio URL (optional)", { optional: true })}
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="supabase-self-hosted-use-ssh"
+                  checked={useSsh}
+                  onCheckedChange={setUseSsh}
+                />
+                <Label htmlFor="supabase-self-hosted-use-ssh">
+                  Deploy edge functions over SSH
+                </Label>
+              </div>
+              {useSsh ? (
+                <>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      {field("sshHost", "SSH host", {
+                        placeholder: hostOf(form.url) || "supabase.example.com",
+                        optional: true,
+                      })}
+                    </div>
+                    <div className="w-24">{field("sshPort", "Port", {})}</div>
+                  </div>
+                  {field("sshUsername", "SSH user", { placeholder: "root" })}
+                  <div className="space-y-1">
+                    <Label htmlFor="supabase-self-hosted-sshPrivateKey">
+                      Private key
+                    </Label>
+                    <Textarea
+                      id="supabase-self-hosted-sshPrivateKey"
+                      required
+                      rows={4}
+                      className="font-mono text-xs"
+                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                      value={form.sshPrivateKey}
+                      onChange={(event) => {
+                        setForm((current) => ({
+                          ...current,
+                          sshPrivateKey: event.target.value,
+                        }));
+                        setFormError(null);
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    The user must be able to run docker: root, or a member of
+                    the docker group. Use an OpenSSH key without a passphrase.
+                    Dyad deploys a short-lived test function to find the
+                    instance&apos;s functions container.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">{NO_SSH_NOTE}</p>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">
               Dyad checks the instance before saving. The service key stays on
               this computer and is never added to your app&apos;s code. Email
@@ -295,8 +386,6 @@ export function SupabaseSelfHostedLinkSection({
             Add self-hosted instance
           </Button>
         )}
-
-        <p className="text-xs text-muted-foreground">{FUNCTIONS_NOTE}</p>
       </CardContent>
     </Card>
   );
@@ -325,6 +414,11 @@ export function SupabaseSelfHostedInstancesSettings() {
               <span className="truncate font-medium">{instance.name}</span>
               <span className="truncate text-xs text-muted-foreground">
                 {instance.url}
+              </span>
+              <span className="truncate text-xs text-muted-foreground">
+                {instance.ssh
+                  ? `Functions over SSH as ${instance.ssh.username}@${instance.ssh.host}`
+                  : "No SSH: functions not deployed"}
               </span>
             </div>
             <Button

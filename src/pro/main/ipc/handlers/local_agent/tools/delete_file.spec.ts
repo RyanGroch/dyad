@@ -385,7 +385,7 @@ describe("deleteFileTool", () => {
       );
     });
 
-    it("reports a function on a self-hosted instance as saved but not deployed", async () => {
+    it("reports a function on a self-hosted instance without SSH as saved but not deployed", async () => {
       vi.mocked(fs.lstatSync).mockReturnValue({
         isDirectory: () => false,
         isSymbolicLink: () => false,
@@ -400,7 +400,7 @@ describe("deleteFileTool", () => {
       );
 
       expect(result).toMatch(
-        /^Successfully deleted .*aren't deployed to self-hosted Supabase instances yet/,
+        /^Successfully deleted .*added without SSH access/,
       );
     });
 

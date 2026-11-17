@@ -25,6 +25,7 @@ import {
 import {
   SUPABASE_SELF_HOSTED_REQUEST_ERROR_NAME,
   SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME,
+  SUPABASE_SELF_HOSTED_COMMAND_ERROR_NAME,
 } from "@/shared/supabase_self_hosted_error_names";
 import {
   POSTHOG_CHUNK_IDS_PROPERTY,
@@ -469,7 +470,8 @@ export function shouldFilterTelemetryException(error: unknown): boolean {
   if (
     error instanceof Error &&
     (error.name === SUPABASE_SELF_HOSTED_REQUEST_ERROR_NAME ||
-      error.name === SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME)
+      error.name === SUPABASE_SELF_HOSTED_TRANSPORT_ERROR_NAME ||
+      error.name === SUPABASE_SELF_HOSTED_COMMAND_ERROR_NAME)
   ) {
     return true;
   }
