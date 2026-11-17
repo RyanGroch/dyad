@@ -431,6 +431,7 @@ export const queryKeys = {
     all: ["supabase"] as const,
     organizations: ["supabase", "organizations"] as const,
     projects: ["supabase", "projects"] as const,
+    selfHostedInstances: ["supabase", "selfHostedInstances"] as const,
     redeploy: ({ appId }: { appId: number }) =>
       ["supabase", "redeploy", appId] as const,
     /**

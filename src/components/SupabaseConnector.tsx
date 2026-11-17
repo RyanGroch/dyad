@@ -74,6 +74,10 @@ import {
   isSupabaseConnected,
 } from "@/lib/schemas";
 import { showError } from "@/lib/toast";
+import {
+  SupabaseSelfHostedConnectedCard,
+  SupabaseSelfHostedLinkSection,
+} from "@/components/SupabaseSelfHosted";
 
 /** A failed create, and whether it left a real project behind. */
 interface CreateError {
@@ -91,6 +95,29 @@ function findLinkedSupabaseProject(
 }
 
 export function SupabaseConnector({ appId }: { appId: number }) {
+  const { settings } = useSettings();
+  const { app, refreshApp } = useLoadApp(appId);
+
+  if (app?.supabaseSelfHosted) {
+    return (
+      <SupabaseSelfHostedConnectedCard
+        app={{ ...app, supabaseSelfHosted: app.supabaseSelfHosted }}
+        onChanged={refreshApp}
+      />
+    );
+  }
+
+  return (
+    <>
+      <SupabaseCloudConnector appId={appId} />
+      {settings?.enableSupabaseSelfHosted && app && !app.supabaseProjectId && (
+        <SupabaseSelfHostedLinkSection appId={appId} onLinked={refreshApp} />
+      )}
+    </>
+  );
+}
+
+function SupabaseCloudConnector({ appId }: { appId: number }) {
   const { t } = useTranslation(["home", "common"]);
   const { settings, refreshSettings, loading: settingsLoading } = useSettings();
   const { app, loading: appLoading, refreshApp } = useLoadApp(appId);

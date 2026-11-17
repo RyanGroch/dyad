@@ -196,7 +196,8 @@ export function PreviewPanel() {
   }, []);
 
   useSupabase({
-    edgeLogsProjectId: app?.supabaseProjectId,
+    // A self-hosted instance has no logs API to poll.
+    edgeLogsProjectId: app?.supabaseSelfHosted ? null : app?.supabaseProjectId,
     edgeLogsOrganizationSlug: app?.supabaseOrganizationSlug,
     edgeLogsAppId: app?.id,
   });

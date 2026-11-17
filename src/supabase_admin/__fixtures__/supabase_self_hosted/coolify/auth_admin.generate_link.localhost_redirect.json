@@ -1,0 +1,60 @@
+{
+  "name": "auth_admin.generate_link.localhost_redirect",
+  "request": {
+    "method": "POST",
+    "path": "/auth/v1/admin/generate_link",
+    "auth": "service",
+    "body": {
+      "type": "magiclink",
+      "email": "xdyad-fixture+1794894009661@dyad.test",
+      "redirect_to": "http://localhost:32100/auth/callback"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "1eec54e6-07aa-458d-80fc-1c7e82dcd766",
+      "aud": "authenticated",
+      "role": "authenticated",
+      "email": "xdyad-fixture+1794894009661@dyad.test",
+      "email_confirmed_at": "2026-11-17T05:40:09.839444Z",
+      "phone": "",
+      "confirmed_at": "2026-11-17T05:40:09.839444Z",
+      "recovery_sent_at": "2026-11-17T05:40:09.924831752Z",
+      "app_metadata": {
+        "dyad_test": true,
+        "provider": "email",
+        "providers": ["email"]
+      },
+      "user_metadata": {
+        "email_verified": true
+      },
+      "identities": [
+        {
+          "identity_id": "239bb88a-edd0-4e11-a388-9538aca75347",
+          "id": "1eec54e6-07aa-458d-80fc-1c7e82dcd766",
+          "user_id": "1eec54e6-07aa-458d-80fc-1c7e82dcd766",
+          "identity_data": {
+            "email": "xdyad-fixture+1794894009661@dyad.test",
+            "email_verified": false,
+            "phone_verified": false,
+            "sub": "1eec54e6-07aa-458d-80fc-1c7e82dcd766"
+          },
+          "provider": "email",
+          "last_sign_in_at": "2026-11-17T05:40:09.832441Z",
+          "created_at": "2026-11-17T05:40:09.832521Z",
+          "updated_at": "2026-11-17T05:40:09.832521Z",
+          "email": "xdyad-fixture+1794894009661@dyad.test"
+        }
+      ],
+      "created_at": "2026-11-17T05:40:09.826099Z",
+      "updated_at": "2026-11-17T05:40:09.9462Z",
+      "is_anonymous": false,
+      "action_link": "http://supabase-kong:8000/auth/v1/verify?token=<TOKEN>&type=magiclink&redirect_to=http://localhost:32100/auth/callback",
+      "email_otp": "<OTP>",
+      "hashed_token": "<HASHED_TOKEN>",
+      "verification_type": "magiclink",
+      "redirect_to": "http://localhost:32100/auth/callback"
+    }
+  }
+}

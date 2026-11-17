@@ -154,8 +154,27 @@ export const testUserCleanup = sqliteTable("test_user_cleanup", {
   appId: integer("app_id").notNull(),
   ownerId: text("owner_id").notNull(),
   projectId: text("project_id").notNull(),
+  // Empty for a self-hosted Supabase instance, which has no organization.
   organizationSlug: text("organization_slug").notNull(),
 });
+
+// Self-hosted Supabase instances. An app links to one by storing the instance
+// id in apps.supabaseProjectId; an id found here marks the app as self-hosted.
+// Both keys are encrypted with secret_storage's encryptToString.
+export const supabaseSelfHostedInstances = sqliteTable(
+  "supabase_self_hosted_instances",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    url: text("url").notNull(),
+    studioUrl: text("studio_url"),
+    anonKeyEncrypted: text("anon_key_encrypted").notNull(),
+    serviceKeyEncrypted: text("service_key_encrypted").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+);
 
 // One record per sandboxed run, independent of the recorder's app-row marker.
 // Retain provider identity after app deletion/reassociation so failed cleanup

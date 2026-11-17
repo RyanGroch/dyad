@@ -22,6 +22,13 @@ import { enqueueSupabaseDeploy } from "./supabase_deploy_queue";
 import { SupabaseTokenRefreshError } from "./supabase_errors";
 import { abortable } from "../ipc/utils/abortable";
 import {
+  getSupabaseSelfHostedInstance,
+  isSupabaseSelfHostedProject,
+  type SupabaseSelfHostedInstance,
+} from "./supabase_self_hosted_store";
+import { runSupabaseSelfHostedQuery } from "./supabase_self_hosted_client";
+import { assertSupabaseFunctionDeploysSupported } from "./supabase_function_sync_skip";
+import {
   appOperationCoordinator,
   readAppResource,
   type AppOperationContext,
@@ -80,6 +87,7 @@ export async function withSupabaseFunctionDeployment<T>(
   },
   operation: (context: AppOperationContext, appPath: string) => Promise<T>,
 ): Promise<T> {
+  assertSupabaseFunctionDeploysSupported(target.supabaseProjectId);
   // Same synchronous step as admission below, so a recording cannot start
   // between this check and the coordinator's own recording refusal.
   if (
@@ -699,6 +707,9 @@ export async function getSupabaseProjectName(
     return "Fake Supabase Project";
   }
 
+  const selfHosted = getSupabaseSelfHostedInstance(projectId);
+  if (selfHosted) return selfHosted.name;
+
   const supabase = await getSupabaseClient({ organizationSlug });
   const projects = await retryWithRateLimit(
     () => supabase.getProjects(),
@@ -749,6 +760,34 @@ const SupabaseApiKeySchema = z.object({
 const SupabaseApiKeysSchema = z.array(SupabaseApiKeySchema);
 
 /**
+ * A self-hosted instance's configured keys in the Management API's shape, so key
+ * selection treats both backends alike. The service key is withheld unless
+ * revealed, as Supabase Cloud does for secret keys.
+ */
+function selfHostedApiKeys(
+  instance: SupabaseSelfHostedInstance,
+  reveal: boolean,
+): SupabaseApiKey[] {
+  const keys: SupabaseApiKey[] = [
+    {
+      name: "anon",
+      type: instance.anonKey.startsWith("sb_publishable_")
+        ? "publishable"
+        : "legacy",
+      api_key: instance.anonKey,
+    },
+  ];
+  if (reveal) {
+    keys.push({
+      name: "service_role",
+      type: instance.serviceKey.startsWith("sb_secret_") ? "secret" : "legacy",
+      api_key: instance.serviceKey,
+    });
+  }
+  return keys;
+}
+
+/**
  * Fetch a project's API keys.
  *
  * Deliberately not `SupabaseManagementAPI.getProjectApiKeys()`: that helper
@@ -769,6 +808,9 @@ export async function getProjectApiKeys({
   organizationSlug: string | null;
   reveal?: boolean;
 }): Promise<SupabaseApiKey[]> {
+  const selfHosted = getSupabaseSelfHostedInstance(projectId);
+  if (selfHosted) return selfHostedApiKeys(selfHosted, reveal);
+
   const supabase = await getSupabaseClient({ organizationSlug });
 
   const response = await fetchWithRetry(
@@ -996,6 +1038,13 @@ export async function executeSupabaseSql({
     return "{}";
   }
 
+  const selfHosted = getSupabaseSelfHostedInstance(supabaseProjectId);
+  if (selfHosted) {
+    return JSON.stringify(
+      await runSupabaseSelfHostedQuery(selfHosted, query, signal),
+    );
+  }
+
   const supabase = await getSupabaseClient({ organizationSlug });
   const result = await retryWithRateLimit(
     async () => {
@@ -1017,6 +1066,51 @@ export async function executeSupabaseSql({
   return JSON.stringify(result);
 }
 
+/**
+ * Runs SQL and returns the parsed rows of the last statement, through the
+ * Management API for a Cloud project or postgres-meta for a self-hosted one.
+ */
+export async function runSupabaseQuery({
+  supabaseProjectId,
+  organizationSlug,
+  query,
+  description,
+}: {
+  supabaseProjectId: string;
+  organizationSlug: string | null;
+  query: string;
+  /** Names the request in retry logs. */
+  description: string;
+}): Promise<unknown> {
+  const selfHosted = getSupabaseSelfHostedInstance(supabaseProjectId);
+  if (selfHosted) return runSupabaseSelfHostedQuery(selfHosted, query);
+  const supabase = await getSupabaseClient({ organizationSlug });
+  return retryWithRateLimit(
+    () => supabase.runQuery(supabaseProjectId, query),
+    description,
+  );
+}
+
+/**
+ * Names of the project's edge function secrets. A self-hosted instance has no
+ * secrets API, so it reports none.
+ */
+export async function listSupabaseSecretNames({
+  supabaseProjectId,
+  organizationSlug,
+}: {
+  supabaseProjectId: string;
+  organizationSlug: string | null;
+}): Promise<string[]> {
+  if (isSupabaseSelfHostedProject(supabaseProjectId)) return [];
+  const supabase = await getSupabaseClient({ organizationSlug });
+  const secrets = await retryWithRateLimit(
+    () => supabase.getSecrets(supabaseProjectId),
+    `Get secrets for ${supabaseProjectId}`,
+  );
+  return secrets?.map((secret) => secret.name) ?? [];
+}
+
 export async function deleteSupabaseFunction({
   appId,
   supabaseProjectId,
@@ -1030,6 +1124,7 @@ export async function deleteSupabaseFunction({
   organizationSlug: string | null;
   signal?: AbortSignal;
 }): Promise<void> {
+  assertSupabaseFunctionDeploysSupported(supabaseProjectId);
   if (appId !== undefined) {
     return withSupabaseFunctionDeployment(
       {
@@ -1320,6 +1415,7 @@ export async function deploySupabaseFunction({
   snapshot?: SupabaseFunctionSnapshot;
   signal?: AbortSignal;
 }): Promise<DeployedFunctionResponse> {
+  assertSupabaseFunctionDeploysSupported(supabaseProjectId);
   if (appId !== undefined) {
     return withSupabaseFunctionDeployment(
       {

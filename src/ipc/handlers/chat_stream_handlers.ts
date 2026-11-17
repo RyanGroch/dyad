@@ -42,10 +42,8 @@ import { db } from "../../db";
 import { apps, chats, messages } from "../../db/schema";
 import { scheduleChatSearchIndexing } from "../../pro/main/ipc/handlers/local_agent/chat_search_indexer";
 import { and, eq, isNull } from "drizzle-orm";
-import {
-  hasSupabaseCredentialsForOrganization,
-  type SmartContextMode,
-} from "../../lib/schemas";
+import { type SmartContextMode } from "../../lib/schemas";
+import { hasSupabaseCredentialsForApp } from "../../supabase_admin/supabase_self_hosted_store";
 import {
   constructSystemPrompt,
   readAiRules,
@@ -265,10 +263,7 @@ export function resolveImplementerCapabilityState(
   app: ImplementerCapabilityApp,
   settings: ReturnType<typeof readSettings>,
 ) {
-  const supabaseConnected = hasSupabaseCredentialsForOrganization(
-    settings,
-    app.supabaseOrganizationSlug,
-  );
+  const supabaseConnected = hasSupabaseCredentialsForApp(settings, app);
   const neonConnected = Boolean(settings.neon?.accessToken?.value);
   const neonBranchId = app.neonActiveBranchId ?? app.neonDevelopmentBranchId;
   const neonToolsAvailable = Boolean(
@@ -2459,10 +2454,7 @@ ${componentSnippet}
           await chatHasCompletedAppBlueprintQuestionnaire(updatedChat.id);
         const initialSupabaseProviderToolsAvailable = Boolean(
           updatedChat.app.supabaseProjectId &&
-          hasSupabaseCredentialsForOrganization(
-            settings,
-            updatedChat.app.supabaseOrganizationSlug,
-          ),
+          hasSupabaseCredentialsForApp(settings, updatedChat.app),
         );
         const initialNeonCredentialsAvailable = Boolean(
           updatedChat.app.neonProjectId && settings.neon?.accessToken?.value,

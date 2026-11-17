@@ -23,6 +23,10 @@ import {
   type SupabaseDeployScope,
 } from "./supabase_deploy_scope";
 
+import {
+  SupabaseFunctionsUnsupportedError,
+  supportsSupabaseFunctionDeploys,
+} from "./supabase_function_sync_skip";
 export type { SupabaseFunctionImpact } from "../../shared/supabase_dependency_analysis_types";
 
 const logger = log.scope("supabase_utils");
@@ -263,6 +267,9 @@ interface DeployAffectedSupabaseFunctionsArgs extends AppScopedDeployArgs {
 export function deployAffectedSupabaseFunctions(
   args: DeployAffectedSupabaseFunctionsArgs,
 ): Promise<string[]> {
+  if (!supportsSupabaseFunctionDeploys(args.supabaseProjectId)) {
+    return Promise.reject(new SupabaseFunctionsUnsupportedError());
+  }
   return withAppDeploymentOwnership(
     args,
     {
@@ -368,6 +375,9 @@ interface DeploySupabaseFunctionsArgs extends AppScopedDeployArgs {
 export function deploySupabaseFunctions(
   args: DeploySupabaseFunctionsArgs,
 ): Promise<string[]> {
+  if (!supportsSupabaseFunctionDeploys(args.supabaseProjectId)) {
+    return Promise.reject(new SupabaseFunctionsUnsupportedError());
+  }
   return withAppDeploymentOwnership(
     args,
     {

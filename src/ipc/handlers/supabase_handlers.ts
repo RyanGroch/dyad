@@ -13,6 +13,15 @@ import {
   type SupabaseProjectLog,
 } from "../../supabase_admin/supabase_management_client";
 import { extractFunctionName } from "../../supabase_admin/supabase_utils";
+import {
+  deleteSupabaseSelfHostedInstance,
+  insertSupabaseSelfHostedInstance,
+  listSupabaseSelfHostedInstances,
+} from "../../supabase_admin/supabase_self_hosted_store";
+import {
+  checkSupabaseSelfHostedInstance,
+  normalizeSupabaseSelfHostedUrl,
+} from "../../supabase_admin/supabase_self_hosted_client";
 import { deployAllSupabaseFunctions } from "../../supabase_admin/supabase_utils";
 import {
   detectLegacyAppKey,
@@ -385,6 +394,61 @@ export function registerSupabaseHandlers() {
       },
       "create a Supabase project",
     ),
+  );
+
+  createTypedHandler(supabaseContracts.listSelfHostedInstances, async () =>
+    listSupabaseSelfHostedInstances(),
+  );
+
+  createTypedHandler(
+    supabaseContracts.addSelfHostedInstance,
+    async (_, params) => {
+      if (!readSettings().enableSupabaseSelfHosted) {
+        throw new DyadError(
+          "Turn on self-hosted Supabase in Settings > Experiments first.",
+          DyadErrorKind.Precondition,
+        );
+      }
+      const url = normalizeSupabaseSelfHostedUrl(params.url);
+      if (!url) {
+        throw new DyadError(
+          "Enter the instance's API URL, starting with http:// or https://.",
+          DyadErrorKind.Validation,
+        );
+      }
+      let studioUrl: string | null = null;
+      if (params.studioUrl) {
+        studioUrl = normalizeSupabaseSelfHostedUrl(params.studioUrl);
+        if (!studioUrl) {
+          throw new DyadError(
+            "Enter the Studio URL starting with http:// or https://, or leave it empty.",
+            DyadErrorKind.Validation,
+          );
+        }
+      }
+      const { warnings } = await checkSupabaseSelfHostedInstance({
+        url,
+        anonKey: params.anonKey,
+        serviceKey: params.serviceKey,
+      });
+      const instance = await insertSupabaseSelfHostedInstance({
+        name: params.name,
+        url,
+        studioUrl,
+        anonKey: params.anonKey,
+        serviceKey: params.serviceKey,
+      });
+      logger.info(`Added self-hosted Supabase instance ${instance.id}`);
+      return { instance, warnings };
+    },
+  );
+
+  createTypedHandler(
+    supabaseContracts.removeSelfHostedInstance,
+    async (_, { id }) => {
+      await deleteSupabaseSelfHostedInstance(id);
+      logger.info(`Removed self-hosted Supabase instance ${id}`);
+    },
   );
 
   // List branches for a Supabase project (database branches)

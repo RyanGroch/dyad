@@ -181,6 +181,29 @@ export const SUPABASE_PROJECT_CREATED_BUT_UNLINKED =
 // Supabase Contracts
 // =============================================================================
 
+export const SupabaseSelfHostedInstanceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  url: z.string(),
+  studioUrl: z.string().nullable(),
+});
+
+export type SupabaseSelfHostedInstance = z.infer<
+  typeof SupabaseSelfHostedInstanceSchema
+>;
+
+export const AddSupabaseSelfHostedInstanceParamsSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  url: z.string().trim().min(1).max(2048),
+  studioUrl: z.string().trim().max(2048).nullable(),
+  anonKey: z.string().trim().min(1).max(4096),
+  serviceKey: z.string().trim().min(1).max(4096),
+});
+
+export type AddSupabaseSelfHostedInstanceParams = z.infer<
+  typeof AddSupabaseSelfHostedInstanceParamsSchema
+>;
+
 export const supabaseContracts = {
   listOrganizations: defineContract({
     channel: "supabase:list-organizations",
@@ -312,6 +335,33 @@ export const supabaseContracts = {
       prunedFunctionNames: z.array(z.string()),
       errors: z.array(z.string()),
     }),
+  }),
+
+  listSelfHostedInstances: defineContract({
+    channel: "supabase:list-self-hosted-instances",
+    input: z.void(),
+    output: z.array(SupabaseSelfHostedInstanceSchema),
+  }),
+
+  /**
+   * Runs the connect-time checks before saving, so an instance Dyad cannot use
+   * is never stored. Warnings describe setups that work but need attention.
+   */
+  addSelfHostedInstance: defineContract({
+    channel: "supabase:add-self-hosted-instance",
+    input: AddSupabaseSelfHostedInstanceParamsSchema,
+    output: z.object({
+      instance: SupabaseSelfHostedInstanceSchema,
+      warnings: z.array(z.string()),
+    }),
+    invalidates: () => [{ family: "provider-status", provider: "supabase" }],
+  }),
+
+  removeSelfHostedInstance: defineContract({
+    channel: "supabase:remove-self-hosted-instance",
+    input: z.object({ id: z.string().min(1) }),
+    output: z.void(),
+    invalidates: () => [{ family: "provider-status", provider: "supabase" }],
   }),
 
   // Test-only channel

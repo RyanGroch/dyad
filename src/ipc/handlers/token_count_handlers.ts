@@ -46,8 +46,8 @@ import {
   isBasicAgentMode,
   isLocalAgentBackedMode,
   isTurboEditsV2Enabled,
-  hasSupabaseCredentialsForOrganization,
 } from "@/lib/schemas";
+import { hasSupabaseCredentialsForApp } from "@/supabase_admin/supabase_self_hosted_store";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { resolveChatModeForTurn } from "./chat_mode_resolution";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
@@ -147,10 +147,7 @@ export function registerTokenCountHandlers() {
       let supabaseContext = "";
       const supabaseProviderToolsAvailable = Boolean(
         chat.app.supabaseProjectId &&
-        hasSupabaseCredentialsForOrganization(
-          settings,
-          chat.app.supabaseOrganizationSlug,
-        ),
+        hasSupabaseCredentialsForApp(settings, chat.app),
       );
       const neonCredentialsAvailable = Boolean(
         chat.app.neonProjectId && settings.neon?.accessToken?.value,

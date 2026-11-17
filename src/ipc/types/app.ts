@@ -85,6 +85,16 @@ export const AppSchema = AppBaseSchema.extend({
   files: z.array(z.string()),
   frameworkType: z.enum(APP_FRAMEWORK_TYPES).nullable().optional(),
   supabaseProjectName: z.string().nullable(),
+  /** Set when supabaseProjectId names a self-hosted instance. Never has keys. */
+  supabaseSelfHosted: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      url: z.string(),
+      studioUrl: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   vercelTeamSlug: z.string().nullable(),
   resolvedPath: z.string().optional(),
   deploymentProvidersInUse: DeploymentProvidersInUseSchema,
