@@ -516,13 +516,27 @@ serve(async (req) => {
 export function getSupabaseSelfHostedSystemPrompt({
   url,
   functionsDeployed,
+  pendingUpdates = [],
 }: {
   url: string;
   functionsDeployed: boolean;
+  /** Updated functions that may still run their previous code. */
+  pendingUpdates?: readonly { functionName: string; minutesLeft: number }[];
 }) {
   const deploys = functionsDeployed
     ? `- Edge functions are deployed when you write them. After an update, the function's previous version can keep answering for up to a minute after its last request, or a few minutes under steady traffic, so a test right after an update may still show the old behavior.`
     : `- Edge functions are NOT deployed to this instance because it was added without SSH access. Their code is saved but does not run. Prefer database features such as RLS policies and Postgres functions, and tell the user when a feature needs an edge function.`;
+  const pending =
+    functionsDeployed && pendingUpdates.length > 0
+      ? `\n- These functions were just updated and may still answer with their previous code: ${pendingUpdates
+          .map(
+            ({ functionName, minutesLeft }) =>
+              `${functionName} (for up to ${minutesLeft} more minute${minutesLeft === 1 ? "" : "s"})`,
+          )
+          .join(
+            ", ",
+          )}. Until then, a result from calling one may not reflect the latest code. Don't change working code because of such a result; tell the user to try again after that time.`
+      : "";
   return `
 # Self-hosted Supabase
 
@@ -530,7 +544,7 @@ This app uses a self-hosted Supabase instance at ${url}, not Supabase Cloud. The
 
 - Call edge functions at ${url}/functions/v1/EDGE_FUNCTION_NAME, never at a supabase.co URL.
 - Secrets can't be set from Dyad or Supabase Studio here. Tell the user to add each secret as an environment variable on the server that runs Supabase (its .env file, or the service's environment variables in Coolify) and then restart the edge functions container. Name the exact variables the function reads.
-${deploys}
+${deploys}${pending}
 `;
 }
 

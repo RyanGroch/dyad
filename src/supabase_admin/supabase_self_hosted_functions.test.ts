@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DyadErrorKind } from "@/errors/dyad_error";
 import { generateSshKeyPair } from "@/testing/fake_ssh_server";
 import {
+  currentFunctionFiles,
   readTarArchive,
   startFakeEdgeRuntimeSsh,
   type FakeEdgeRuntimeSsh,
@@ -19,10 +21,12 @@ import {
   checkSupabaseSelfHostedSsh,
   closeSupabaseSelfHostedSessions,
   createTarArchive,
+  DEFAULT_WORKER_LIFETIME_MS,
   deleteSupabaseSelfHostedFunction,
   deployCommand,
   deploySupabaseSelfHostedFunction,
   parseEdgeRuntimeLogs,
+  parseWorkerLifetimeMs,
   readSupabaseSelfHostedFunctionLogs,
 } from "./supabase_self_hosted_functions";
 import recordedLogs from "./__fixtures__/supabase_self_hosted/upstream/edge_runtime_logs.txt?raw";
@@ -73,32 +77,48 @@ describe("createTarArchive", () => {
   });
 });
 
-// The fake server below unpacks archives itself, so the shell script that
-// runs inside the container is exercised here with a real sh and tar.
+// The fake server below lays files out itself, so the shell script that runs
+// inside the container is exercised here with a real sh and tar.
 describe.skipIf(process.platform === "win32")("the deploy script", () => {
+  const MINUTE = 60_000;
+  const T0 = 1_795_000_000_000;
   let root: string;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "dyad-functions-"));
-    for (const [file, text] of [
-      ["hello/old.ts", "stale"],
-      ["_shared/other-app.ts", "kept"],
-      ["main/index.ts", "router"],
-    ]) {
-      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), text);
-    }
+    write("main/index.ts", "const workerTimeoutMs = 1 * 60 * 1000\n");
+    write("_shared/other-app.ts", "kept");
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  const runScript = (input: Uint8Array) => {
+  function write(file: string, text: string) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  }
+  const runScript = (input: Uint8Array, nowMs: number) => {
     const script = /sh -c '([\s\S]*)'$/
-      .exec(deployCommand("container", "hello"))![1]
+      .exec(deployCommand("container", "hello", { nowMs }))![1]
       .replace("/home/deno/functions", root);
     return execFileSync("sh", ["-c", script], {
       input,
       stdio: ["pipe", "pipe", "pipe"],
-    });
+    }).toString();
   };
+  const deploy = (version: string, nowMs: number) =>
+    runScript(
+      createTarArchive([
+        {
+          relativePath: "hello/index.ts",
+          content: encode(
+            `import { tag } from "../_shared/tag.ts";\nexport default { version: "${version}", tag };\n`,
+          ),
+        },
+        {
+          relativePath: "_shared/tag.ts",
+          content: encode(`export const tag = "shared-${version}";\n`),
+        },
+      ]),
+      nowMs,
+    );
   const tree = () =>
     fs
       .readdirSync(root, { recursive: true, withFileTypes: true })
@@ -110,31 +130,129 @@ describe.skipIf(process.platform === "win32")("the deploy script", () => {
           .join("/"),
       )
       .sort();
+  const versions = () =>
+    fs.readdirSync(path.join(root, "hello", ".dyad")).sort();
+  /** Loads the function the way the runtime does: through its index.ts. */
+  let loads = 0;
+  const load = async () =>
+    (
+      await import(
+        `${pathToFileURL(path.join(root, "hello", "index.ts")).href}?load=${++loads}`
+      )
+    ).default;
 
-  it("replaces the function, merges _shared and leaves nothing behind", () => {
+  it("deploys a new function into a version directory behind its entry", async () => {
+    const output = deploy("v1", T0);
+
+    expect(output).toContain("dyad-existed:0");
+    expect(output).toContain(
+      "dyad-worker-lifetime:const workerTimeoutMs = 1 * 60 * 1000",
+    );
+    const [version] = versions();
+    expect(version).toMatch(new RegExp(`^${T0}-[0-9a-f]{12}$`));
+    expect(tree()).toEqual([
+      "_shared/other-app.ts",
+      `hello/.dyad/${version}/_shared/tag.ts`,
+      `hello/.dyad/${version}/hello/index.ts`,
+      "hello/index.ts",
+      "main/index.ts",
+    ]);
+    // Its _shared imports resolve to the copy deployed with it.
+    expect(await load()).toEqual({ version: "v1", tag: "shared-v1" });
+  });
+
+  it("points the entry at each new version and keeps recent ones", async () => {
+    deploy("v1", T0);
+    const output = deploy("v2", T0 + MINUTE);
+
+    expect(output).toContain("dyad-existed:1");
+    expect(versions()).toHaveLength(2);
+    expect(await load()).toEqual({ version: "v2", tag: "shared-v2" });
+  });
+
+  it("re-exports nothing as an empty default for Deno.serve functions", async () => {
+    write("hello/index.ts", "");
     runScript(
       createTarArchive([
-        { relativePath: "hello/index.ts", content: encode("new") },
-        { relativePath: "_shared/cors.ts", content: encode("cors") },
+        {
+          relativePath: "hello/index.ts",
+          content: encode("(globalThis as any).served = true;\n"),
+        },
       ]),
+      T0,
     );
 
-    expect(tree()).toEqual([
-      "_shared/cors.ts",
+    expect(await load()).toEqual({});
+    expect((globalThis as { served?: boolean }).served).toBe(true);
+  });
+
+  it("removes a version once it has been replaced for 15 minutes", () => {
+    deploy("v1", T0);
+    const [first] = versions();
+    deploy("v2", T0 + MINUTE);
+    const [, second] = versions();
+
+    // v1 was replaced 14 minutes ago: kept for workers that may still read it.
+    deploy("v3", T0 + 15 * MINUTE);
+    expect(versions()).toContain(first);
+
+    // Replaced 16 minutes ago now. v2 was replaced 2 minutes ago.
+    deploy("v4", T0 + 17 * MINUTE);
+    expect(versions()).not.toContain(first);
+    expect(versions()).toContain(second);
+    expect(versions()).toHaveLength(3);
+  });
+
+  it("converts a function deployed another way without removing its files early", async () => {
+    write("hello/index.ts", "export default { version: 'plain' };\n");
+    write("hello/helper.ts", "old helper");
+
+    expect(deploy("v1", T0)).toContain("dyad-existed:1");
+    expect(tree()).toContain("hello/helper.ts");
+    expect(await load()).toEqual({ version: "v1", tag: "shared-v1" });
+
+    deploy("v2", T0 + 16 * MINUTE);
+    expect(tree().filter((file) => !file.includes("/.dyad/"))).toEqual([
       "_shared/other-app.ts",
       "hello/index.ts",
       "main/index.ts",
     ]);
   });
 
-  it("keeps the deployed function when the upload is broken", () => {
-    expect(() => runScript(encode("not a tar archive"))).toThrow();
+  it("keeps the deployed function when the upload is broken", async () => {
+    deploy("v1", T0);
+    const before = tree();
 
-    expect(tree()).toEqual([
-      "_shared/other-app.ts",
-      "hello/old.ts",
-      "main/index.ts",
-    ]);
+    expect(() => runScript(encode("not a tar archive"), T0 + MINUTE)).toThrow();
+
+    expect(tree()).toEqual(before);
+    expect(
+      fs.readdirSync(root).filter((name) => name.startsWith(".dyad-")),
+    ).toEqual([]);
+    expect(await load()).toEqual({ version: "v1", tag: "shared-v1" });
+  });
+});
+
+describe("parseWorkerLifetimeMs", () => {
+  it("reads both routers' ways of writing the lifetime", () => {
+    // Upstream's router, then Coolify's.
+    expect(parseWorkerLifetimeMs("  const workerTimeoutMs = 400_000")).toBe(
+      400_000,
+    );
+    expect(
+      parseWorkerLifetimeMs("  const workerTimeoutMs = 1 * 60 * 1000"),
+    ).toBe(60_000);
+  });
+
+  it("falls back to upstream's lifetime for anything else", () => {
+    for (const line of [
+      "",
+      "const workerTimeoutMs = getTimeout()",
+      "const workerTimeoutMs = 5",
+      "const workerTimeoutMs = 99 * 60 * 60 * 1000",
+    ]) {
+      expect(parseWorkerLifetimeMs(line)).toBe(DEFAULT_WORKER_LIFETIME_MS);
+    }
   });
 });
 
@@ -188,31 +306,33 @@ describe("deploying over SSH", () => {
     ssh = await startFakeEdgeRuntimeSsh();
   });
 
-  it("replaces the function's directory and merges shared files", async () => {
+  it("deploys the function with its shared files and reports what it replaced", async () => {
     const container = ssh!.containers[0].name;
     ssh!.files.set(
       container,
-      new Map([
-        ["hello/old.ts", "stale"],
-        ["_shared/other-app.ts", "kept"],
-        ["main/index.ts", "router"],
-      ]),
+      new Map([["main/index.ts", "  const workerTimeoutMs = 1 * 60 * 1000\n"]]),
     );
+    const deployHello = (text: string) =>
+      deploySupabaseSelfHostedFunction({
+        instance: instanceFor(ssh!),
+        functionName: "hello",
+        files: [
+          { relativePath: "hello/index.ts", content: encode(text) },
+          { relativePath: "_shared/cors.ts", content: encode("cors") },
+        ],
+      });
 
-    await deploySupabaseSelfHostedFunction({
-      instance: instanceFor(ssh!),
-      functionName: "hello",
-      files: [
-        { relativePath: "hello/index.ts", content: encode("new") },
-        { relativePath: "_shared/cors.ts", content: encode("cors") },
-      ],
+    await expect(deployHello("v1")).resolves.toEqual({
+      replacedExisting: false,
+      workerLifetimeMs: 60_000,
     });
-
-    expect(ssh!.files.get(container)).toEqual(
+    await expect(deployHello("v2")).resolves.toEqual({
+      replacedExisting: true,
+      workerLifetimeMs: 60_000,
+    });
+    expect(currentFunctionFiles(ssh!, container, "hello")).toEqual(
       new Map([
-        ["_shared/other-app.ts", "kept"],
-        ["main/index.ts", "router"],
-        ["hello/index.ts", "new"],
+        ["hello/index.ts", "v2"],
         ["_shared/cors.ts", "cors"],
       ]),
     );
@@ -259,10 +379,12 @@ describe("deploying over SSH", () => {
       ]),
     );
 
-    await deleteSupabaseSelfHostedFunction({
-      instance: instanceFor(ssh!),
-      functionName: "hello",
-    });
+    await expect(
+      deleteSupabaseSelfHostedFunction({
+        instance: instanceFor(ssh!),
+        functionName: "hello",
+      }),
+    ).resolves.toEqual({ workerLifetimeMs: DEFAULT_WORKER_LIFETIME_MS });
 
     expect([...ssh!.files.get(container)!.keys()]).toEqual([
       "hello-two/index.ts",
@@ -354,9 +476,8 @@ describe("checkSupabaseSelfHostedSsh", () => {
     ]);
     // Only the second instance's runtime is behind this gateway.
     http!.serveFunction = (name) =>
-      ssh!.files
-        .get("supabase-edge-functions-b2")
-        ?.get(`${name}/index.ts`)
+      currentFunctionFiles(ssh!, "supabase-edge-functions-b2", name)
+        .get(`${name}/index.ts`)
         ?.match(/new Response\("(\w+)"\)/)?.[1];
 
     await expect(check()).resolves.toEqual({

@@ -32,8 +32,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useQuery } from "@tanstack/react-query";
 import { ipc, type App } from "@/ipc/types";
 import { getErrorMessage } from "@/lib/errors";
+import { queryKeys } from "@/lib/queryKeys";
+import { useSettings } from "@/hooks/useSettings";
 import {
   useAddSupabaseSelfHostedInstance,
   useRemoveSupabaseSelfHostedInstance,
@@ -135,6 +143,154 @@ export function SupabaseSelfHostedConnectedCard({
   );
 }
 
+/** Where each value is, for the two installs Dyad supports. */
+const WHERE_TO_FIND: Partial<Record<keyof typeof EMPTY_FORM, string>> = {
+  url: "Docker Compose: SUPABASE_PUBLIC_URL in your .env file, for example http://your-server:8000.\nCoolify: SERVICE_URL_SUPABASEKONG in the Supabase service's Environment Variables.",
+  anonKey:
+    "Docker Compose: ANON_KEY in your .env file.\nCoolify: SERVICE_SUPABASEANON_KEY in the Supabase service's Environment Variables.",
+  serviceKey:
+    "Docker Compose: SERVICE_ROLE_KEY in your .env file.\nCoolify: SERVICE_SUPABASESERVICE_KEY in the Supabase service's Environment Variables.",
+  studioUrl:
+    "Usually the same as the API URL.\nDocker Compose: sign in with DASHBOARD_USERNAME and DASHBOARD_PASSWORD from your .env file.\nCoolify: sign in with SERVICE_USER_ADMIN and SERVICE_PASSWORD_ADMIN from the service's Environment Variables.",
+  sshHost:
+    "The server Supabase runs on. Leave it empty to use the API URL's host.",
+  sshUsername:
+    "A user that can run docker without sudo: root, or a user in the docker group (usermod -aG docker <user>).",
+  sshPrivateKey:
+    "A private key without a passphrase, whose public key is in the user's ~/.ssh/authorized_keys on the server.\nCoolify: the server's key is under Keys & Tokens, then Private Keys.",
+};
+
+function WhereToFind({ label, text }: { label: string; text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground"
+            aria-label={`Where to find ${label}`}
+          />
+        }
+      >
+        <Info className="h-3.5 w-3.5" />
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm whitespace-pre-line">
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function FieldLabel({
+  htmlFor,
+  label,
+  field,
+}: {
+  htmlFor: string;
+  label: string;
+  field: keyof typeof EMPTY_FORM;
+}) {
+  const text = WHERE_TO_FIND[field];
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      {text && <WhereToFind label={label} text={text} />}
+    </div>
+  );
+}
+
+type CoolifyImport = Awaited<
+  ReturnType<typeof ipc.supabase.importCoolifySupabaseService>
+>;
+
+function importNote(imported: CoolifyImport): string {
+  if (!imported.ssh) {
+    return "Filled in from Coolify. Dyad couldn't tell which server runs this service, so enter SSH details yourself to enable edge functions.";
+  }
+  const target = `${imported.ssh.username}@${imported.ssh.host}`;
+  return imported.ssh.privateKey
+    ? `Filled in from Coolify. Edge functions will connect as ${target} with Coolify's SSH key for that server.`
+    : `Filled in from Coolify. None of Coolify's SSH keys logged in as ${target}, so paste a key to enable edge functions. Reading keys needs a Coolify API token with the root permission.`;
+}
+
+/** Fills the add form from a Supabase service deployed with Coolify. */
+function CoolifyImportPicker({
+  onImported,
+}: {
+  onImported: (imported: CoolifyImport) => void;
+}) {
+  const servicesQuery = useQuery({
+    queryKey: queryKeys.supabase.coolifyServices,
+    queryFn: () => ipc.supabase.listCoolifySupabaseServices(),
+    retry: false,
+  });
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const services = servicesQuery.data ?? [];
+
+  const choose = async (serviceUuid: string) => {
+    setImporting(true);
+    setError(null);
+    try {
+      onImported(
+        await ipc.supabase.importCoolifySupabaseService({ serviceUuid }),
+      );
+    } catch (importError) {
+      setError(getErrorMessage(importError));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const message = servicesQuery.error
+    ? getErrorMessage(servicesQuery.error)
+    : servicesQuery.isSuccess && services.length === 0
+      ? "No Supabase services found on your Coolify instance."
+      : error;
+
+  return (
+    <div
+      className="space-y-1 rounded-md border p-3"
+      data-testid="supabase-self-hosted-coolify-import"
+    >
+      <Label htmlFor="supabase-self-hosted-coolify-service">
+        Import from Coolify
+      </Label>
+      <div className="flex items-center gap-2">
+        <Select
+          value=""
+          onValueChange={(value) => value && void choose(value)}
+          disabled={importing || services.length === 0}
+        >
+          <SelectTrigger
+            id="supabase-self-hosted-coolify-service"
+            className="flex-1"
+          >
+            <SelectValue>
+              {() =>
+                servicesQuery.isLoading
+                  ? "Loading services"
+                  : "Select a Supabase service"
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {services.map((service) => (
+              <SelectItem key={service.uuid} value={service.uuid}>
+                {service.url
+                  ? `${service.name} (${service.url})`
+                  : service.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {importing && <Loader2 className="h-4 w-4 animate-spin" />}
+      </div>
+      {message && <p className="text-xs text-muted-foreground">{message}</p>}
+    </div>
+  );
+}
+
 const EMPTY_FORM = {
   name: "",
   url: "",
@@ -164,6 +320,27 @@ export function SupabaseSelfHostedLinkSection({
   const [form, setForm] = useState(EMPTY_FORM);
   const [useSsh, setUseSsh] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [importedNote, setImportedNote] = useState<string | null>(null);
+  const { settings } = useSettings();
+  const coolifyConnected =
+    !!settings?.coolify?.instanceUrl && !!settings.coolify.accessToken?.value;
+
+  const applyImport = (imported: CoolifyImport) => {
+    setForm({
+      name: imported.name,
+      url: imported.url,
+      anonKey: imported.anonKey,
+      serviceKey: imported.serviceKey,
+      studioUrl: imported.studioUrl,
+      sshHost: imported.ssh?.host ?? "",
+      sshPort: String(imported.ssh?.port ?? 22),
+      sshUsername: imported.ssh?.username ?? "",
+      sshPrivateKey: imported.ssh?.privateKey ?? "",
+    });
+    setUseSsh(!!imported.ssh?.privateKey);
+    setImportedNote(importNote(imported));
+    setFormError(null);
+  };
 
   const link = async (projectId: string) => {
     setIsLinking(true);
@@ -209,6 +386,7 @@ export function SupabaseSelfHostedLinkSection({
         toast.warning(warning, { duration: 20_000 });
       }
       setForm(EMPTY_FORM);
+      setImportedNote(null);
       setIsFormOpen(false);
       await link(instance.id);
     } catch (error) {
@@ -227,7 +405,11 @@ export function SupabaseSelfHostedLinkSection({
     },
   ) => (
     <div className="space-y-1">
-      <Label htmlFor={`supabase-self-hosted-${key}`}>{label}</Label>
+      <FieldLabel
+        htmlFor={`supabase-self-hosted-${key}`}
+        label={label}
+        field={key}
+      />
       {options.hint && (
         <p className="text-xs text-muted-foreground">{options.hint}</p>
       )}
@@ -288,10 +470,16 @@ export function SupabaseSelfHostedLinkSection({
 
       {isFormOpen ? (
         <form className="space-y-3" onSubmit={handleAdd}>
+          {coolifyConnected && <CoolifyImportPicker onImported={applyImport} />}
+          {importedNote && (
+            <Alert data-testid="supabase-self-hosted-import-note">
+              <Info className="h-4 w-4" />
+              <AlertDescription>{importedNote}</AlertDescription>
+            </Alert>
+          )}
           {field("name", "Name", { placeholder: "My Supabase" })}
           {field("url", "API URL", {
             placeholder: "https://supabase.example.com",
-            hint: "SUPABASE_PUBLIC_URL in your Docker Compose .env file, or the Supabase Kong URL in Coolify.",
           })}
           {field("anonKey", "Publishable key", {
             secret: true,
@@ -303,7 +491,7 @@ export function SupabaseSelfHostedLinkSection({
           })}
           {field("studioUrl", "Studio URL (optional)", {
             optional: true,
-            hint: "Lets you open your instance's dashboard from Dyad. Usually the same as the API URL.",
+            hint: "Lets you open your instance's dashboard from Dyad.",
           })}
           <div className="space-y-3 rounded-md border p-3">
             <div className="flex items-center gap-2">
@@ -334,9 +522,11 @@ export function SupabaseSelfHostedLinkSection({
                 </div>
                 {field("sshUsername", "SSH user", { placeholder: "root" })}
                 <div className="space-y-1">
-                  <Label htmlFor="supabase-self-hosted-sshPrivateKey">
-                    Private key
-                  </Label>
+                  <FieldLabel
+                    htmlFor="supabase-self-hosted-sshPrivateKey"
+                    label="Private key"
+                    field="sshPrivateKey"
+                  />
                   <Textarea
                     id="supabase-self-hosted-sshPrivateKey"
                     required
@@ -382,6 +572,7 @@ export function SupabaseSelfHostedLinkSection({
               onClick={() => {
                 setIsFormOpen(false);
                 setFormError(null);
+                setImportedNote(null);
               }}
             >
               Cancel

@@ -215,28 +215,157 @@ function assertContainerName(name: string): void {
 }
 
 /**
- * The shell command that replaces one function's directory with the archive
- * on stdin and merges its shared files.
+ * Where each deployed version lives, inside the function's own directory:
+ * `<function>/.dyad/<version>/<function>/...` and
+ * `<function>/.dyad/<version>/_shared/...`, so the function's `../_shared`
+ * imports resolve to the copy deployed with it.
+ */
+const VERSIONS_DIR = ".dyad";
+/**
+ * How long a replaced version stays on disk. A worker started on it can keep
+ * running for the router's worker lifetime (400s upstream) and may still read
+ * its files, so this is well past that.
+ */
+const VERSION_RETENTION_MS = 15 * 60_000;
+/** Upstream's router value, used when the router can't be read. */
+export const DEFAULT_WORKER_LIFETIME_MS = 400_000;
+const WORKER_LIFETIME_MARKER = "dyad-worker-lifetime:";
+const EXISTED_MARKER = "dyad-existed:";
+
+/** Prints the router's worker lifetime line after its marker, if it has one. */
+const printWorkerLifetime = `echo "${WORKER_LIFETIME_MARKER}$(grep -m 1 "workerTimeoutMs *=" ${ROUTER_FUNCTION}/index.ts 2>/dev/null || true)"`;
+
+/**
+ * `<milliseconds>-<hex>`. Sorts by deploy time as text while timestamps have
+ * 13 digits (until the year 2286). Not zero-padded: the shell reads a leading
+ * zero as octal.
+ */
+function newVersionId(nowMs: number): string {
+  return `${Math.floor(nowMs)}-${randomBytes(6).toString("hex")}`;
+}
+
+/**
+ * The shell command that deploys one function from the tar archive on stdin
+ * without a moment where a request can fail or see a mix of versions.
  *
- * The new directory is unpacked beside the old one and moved into place, so
- * a failed upload leaves the deployed function as it was. `_shared` is merged
- * rather than replaced: other apps on the instance may keep files there.
+ * The edge runtime's router looks up `/home/deno/functions/<name>` on every
+ * request, and a starting worker reads its files over time, so neither the
+ * function's directory nor any file a worker might be reading is ever changed
+ * in place. Each deploy unpacks into a new version directory that is never
+ * modified afterwards, then points the function at it by replacing its
+ * one-line `index.ts` with a rename, which is atomic. A function that does
+ * not exist yet is assembled beside its final path and renamed into place.
+ * A directory deployed some other way is converted the same way as an
+ * update: its old files stay until the retention period has passed.
+ *
+ * The entry re-exports the version's default export, so both function styles
+ * work: `export default { fetch }`, and `Deno.serve`, which has no default
+ * export and gets an empty object that the runtime ignores.
+ *
+ * Replaced versions are removed once they have been replaced for
+ * `VERSION_RETENTION_MS`. Times come from Dyad's clock, not the server's, so
+ * one clock decides both when a version was made and how old it is.
+ *
  * Names are validated before they get here and the script has no single
  * quotes, so it can sit inside one quoted argument.
  */
-export function deployCommand(container: string, functionName: string): string {
-  const stage = `.dyad-stage-${randomBytes(6).toString("hex")}`;
+export function deployCommand(
+  container: string,
+  functionName: string,
+  { nowMs = Date.now() }: { nowMs?: number } = {},
+): string {
+  const suffix = randomBytes(6).toString("hex");
+  const stage = `.dyad-stage-${suffix}`;
+  const assembled = `.dyad-new-${suffix}`;
+  const version = newVersionId(nowMs);
+  const name = functionName;
+  const versions = `${name}/${VERSIONS_DIR}`;
+  const entryTemp = `${name}/.index.ts.${suffix}`;
+  const writeEntry = (target: string) =>
+    `printf "%s\\n" "import * as entry from \\"./${VERSIONS_DIR}/${version}/${name}/index.ts\\";" "export default entry.default ?? {};" > ${target}`;
   const script = [
     "set -eu",
     `cd ${FUNCTIONS_DIR}`,
-    `trap "rm -rf ${stage}" EXIT`,
+    `trap "rm -rf ${stage} ${assembled} ${entryTemp}" EXIT`,
     `mkdir ${stage}`,
     `tar -x -C ${stage}`,
-    `if [ -d ${stage}/${SHARED_DIR} ]; then mkdir -p ${SHARED_DIR} && cp -R ${stage}/${SHARED_DIR}/. ${SHARED_DIR}/; fi`,
-    `if [ -e ${functionName} ]; then mv ${functionName} ${stage}/previous; fi`,
-    `mv ${stage}/${functionName} ${functionName}`,
+    `existed=0`,
+    `if [ -e ${name} ]; then existed=1; fi`,
+    `if [ -d ${name} ]; then`,
+    `  mkdir -p ${versions}`,
+    `  mv ${stage} ${versions}/${version}`,
+    `  ${writeEntry(entryTemp)}`,
+    `  mv -f ${entryTemp} ${name}/index.ts`,
+    `elif [ -e ${name} ]; then`,
+    `  echo "${name} exists and is not a directory" >&2`,
+    `  exit 1`,
+    `else`,
+    `  mkdir -p ${assembled}/${VERSIONS_DIR}`,
+    `  mv ${stage} ${assembled}/${VERSIONS_DIR}/${version}`,
+    `  ${writeEntry(`${assembled}/index.ts`)}`,
+    `  mv -T ${assembled} ${name}`,
+    `fi`,
+    // Remove each version whose successor has been current long enough.
+    `previous=""`,
+    `for current in $(ls ${versions} | sort); do`,
+    `  case "$current" in [0-9]*-*) ;; *) continue ;; esac`,
+    `  if [ -n "$previous" ] && [ $((${nowMs} - \${current%%-*})) -gt ${VERSION_RETENTION_MS} ]; then rm -rf "${versions}/$previous"; fi`,
+    `  previous="$current"`,
+    `done`,
+    // Files from before the first versioned deploy, once that has aged out.
+    `oldest=$(ls ${versions} | sort | head -n 1)`,
+    `case "$oldest" in [0-9]*-*)`,
+    `  if [ $((${nowMs} - \${oldest%%-*})) -gt ${VERSION_RETENTION_MS} ]; then find ${name} -mindepth 1 -maxdepth 1 ! -name index.ts ! -name ${VERSIONS_DIR} ! -name ".index.ts.*" -exec rm -rf {} +; fi ;;`,
+    `esac`,
+    `echo "${EXISTED_MARKER}$existed"`,
+    printWorkerLifetime,
   ].join("\n");
   return `base64 -d | docker exec -i ${container} sh -c '${script}'`;
+}
+
+/**
+ * The router's worker lifetime from its `const workerTimeoutMs = ...` line,
+ * which upstream writes as `400_000` and Coolify as `1 * 60 * 1000`.
+ */
+export function parseWorkerLifetimeMs(line: string): number {
+  const expression = /workerTimeoutMs\s*=\s*([\d_*\s]+)/.exec(line)?.[1];
+  if (!expression) return DEFAULT_WORKER_LIFETIME_MS;
+  const factors = expression
+    .split("*")
+    .map((factor) => factor.replace(/[_\s]/g, ""));
+  if (factors.some((factor) => !/^\d+$/.test(factor))) {
+    return DEFAULT_WORKER_LIFETIME_MS;
+  }
+  const value = factors.reduce(
+    (product, factor) => product * Number(factor),
+    1,
+  );
+  // Anything outside a second to an hour is not a lifetime Dyad understands.
+  return value >= 1_000 && value <= 3_600_000
+    ? value
+    : DEFAULT_WORKER_LIFETIME_MS;
+}
+
+export interface SupabaseSelfHostedDeployResult {
+  /** Whether the function already existed, so a worker may still run its old code. */
+  replacedExisting: boolean;
+  /** The longest a worker started before this deploy keeps serving. */
+  workerLifetimeMs: number;
+}
+
+function parseDeployOutput(output: string): SupabaseSelfHostedDeployResult {
+  let replacedExisting = true;
+  let workerLifetimeMs = DEFAULT_WORKER_LIFETIME_MS;
+  for (const line of output.split("\n")) {
+    if (line.startsWith(EXISTED_MARKER)) {
+      replacedExisting = line.slice(EXISTED_MARKER.length).trim() !== "0";
+    } else if (line.startsWith(WORKER_LIFETIME_MARKER)) {
+      workerLifetimeMs = parseWorkerLifetimeMs(
+        line.slice(WORKER_LIFETIME_MARKER.length),
+      );
+    }
+  }
+  return { replacedExisting, workerLifetimeMs };
 }
 
 export async function deploySupabaseSelfHostedFunction({
@@ -249,7 +378,7 @@ export async function deploySupabaseSelfHostedFunction({
   functionName: string;
   files: readonly SupabaseSelfHostedFunctionFile[];
   signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<SupabaseSelfHostedDeployResult> {
   assertFunctionName(functionName);
   const container = instance.ssh.functionsContainer;
   assertContainerName(container);
@@ -274,7 +403,7 @@ export async function deploySupabaseSelfHostedFunction({
     );
   }
   const archive = Buffer.from(createTarArchive(files)).toString("base64");
-  await withSession(instance, (session) =>
+  const output = await withSession(instance, (session) =>
     run(
       session,
       `deploy ${functionName}`,
@@ -285,6 +414,11 @@ export async function deploySupabaseSelfHostedFunction({
   logger.info(
     `Deployed ${functionName} to self-hosted instance ${instance.id} (${container})`,
   );
+  return parseDeployOutput(output);
+}
+
+function deleteCommand(container: string, functionName: string): string {
+  return `docker exec ${container} sh -c 'cd ${FUNCTIONS_DIR} && rm -rf -- ${functionName} && ${printWorkerLifetime}'`;
 }
 
 export async function deleteSupabaseSelfHostedFunction({
@@ -295,18 +429,19 @@ export async function deleteSupabaseSelfHostedFunction({
   instance: InstanceWithSsh;
   functionName: string;
   signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<{ workerLifetimeMs: number }> {
   assertFunctionName(functionName);
   const container = instance.ssh.functionsContainer;
   assertContainerName(container);
-  await withSession(instance, (session) =>
+  const output = await withSession(instance, (session) =>
     run(
       session,
       `delete ${functionName}`,
-      `docker exec ${container} sh -c 'cd ${FUNCTIONS_DIR} && rm -rf -- ${functionName}'`,
+      deleteCommand(container, functionName),
       { signal },
     ),
   );
+  return { workerLifetimeMs: parseDeployOutput(output).workerLifetimeMs };
 }
 
 /** Function log entries the edge runtime printed at or after `sinceMs`. */
@@ -529,7 +664,7 @@ async function servesUrl({
     await run(
       session,
       "remove the test function",
-      `docker exec ${container} sh -c 'cd ${FUNCTIONS_DIR} && rm -rf -- ${functionName}'`,
+      deleteCommand(container, functionName),
     ).catch((error) =>
       logger.warn(`Could not remove test function from ${container}`, error),
     );

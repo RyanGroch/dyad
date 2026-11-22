@@ -21,6 +21,12 @@ import {
   type SupabaseSelfHostedSsh,
 } from "../../supabase_admin/supabase_self_hosted_store";
 import { checkSupabaseSelfHostedSsh } from "../../supabase_admin/supabase_self_hosted_functions";
+import { listPendingSupabaseSelfHostedFunctionUpdates } from "../../supabase_admin/supabase_self_hosted_function_updates";
+import {
+  importCoolifySupabaseService,
+  listCoolifySupabaseServices,
+} from "../../supabase_admin/supabase_self_hosted_coolify_import";
+import { getClient as getCoolifyClient } from "@/coolify_deploy/store";
 import {
   checkSupabaseSelfHostedInstance,
   normalizeSupabaseSelfHostedUrl,
@@ -52,6 +58,15 @@ import { SupabaseManagementAPIError } from "@dyad-sh/supabase-management-js";
 import { isRateLimitError } from "../utils/retryWithRateLimit";
 import { isGenericFetchFailedError } from "@/lib/posthogTelemetry";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
+
+function assertSelfHostedEnabled(): void {
+  if (!readSettings().enableSupabaseSelfHosted) {
+    throw new DyadError(
+      "Turn on self-hosted Supabase in Settings > Experiments first.",
+      DyadErrorKind.Precondition,
+    );
+  }
+}
 
 const logger = log.scope("supabase_handlers");
 const testOnlyHandle = createTestOnlyLoggedHandler(logger);
@@ -404,14 +419,35 @@ export function registerSupabaseHandlers() {
   );
 
   createTypedHandler(
+    supabaseContracts.listCoolifySupabaseServices,
+    async () => {
+      assertSelfHostedEnabled();
+      return listCoolifySupabaseServices(getCoolifyClient());
+    },
+  );
+
+  createTypedHandler(
+    supabaseContracts.importCoolifySupabaseService,
+    async (_, { serviceUuid }) => {
+      assertSelfHostedEnabled();
+      return importCoolifySupabaseService({
+        client: getCoolifyClient(),
+        coolifyInstanceUrl: readSettings().coolify?.instanceUrl ?? "",
+        serviceUuid,
+      });
+    },
+  );
+
+  createTypedHandler(
+    supabaseContracts.listPendingSelfHostedFunctionUpdates,
+    async (_, { projectId }) =>
+      listPendingSupabaseSelfHostedFunctionUpdates(projectId),
+  );
+
+  createTypedHandler(
     supabaseContracts.addSelfHostedInstance,
     async (_, params) => {
-      if (!readSettings().enableSupabaseSelfHosted) {
-        throw new DyadError(
-          "Turn on self-hosted Supabase in Settings > Experiments first.",
-          DyadErrorKind.Precondition,
-        );
-      }
+      assertSelfHostedEnabled();
       const url = normalizeSupabaseSelfHostedUrl(params.url);
       if (!url) {
         throw new DyadError(

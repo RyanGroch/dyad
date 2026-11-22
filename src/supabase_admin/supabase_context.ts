@@ -11,6 +11,7 @@ import {
   getSupabaseProjectUrl,
   getSupabaseSelfHostedInstanceSummary,
 } from "./supabase_self_hosted_store";
+import { listPendingSupabaseSelfHostedFunctionUpdates } from "./supabase_self_hosted_function_updates";
 import { getSupabaseSelfHostedSystemPrompt } from "@/prompts/supabase_prompt";
 import {
   SUPABASE_SCHEMA_QUERY,
@@ -129,9 +130,17 @@ export function getSupabaseSelfHostedPromptForProject(
 ): string {
   const instance = getSupabaseSelfHostedInstanceSummary(projectId);
   if (!instance) return "";
+  const now = Date.now();
   return getSupabaseSelfHostedSystemPrompt({
     url: instance.url,
     functionsDeployed: instance.ssh !== null,
+    pendingUpdates: listPendingSupabaseSelfHostedFunctionUpdates(
+      projectId,
+      now,
+    ).map(({ functionName, liveByMs }) => ({
+      functionName,
+      minutesLeft: Math.ceil((liveByMs - now) / 60_000),
+    })),
   });
 }
 

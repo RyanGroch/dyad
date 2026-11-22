@@ -37,6 +37,10 @@ import {
   readSupabaseSelfHostedFunctionLogs,
 } from "./supabase_self_hosted_functions";
 import {
+  recordSupabaseSelfHostedFunctionDelete,
+  recordSupabaseSelfHostedFunctionDeploy,
+} from "./supabase_self_hosted_function_updates";
+import {
   appOperationCoordinator,
   readAppResource,
   type AppOperationContext,
@@ -1179,10 +1183,15 @@ export async function deleteSupabaseFunction({
   callerSignal?.throwIfAborted();
   const selfHosted = getSupabaseSelfHostedInstance(supabaseProjectId);
   if (selfHosted) {
-    await deleteSupabaseSelfHostedFunction({
+    const { workerLifetimeMs } = await deleteSupabaseSelfHostedFunction({
       instance: withSshOrThrow(selfHosted),
       functionName,
       signal: callerSignal,
+    });
+    recordSupabaseSelfHostedFunctionDelete({
+      projectId: supabaseProjectId,
+      functionName,
+      workerLifetimeMs,
     });
     return;
   }
@@ -1552,7 +1561,7 @@ async function deploySupabaseFunctionUnqueued({
   if (selfHosted) {
     // Files are written straight into the edge runtime's directory, so the
     // function is live at once and the batch activation step has no work.
-    await deploySupabaseSelfHostedFunction({
+    const deployed = await deploySupabaseSelfHostedFunction({
       instance: withSshOrThrow(selfHosted),
       functionName,
       files: await Promise.all(
@@ -1565,6 +1574,11 @@ async function deploySupabaseFunctionUnqueued({
           })),
       ),
       signal,
+    });
+    recordSupabaseSelfHostedFunctionDeploy({
+      projectId: supabaseProjectId,
+      functionName,
+      ...deployed,
     });
     return {
       id: functionName,

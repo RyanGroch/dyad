@@ -11,7 +11,9 @@ const { Server, utils } = ssh2;
  * (list containers, unpack a function archive, delete a function, read logs)
  * against an in-memory functions directory per container, the way the real
  * `docker exec` and `docker logs` commands behaved in a recorded upstream
- * install.
+ * install. A deploy lays files out as the real script does (a version
+ * directory plus a one-line entry); pruning old versions is left to the
+ * script's own tests, which run it with a real shell.
  */
 export interface FakeEdgeRuntimeContainer {
   name: string;
@@ -30,12 +32,41 @@ export interface FakeEdgeRuntimeSsh {
   logs: string;
   /** Answer docker commands the way a user outside the docker group gets. */
   dockerDenied: boolean;
+  /**
+   * Public keys (OpenSSH format) allowed to log in. Null accepts any key.
+   */
+  authorizedKeys: string[] | null;
   commands: string[];
   /** SSH connections accepted so far. */
   connections: number;
   /** Ends every open connection, as a restarted sshd would. */
   dropConnections: () => void;
   close: () => Promise<void>;
+}
+
+const ENTRY_TARGET =
+  /\.\/\.dyad\/(\d+-[0-9a-f]+)\/([A-Za-z][A-Za-z0-9_-]*)\/index\.ts/;
+
+/**
+ * The files of a function's current version, keyed as Dyad uploaded them
+ * (`<function>/...`, `_shared/...`), found by following its entry file.
+ */
+export function currentFunctionFiles(
+  fake: FakeEdgeRuntimeSsh,
+  container: string,
+  functionName: string,
+): Map<string, string> {
+  const dir = fake.files.get(container) ?? new Map<string, string>();
+  const version = ENTRY_TARGET.exec(
+    dir.get(`${functionName}/index.ts`) ?? "",
+  )?.[1];
+  const prefix = `${functionName}/.dyad/${version}/`;
+  const files = new Map<string, string>();
+  if (!version) return files;
+  for (const [path, text] of dir) {
+    if (path.startsWith(prefix)) files.set(path.slice(prefix.length), text);
+  }
+  return files;
 }
 
 const DOCKER_DENIED =
@@ -87,6 +118,7 @@ export async function startFakeEdgeRuntimeSsh(
     files: new Map(),
     logs: "",
     dockerDenied: false,
+    authorizedKeys: null,
     commands: [],
     connections: 0,
     dropConnections: () => {},
@@ -103,6 +135,12 @@ export async function startFakeEdgeRuntimeSsh(
   };
   const known = (container: string) =>
     fake.containers.some((candidate) => candidate.name === container);
+  // What the scripts print: the router's `workerTimeoutMs =` line, if any.
+  const lifetimeOutput = (dir: Map<string, string>) =>
+    `dyad-worker-lifetime:${
+      /^.*workerTimeoutMs *=.*$/m.exec(dir.get("main/index.ts") ?? "")?.[0] ??
+      ""
+    }\n`;
   const removeTree = (dir: Map<string, string>, name: string) => {
     // Deleting the current key while iterating a Map is safe.
     for (const path of dir.keys()) {
@@ -139,21 +177,35 @@ export async function startFakeEdgeRuntimeSsh(
           stderr: `Error response from daemon: No such container: ${container}\n`,
         };
       }
-      const functionName = /\nmv \.dyad-stage-\w+\/(\S+) \1$/.exec(script)?.[1];
-      if (!functionName) throw new Error(`Unexpected deploy script: ${script}`);
+      const target = ENTRY_TARGET.exec(script);
+      if (!target) throw new Error(`Unexpected deploy script: ${script}`);
+      const [entryTarget, version, functionName] = target;
       const archive = readTarArchive(Buffer.from(stdin, "base64"));
       const dir = dirOf(container);
-      removeTree(dir, functionName);
-      for (const [path, text] of archive) dir.set(path, text);
-      return { code: 0, stdout: "", stderr: "" };
+      const existed = [...dir.keys()].some((path) =>
+        path.startsWith(`${functionName}/`),
+      );
+      for (const [path, text] of archive) {
+        dir.set(`${functionName}/.dyad/${version}/${path}`, text);
+      }
+      dir.set(
+        `${functionName}/index.ts`,
+        `import * as entry from "${entryTarget}";\nexport default entry.default ?? {};\n`,
+      );
+      return {
+        code: 0,
+        stdout: `dyad-existed:${existed ? 1 : 0}\n${lifetimeOutput(dir)}`,
+        stderr: "",
+      };
     }
     const remove =
-      /^docker exec (\S+) sh -c 'cd \/home\/deno\/functions && rm -rf -- (\S+)'$/.exec(
+      /^docker exec (\S+) sh -c 'cd \/home\/deno\/functions && rm -rf -- (\S+) && echo "dyad-worker-lifetime:[^']*'$/.exec(
         command,
       );
     if (remove) {
-      removeTree(dirOf(remove[1]), remove[2]);
-      return { code: 0, stdout: "", stderr: "" };
+      const dir = dirOf(remove[1]);
+      removeTree(dir, remove[2]);
+      return { code: 0, stdout: lifetimeOutput(dir), stderr: "" };
     }
     if (
       /^docker logs --timestamps --since [\d.]+ --tail \d+ \S+ 2>&1$/.test(
@@ -174,9 +226,19 @@ export async function startFakeEdgeRuntimeSsh(
     open.add(client);
     client.on("close", () => open.delete(client));
     client.on("error", () => open.delete(client));
-    client.on("authentication", (ctx) =>
-      ctx.method === "publickey" ? ctx.accept() : ctx.reject(["publickey"]),
-    );
+    client.on("authentication", (ctx) => {
+      if (ctx.method !== "publickey") return ctx.reject(["publickey"]);
+      const allowed =
+        fake.authorizedKeys === null ||
+        fake.authorizedKeys.some((key) => {
+          const parsed = utils.parseKey(key);
+          return (
+            !(parsed instanceof Error) &&
+            parsed.getPublicSSH().equals(ctx.key.data)
+          );
+        });
+      return allowed ? ctx.accept() : ctx.reject(["publickey"]);
+    });
     client.on("ready", () => {
       fake.connections++;
       client.on("session", (accept) => {

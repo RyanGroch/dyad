@@ -379,6 +379,55 @@ export const supabaseContracts = {
     invalidates: () => [{ family: "provider-status", provider: "supabase" }],
   }),
 
+  /** Supabase services on the connected Coolify instance, for importing one. */
+  listCoolifySupabaseServices: defineContract({
+    channel: "supabase:list-coolify-supabase-services",
+    input: z.void(),
+    output: z.array(
+      z.object({
+        uuid: z.string(),
+        name: z.string(),
+        url: z.string().nullable(),
+      }),
+    ),
+  }),
+
+  /**
+   * Reads a Coolify Supabase service's URL, keys and server, to fill in the
+   * add form. Nothing is saved until the user adds the instance.
+   */
+  importCoolifySupabaseService: defineContract({
+    channel: "supabase:import-coolify-supabase-service",
+    input: z.object({ serviceUuid: z.string().min(1) }),
+    output: z.object({
+      name: z.string(),
+      url: z.string(),
+      anonKey: z.string(),
+      serviceKey: z.string(),
+      studioUrl: z.string(),
+      ssh: z
+        .object({
+          host: z.string(),
+          port: z.number().int(),
+          username: z.string(),
+          privateKey: z.string().nullable(),
+        })
+        .nullable(),
+    }),
+  }),
+
+  /**
+   * Edge functions on a self-hosted instance whose update may not be serving
+   * yet, because a worker started before the deploy can still be running.
+   */
+  listPendingSelfHostedFunctionUpdates: defineContract({
+    channel: "supabase:list-pending-self-hosted-function-updates",
+    input: z.object({ projectId: z.string().min(1) }),
+    output: z.array(
+      z.object({ functionName: z.string(), liveByMs: z.number() }),
+    ),
+  }),
+
   /** Disconnects every app linked to the instance, then removes it. */
   removeSelfHostedInstance: defineContract({
     channel: "supabase:remove-self-hosted-instance",

@@ -10,11 +10,16 @@ import {
   type FakeSupabaseSelfHosted,
 } from "@/testing/fake_supabase_self_hosted_server";
 import {
+  currentFunctionFiles,
   startFakeEdgeRuntimeSsh,
   type FakeEdgeRuntimeSsh,
 } from "@/testing/fake_supabase_edge_runtime_ssh";
 import { generateSshKeyPair } from "@/testing/fake_ssh_server";
 import { closeSupabaseSelfHostedSessions } from "./supabase_self_hosted_functions";
+import {
+  listPendingSupabaseSelfHostedFunctionUpdates,
+  resetSupabaseSelfHostedFunctionUpdates,
+} from "./supabase_self_hosted_function_updates";
 import {
   apps,
   supabaseSelfHostedInstances,
@@ -78,6 +83,7 @@ afterEach(async () => {
   await fake?.close();
   fake = undefined;
   closeSupabaseSelfHostedSessions();
+  resetSupabaseSelfHostedFunctionUpdates();
   await edgeSsh?.close();
   edgeSsh = undefined;
   if (appDir) fs.rmSync(appDir, { recursive: true, force: true });
@@ -327,12 +333,47 @@ describe("Supabase operations on a self-hosted project", () => {
     });
 
     expect(errors).toEqual([]);
-    expect([...edgeSsh!.files.get(container)!.keys()].sort()).toEqual([
-      "goodbye/index.ts",
-      "hello/index.ts",
-      "main/index.ts",
-      "other-app/index.ts",
-    ]);
+    const dir = edgeSsh!.files.get(container)!;
+    expect(dir.get("main/index.ts")).toBe("router");
+    expect(dir.get("other-app/index.ts")).toBe("theirs");
+    for (const name of ["hello", "goodbye"]) {
+      expect(
+        currentFunctionFiles(edgeSsh!, container, name).get(`${name}/index.ts`),
+      ).toBe("export {};\n");
+    }
+    // New functions are live at once.
+    expect(listPendingSupabaseSelfHostedFunctionUpdates(instance.id)).toEqual(
+      [],
+    );
+  });
+
+  it("records when an updated function is guaranteed to be live", async () => {
+    const instance = await addInstanceWithSsh();
+    const container = "supabase-edge-functions";
+    edgeSsh!.files.set(
+      container,
+      new Map([["main/index.ts", "const workerTimeoutMs = 1 * 60 * 1000\n"]]),
+    );
+    const appPath = writeAppFunction("hello", "export {};\n");
+    const deployHello = () =>
+      deploySupabaseFunction({
+        supabaseProjectId: instance.id,
+        functionName: "hello",
+        appPath,
+        organizationSlug: null,
+      });
+
+    await deployHello();
+    expect(listPendingSupabaseSelfHostedFunctionUpdates(instance.id)).toEqual(
+      [],
+    );
+    const before = Date.now();
+    await deployHello();
+
+    const [pending] = listPendingSupabaseSelfHostedFunctionUpdates(instance.id);
+    expect(pending.functionName).toBe("hello");
+    expect(pending.liveByMs).toBeGreaterThanOrEqual(before + 60_000);
+    expect(pending.liveByMs).toBeLessThanOrEqual(Date.now() + 60_000);
   });
 
   it("deletes a function and reads its logs over SSH", async () => {

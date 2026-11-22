@@ -26,6 +26,7 @@ import {
   type FakeSupabaseSelfHosted,
 } from "@/testing/fake_supabase_self_hosted_server";
 import {
+  currentFunctionFiles,
   startFakeEdgeRuntimeSsh,
   type FakeEdgeRuntimeSsh,
 } from "@/testing/fake_supabase_edge_runtime_ssh";
@@ -189,9 +190,8 @@ describe("self-hosted Supabase instances (integration)", () => {
       },
     ]);
     fake!.serveFunction = (name) =>
-      edgeSsh!.files
-        .get("supabase-edge-functions-x1")
-        ?.get(`${name}/index.ts`)
+      currentFunctionFiles(edgeSsh!, "supabase-edge-functions-x1", name)
+        .get(`${name}/index.ts`)
         ?.match(/new Response\("(\w+)"\)/)?.[1];
 
     const { instance } = await addInstance({

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   getSupabaseAvailableSystemPrompt,
+  getSupabaseSelfHostedSystemPrompt,
   SUPABASE_AUTH_REDIRECT_RULE,
   SUPABASE_AUTH_BROWSER_EXAMPLE,
 } from "./supabase_prompt";
@@ -65,4 +66,37 @@ describe("Supabase auth redirect guidance", () => {
       );
     },
   );
+});
+
+describe("self-hosted Supabase prompt", () => {
+  const url = "http://supabase.example.com";
+
+  it("names functions whose update may not be live yet", () => {
+    const prompt = getSupabaseSelfHostedSystemPrompt({
+      url,
+      functionsDeployed: true,
+      pendingUpdates: [
+        { functionName: "send-email", minutesLeft: 1 },
+        { functionName: "charge", minutesLeft: 7 },
+      ],
+    });
+
+    expect(prompt).toContain(
+      "These functions were just updated and may still answer with their previous code: send-email (for up to 1 more minute), charge (for up to 7 more minutes).",
+    );
+  });
+
+  it("says nothing about updates when none are pending or none are deployed", () => {
+    const pendingUpdates = [{ functionName: "send-email", minutesLeft: 3 }];
+    for (const prompt of [
+      getSupabaseSelfHostedSystemPrompt({ url, functionsDeployed: true }),
+      getSupabaseSelfHostedSystemPrompt({
+        url,
+        functionsDeployed: false,
+        pendingUpdates,
+      }),
+    ]) {
+      expect(prompt).not.toContain("just updated");
+    }
+  });
 });

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PropsWithChildren, ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,15 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
+  listCoolifySupabaseServices: vi.fn(),
+  importCoolifySupabaseService: vi.fn(),
+  settings: {} as {
+    coolify?: { instanceUrl?: string; accessToken?: { value: string } };
+  },
+}));
+
+vi.mock("@/hooks/useSettings", () => ({
+  useSettings: () => ({ settings: mocks.settings }),
 }));
 
 vi.mock("@/ipc/types", () => ({
@@ -23,6 +33,8 @@ vi.mock("@/ipc/types", () => ({
       setAppProject: mocks.setAppProject,
       unsetAppProject: mocks.unsetAppProject,
       removeSelfHostedInstance: mocks.removeSelfHostedInstance,
+      listCoolifySupabaseServices: mocks.listCoolifySupabaseServices,
+      importCoolifySupabaseService: mocks.importCoolifySupabaseService,
     },
     system: { openExternalUrl: mocks.openExternalUrl },
   },
@@ -73,6 +85,7 @@ beforeEach(() => {
   mocks.listSelfHostedInstances.mockResolvedValue([]);
   mocks.setAppProject.mockResolvedValue(undefined);
   mocks.unsetAppProject.mockResolvedValue(undefined);
+  mocks.settings = {};
 });
 
 describe("SupabaseSelfHostedLinkSection", () => {
@@ -168,6 +181,110 @@ describe("SupabaseSelfHostedLinkSection", () => {
         .textContent,
     ).toContain("rejected the service key");
     expect(mocks.setAppProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("SupabaseSelfHostedLinkSection help and import", () => {
+  it("explains where each value is on both kinds of install", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(
+      <SupabaseSelfHostedLinkSection appId={7} onLinked={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
+
+    await user.hover(
+      screen.getByRole("button", { name: "Where to find Publishable key" }),
+    );
+
+    expect(await screen.findByText(/ANON_KEY in your \.env file/)).toBeTruthy();
+    expect(
+      screen.getByText(/SERVICE_SUPABASEANON_KEY in the Supabase service/),
+    ).toBeTruthy();
+  });
+
+  it("offers no Coolify import when Coolify isn't connected", () => {
+    renderWithQuery(
+      <SupabaseSelfHostedLinkSection appId={7} onLinked={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
+
+    expect(
+      screen.queryByTestId("supabase-self-hosted-coolify-import"),
+    ).toBeNull();
+    expect(mocks.listCoolifySupabaseServices).not.toHaveBeenCalled();
+  });
+
+  it("fills the form from a Coolify service and adds it", async () => {
+    mocks.settings = {
+      coolify: {
+        instanceUrl: "http://203.0.113.7:8000",
+        accessToken: { value: "token" },
+      },
+    };
+    mocks.listCoolifySupabaseServices.mockResolvedValue([
+      { uuid: "svc-1", name: "supabase-t2np", url: "http://kong.example" },
+    ]);
+    mocks.importCoolifySupabaseService.mockResolvedValue({
+      name: "supabase-t2np",
+      url: "http://kong.example",
+      anonKey: "anon-jwt",
+      serviceKey: "service-jwt",
+      studioUrl: "http://kong.example",
+      ssh: {
+        host: "203.0.113.7",
+        port: 22,
+        username: "root",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+      },
+    });
+    mocks.addSelfHostedInstance.mockResolvedValue({
+      instance: INSTANCE,
+      warnings: [],
+    });
+    const user = userEvent.setup();
+    const onLinked = vi.fn().mockResolvedValue(undefined);
+    renderWithQuery(
+      <SupabaseSelfHostedLinkSection appId={7} onLinked={onLinked} />,
+    );
+    fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
+
+    await user.click(await screen.findByLabelText("Import from Coolify"));
+    await user.click(
+      await screen.findByRole("option", {
+        name: "supabase-t2np (http://kong.example)",
+      }),
+    );
+
+    expect(
+      (await screen.findByTestId("supabase-self-hosted-import-note"))
+        .textContent,
+    ).toBe(
+      "Filled in from Coolify. Edge functions will connect as root@203.0.113.7 with Coolify's SSH key for that server.",
+    );
+    expect(mocks.importCoolifySupabaseService).toHaveBeenCalledWith({
+      serviceUuid: "svc-1",
+    });
+    expect(
+      screen
+        .getByRole("switch", { name: "Enable edge functions" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Add and connect" }));
+
+    await waitFor(() => expect(onLinked).toHaveBeenCalled());
+    expect(mocks.addSelfHostedInstance).toHaveBeenCalledWith({
+      name: "supabase-t2np",
+      url: "http://kong.example",
+      anonKey: "anon-jwt",
+      serviceKey: "service-jwt",
+      studioUrl: "http://kong.example",
+      ssh: {
+        host: "203.0.113.7",
+        port: 22,
+        username: "root",
+        privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+      },
+    });
   });
 });
 
