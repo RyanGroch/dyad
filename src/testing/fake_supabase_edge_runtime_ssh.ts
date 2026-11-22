@@ -33,6 +33,11 @@ export interface FakeEdgeRuntimeSsh {
   /** Answer docker commands the way a user outside the docker group gets. */
   dockerDenied: boolean;
   /**
+   * What the mail settings command prints, recorded from a real server.
+   * Empty means no auth container was found.
+   */
+  mailSettingsOutput: string;
+  /**
    * Public keys (OpenSSH format) allowed to log in. Null accepts any key.
    */
   authorizedKeys: string[] | null;
@@ -119,6 +124,7 @@ export async function startFakeEdgeRuntimeSsh(
     logs: "",
     dockerDenied: false,
     authorizedKeys: null,
+    mailSettingsOutput: "",
     commands: [],
     connections: 0,
     dropConnections: () => {},
@@ -155,6 +161,9 @@ export async function startFakeEdgeRuntimeSsh(
     fake.commands.push(command);
     if (fake.dockerDenied && /(^|\| )docker /.test(command)) {
       return { code: 1, stdout: "", stderr: DOCKER_DENIED };
+    }
+    if (command.startsWith("p=$(docker inspect -f '{{index .Config.Labels")) {
+      return { code: 0, stdout: fake.mailSettingsOutput, stderr: "" };
     }
     if (command.startsWith("docker ps --format")) {
       return {

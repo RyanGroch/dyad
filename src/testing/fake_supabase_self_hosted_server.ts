@@ -37,6 +37,8 @@ export interface FakeSupabaseSelfHosted {
   authLinkOrigin: string | undefined;
   /** The body /functions/v1/<name> answers with, or undefined for 404. */
   serveFunction: (name: string) => string | undefined;
+  /** What /auth/v1/settings reports as mailer_autoconfirm. */
+  mailerAutoconfirm: boolean;
   close: () => Promise<void>;
 }
 
@@ -75,6 +77,7 @@ export async function startFakeSupabaseSelfHosted(
     liveUserIds: new Set(),
     authLinkOrigin: undefined,
     serveFunction: () => undefined,
+    mailerAutoconfirm: false,
     close: async () => {},
   };
 
@@ -125,6 +128,19 @@ export async function startFakeSupabaseSelfHosted(
         }
         res.writeHead(200, { "Content-Type": "text/plain" });
         return res.end(answer);
+      }
+
+      if (path === "/auth/v1/settings" && req.method === "GET") {
+        if (keyOf(req) !== anonKey && keyOf(req) !== serviceKey) {
+          return json(res, 401, {
+            message: "Invalid authentication credentials",
+          });
+        }
+        return json(res, 200, {
+          external: { email: true },
+          disable_signup: false,
+          mailer_autoconfirm: fake.mailerAutoconfirm,
+        });
       }
 
       if (path === "/auth/v1/health" && req.method === "GET") {

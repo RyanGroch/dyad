@@ -466,6 +466,80 @@ export async function readSupabaseSelfHostedFunctionLogs({
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Mail settings
+// ─────────────────────────────────────────────────────────────────────
+
+const CONTAINER_MARKER = "dyad-container:";
+const AUTH_MARKER = "dyad-auth:";
+
+export interface SupabaseSelfHostedMailSettings {
+  /** The auth service's SMTP host; empty means it discards every email. */
+  smtpHost: string;
+  autoconfirm: boolean;
+  /** Names and Compose service names of the instance's running containers. */
+  runningNames: string[];
+}
+
+/**
+ * Finds the auth container in the same Compose project as the functions
+ * container, since a server can run several Supabase stacks, and prints its
+ * mail settings. Only those two variables leave the server: the container's
+ * environment also holds its secrets.
+ */
+export function mailSettingsCommand(container: string): string {
+  const project = `{{index .Config.Labels "com.docker.compose.project"}}`;
+  const inProject = `--filter "label=com.docker.compose.project=$p"`;
+  return [
+    `p=$(docker inspect -f '${project}' ${container})`,
+    `[ -n "$p" ] || exit 0`,
+    `docker ps ${inProject} --format '${CONTAINER_MARKER}{{.Names}}\t{{.Image}}\t{{.Label "com.docker.compose.service"}}'`,
+    `auth=$(docker ps ${inProject} --format '{{.Names}}\t{{.Image}}' | awk -F '\t' '$2 ~ /gotrue/ { print $1; exit }')`,
+    `[ -n "$auth" ] || exit 0`,
+    `echo "${AUTH_MARKER}$auth"`,
+    `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$auth" | grep -E '^GOTRUE_(SMTP_HOST|MAILER_AUTOCONFIRM)=' || true`,
+  ].join("\n");
+}
+
+/** Null when the output names no auth container. */
+export function parseMailSettingsOutput(
+  output: string,
+): SupabaseSelfHostedMailSettings | null {
+  let foundAuth = false;
+  let smtpHost = "";
+  let autoconfirm = false;
+  const runningNames: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith(CONTAINER_MARKER)) {
+      const [name, , service] = line.slice(CONTAINER_MARKER.length).split("\t");
+      for (const value of [name, service]) {
+        if (value) runningNames.push(value);
+      }
+    } else if (line.startsWith(AUTH_MARKER)) {
+      foundAuth = true;
+    } else if (line.startsWith("GOTRUE_SMTP_HOST=")) {
+      smtpHost = line.slice("GOTRUE_SMTP_HOST=".length).trim();
+    } else if (line.startsWith("GOTRUE_MAILER_AUTOCONFIRM=")) {
+      autoconfirm =
+        line.slice("GOTRUE_MAILER_AUTOCONFIRM=".length).trim() === "true";
+    }
+  }
+  return foundAuth ? { smtpHost, autoconfirm, runningNames } : null;
+}
+
+export async function readSupabaseSelfHostedMailSettings({
+  instance,
+}: {
+  instance: InstanceWithSsh;
+}): Promise<SupabaseSelfHostedMailSettings | null> {
+  const container = instance.ssh.functionsContainer;
+  assertContainerName(container);
+  const output = await withSession(instance, (session) =>
+    run(session, "read the mail settings", mailSettingsCommand(container)),
+  );
+  return parseMailSettingsOutput(output);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Log parsing
 // ─────────────────────────────────────────────────────────────────────
 

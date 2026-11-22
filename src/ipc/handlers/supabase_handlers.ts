@@ -15,6 +15,7 @@ import {
 import { extractFunctionName } from "../../supabase_admin/supabase_utils";
 import {
   deleteSupabaseSelfHostedInstance,
+  getSupabaseSelfHostedInstance,
   insertSupabaseSelfHostedInstance,
   listLinkedApps,
   listSupabaseSelfHostedInstances,
@@ -22,6 +23,7 @@ import {
 } from "../../supabase_admin/supabase_self_hosted_store";
 import { checkSupabaseSelfHostedSsh } from "../../supabase_admin/supabase_self_hosted_functions";
 import { listPendingSupabaseSelfHostedFunctionUpdates } from "../../supabase_admin/supabase_self_hosted_function_updates";
+import { getSupabaseSelfHostedEmailStatus } from "../../supabase_admin/supabase_self_hosted_email";
 import {
   importCoolifySupabaseService,
   listCoolifySupabaseServices,
@@ -435,6 +437,20 @@ export function registerSupabaseHandlers() {
         coolifyInstanceUrl: readSettings().coolify?.instanceUrl ?? "",
         serviceUuid,
       });
+    },
+  );
+
+  createTypedHandler(
+    supabaseContracts.getSelfHostedEmailStatus,
+    async (_, { projectId }) => {
+      const instance = getSupabaseSelfHostedInstance(projectId);
+      if (!instance) {
+        throw new DyadError(
+          "That self-hosted Supabase instance no longer exists.",
+          DyadErrorKind.NotFound,
+        );
+      }
+      return getSupabaseSelfHostedEmailStatus(instance);
     },
   );
 

@@ -416,6 +416,18 @@ export const supabaseContracts = {
     }),
   }),
 
+  /** What Dyad can tell about a self-hosted instance's email, read fresh. */
+  getSelfHostedEmailStatus: defineContract({
+    channel: "supabase:get-self-hosted-email-status",
+    input: z.object({ projectId: z.string().min(1) }),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("autoconfirm") }),
+      z.object({ kind: z.literal("not-configured") }),
+      z.object({ kind: z.literal("configured"), host: z.string() }),
+      z.object({ kind: z.literal("unknown") }),
+    ]),
+  }),
+
   /**
    * Edge functions on a self-hosted instance whose update may not be serving
    * yet, because a worker started before the deploy can still be running.

@@ -53,10 +53,126 @@ import {
 const EMAIL_NOTE =
   "Email isn't set up by default on self-hosted Supabase. To use email sign-up, configure SMTP on your instance.";
 
-function functionsNote(ssh: NonNullable<App["supabaseSelfHosted"]>["ssh"]) {
-  return ssh
-    ? "This instance can deploy edge functions. Updates to them can take a few minutes to take effect, longer than on Supabase Cloud."
-    : "This instance can't deploy edge functions.";
+const FUNCTIONS_HELP: Record<"enabled" | "notEnabled", HelpLine[]> = {
+  enabled: [
+    {
+      text: "Dyad deploys this app's edge functions to the instance over SSH.",
+    },
+    {
+      text: "An update can take a few minutes to go live, longer than on Supabase Cloud.",
+    },
+  ],
+  notEnabled: [
+    {
+      text: "The instance was added without SSH access, so edge function code is saved but doesn't run.",
+    },
+    {
+      text: "To enable them, remove the instance in Settings and add it again with edge functions turned on.",
+    },
+  ],
+};
+
+const SMTP_HELP: HelpLine[] = [
+  {
+    text: "Sign-up confirmation emails, magic links and password resets need a mail server.",
+  },
+  {
+    install: "Docker Compose",
+    text: "set the SMTP_ variables in your .env file, then run docker compose up -d auth.",
+  },
+  {
+    install: "Coolify",
+    text: "set the SMTP_ variables in the Supabase service's Environment Variables, then restart the service.",
+  },
+  {
+    text: "For testing, ENABLE_EMAIL_AUTOCONFIRM=true signs new users in without email, but skips verifying their address.",
+  },
+];
+
+type EmailStatus = Awaited<
+  ReturnType<typeof ipc.supabase.getSelfHostedEmailStatus>
+>;
+
+/** The email row's value and explanation; null shows the requirement instead. */
+function emailRow(
+  status: EmailStatus | undefined,
+): { value: string; help: HelpLine[] } | null {
+  switch (status?.kind) {
+    case undefined:
+      return { value: "Checking", help: SMTP_HELP };
+    case "autoconfirm":
+      return {
+        value: "Sign-ups confirm without email",
+        help: [
+          {
+            text: "ENABLE_EMAIL_AUTOCONFIRM is on, so new users are signed in without confirming their email address.",
+          },
+          { text: "Magic links and password resets still need SMTP." },
+        ],
+      };
+    case "not-configured":
+      return { value: "SMTP not configured", help: SMTP_HELP };
+    case "configured":
+      return {
+        value: `SMTP configured (${status.host})`,
+        help: [
+          {
+            text: "A mail server is set. Dyad can't check that its emails arrive.",
+          },
+        ],
+      };
+    case "unknown":
+      return null;
+  }
+}
+
+function InstanceDetails({
+  projectId,
+  ssh,
+}: {
+  projectId: string;
+  ssh: NonNullable<App["supabaseSelfHosted"]>["ssh"];
+}) {
+  const { data: emailStatus, isError } = useQuery({
+    queryKey: queryKeys.supabase.selfHostedEmailStatus({ projectId }),
+    queryFn: () => ipc.supabase.getSelfHostedEmailStatus({ projectId }),
+    // The server can change at any time, so this is never cached for long.
+    staleTime: 0,
+    retry: false,
+  });
+  const email = emailRow(isError ? { kind: "unknown" } : emailStatus);
+  return (
+    <div
+      className="space-y-2 text-sm"
+      data-testid="supabase-self-hosted-details"
+    >
+      <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1.5">
+        <dt className="text-muted-foreground">Edge functions</dt>
+        <dd className="flex items-center gap-1.5">
+          {ssh ? "Enabled" : "Not enabled"}
+          <FieldHelp
+            label="Edge functions"
+            lines={ssh ? FUNCTIONS_HELP.enabled : FUNCTIONS_HELP.notEnabled}
+          />
+        </dd>
+        {email && (
+          <>
+            <dt className="text-muted-foreground">Email</dt>
+            <dd className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate">{email.value}</span>
+              <FieldHelp label="Email" lines={email.help} />
+            </dd>
+          </>
+        )}
+      </dl>
+      {!email && (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          Email sign-up requires SMTP to be configured on your server.
+          <FieldHelp label="Email" lines={SMTP_HELP} />
+        </p>
+      )}
+    </div>
+  );
 }
 
 /** The API URL's host, which is usually the server to SSH into. */
@@ -130,14 +246,10 @@ export function SupabaseSelfHostedConnectedCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Alert>
-          <Info className="h-4 w-4" />
-          <AlertDescription>{functionsNote(instance.ssh)}</AlertDescription>
-        </Alert>
-        <Alert>
-          <Info className="h-4 w-4" />
-          <AlertDescription>{EMAIL_NOTE}</AlertDescription>
-        </Alert>
+        <InstanceDetails
+          projectId={app.supabaseProjectId!}
+          ssh={instance.ssh}
+        />
         <Button
           variant="destructive"
           onClick={handleDisconnect}

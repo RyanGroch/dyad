@@ -433,6 +433,8 @@ export const queryKeys = {
     projects: ["supabase", "projects"] as const,
     selfHostedInstances: ["supabase", "selfHostedInstances"] as const,
     coolifyServices: ["supabase", "coolifyServices"] as const,
+    selfHostedEmailStatus: ({ projectId }: { projectId: string }) =>
+      ["supabase", "selfHostedEmailStatus", projectId] as const,
     pendingSelfHostedFunctionUpdates: ({
       projectId,
     }: {

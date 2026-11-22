@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   listCoolifySupabaseServices: vi.fn(),
   importCoolifySupabaseService: vi.fn(),
+  getSelfHostedEmailStatus: vi.fn(),
   settings: {} as {
     coolify?: { instanceUrl?: string; accessToken?: { value: string } };
   },
@@ -35,6 +36,7 @@ vi.mock("@/ipc/types", () => ({
       removeSelfHostedInstance: mocks.removeSelfHostedInstance,
       listCoolifySupabaseServices: mocks.listCoolifySupabaseServices,
       importCoolifySupabaseService: mocks.importCoolifySupabaseService,
+      getSelfHostedEmailStatus: mocks.getSelfHostedEmailStatus,
     },
     system: { openExternalUrl: mocks.openExternalUrl },
   },
@@ -301,6 +303,7 @@ describe("SupabaseSelfHostedConnectedCard", () => {
   const app = {
     id: 7,
     name: "Shop",
+    supabaseProjectId: "instance-1",
     supabaseSelfHosted: {
       ...INSTANCE,
       studioUrl: "https://studio.example.com",
@@ -314,14 +317,6 @@ describe("SupabaseSelfHostedConnectedCard", () => {
     );
 
     expect(screen.getByText("Home lab")).toBeTruthy();
-    expect(
-      screen.getByText(/This instance can deploy edge functions/),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Email isn't set up by default on self-hosted Supabase. To use email sign-up, configure SMTP on your instance.",
-      ),
-    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Studio/ }));
     expect(mocks.openExternalUrl).toHaveBeenCalledWith(
       "https://studio.example.com",
@@ -332,6 +327,62 @@ describe("SupabaseSelfHostedConnectedCard", () => {
     );
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(mocks.unsetAppProject).toHaveBeenCalledWith({ app: 7 });
+  });
+});
+
+describe("SupabaseSelfHostedConnectedCard details", () => {
+  const app = {
+    id: 7,
+    name: "Shop",
+    supabaseProjectId: "instance-1",
+    supabaseSelfHosted: INSTANCE,
+  } as Parameters<typeof SupabaseSelfHostedConnectedCard>[0]["app"];
+
+  /** The details list as label: value lines. */
+  async function details(status: unknown) {
+    mocks.getSelfHostedEmailStatus.mockResolvedValue(status);
+    renderWithQuery(
+      <SupabaseSelfHostedConnectedCard app={app} onChanged={vi.fn()} />,
+    );
+    const list = await screen.findByTestId("supabase-self-hosted-details");
+    await waitFor(() => expect(list.textContent).not.toContain("Checking"));
+    expect(mocks.getSelfHostedEmailStatus).toHaveBeenCalledWith({
+      projectId: "instance-1",
+    });
+    return [...list.querySelectorAll("dt")].map(
+      (term) => `${term.textContent}: ${term.nextElementSibling?.textContent}`,
+    );
+  }
+
+  it("shows edge functions and email as rows, not notices", async () => {
+    expect(await details({ kind: "not-configured" })).toEqual([
+      "Edge functions: Enabled",
+      "Email: SMTP not configured",
+    ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("names a configured mail server", async () => {
+    expect(
+      await details({ kind: "configured", host: "smtp.resend.com" }),
+    ).toContain("Email: SMTP configured (smtp.resend.com)");
+  });
+
+  it("says sign-ups confirm without email when autoconfirm is on", async () => {
+    expect(await details({ kind: "autoconfirm" })).toContain(
+      "Email: Sign-ups confirm without email",
+    );
+  });
+
+  it("states the requirement when Dyad can't tell", async () => {
+    expect(await details({ kind: "unknown" })).toEqual([
+      "Edge functions: Enabled",
+    ]);
+    expect(
+      screen.getByText(
+        "Email sign-up requires SMTP to be configured on your server.",
+      ),
+    ).toBeTruthy();
   });
 });
 
