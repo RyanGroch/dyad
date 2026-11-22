@@ -143,24 +143,71 @@ export function SupabaseSelfHostedConnectedCard({
   );
 }
 
-/** Where each value is, for the two installs Dyad supports. */
-const WHERE_TO_FIND: Partial<Record<keyof typeof EMPTY_FORM, string>> = {
-  url: "Docker Compose: SUPABASE_PUBLIC_URL in your .env file, for example http://your-server:8000.\nCoolify: SERVICE_URL_SUPABASEKONG in the Supabase service's Environment Variables.",
-  anonKey:
-    "Docker Compose: ANON_KEY in your .env file.\nCoolify: SERVICE_SUPABASEANON_KEY in the Supabase service's Environment Variables.",
-  serviceKey:
-    "Docker Compose: SERVICE_ROLE_KEY in your .env file.\nCoolify: SERVICE_SUPABASESERVICE_KEY in the Supabase service's Environment Variables.",
-  studioUrl:
-    "Usually the same as the API URL.\nDocker Compose: sign in with DASHBOARD_USERNAME and DASHBOARD_PASSWORD from your .env file.\nCoolify: sign in with SERVICE_USER_ADMIN and SERVICE_PASSWORD_ADMIN from the service's Environment Variables.",
-  sshHost:
-    "The server Supabase runs on. Leave it empty to use the API URL's host.",
-  sshUsername:
-    "A user that can run docker without sudo: root, or a user in the docker group (usermod -aG docker <user>).",
-  sshPrivateKey:
-    "A private key without a passphrase, whose public key is in the user's ~/.ssh/authorized_keys on the server.\nCoolify: the server's key is under Keys & Tokens, then Private Keys.",
+type HelpLine = { install?: "Docker Compose" | "Coolify"; text: string };
+
+/** What each field is and where to find it on the two installs Dyad supports. */
+const FIELD_HELP: Partial<Record<keyof typeof EMPTY_FORM, HelpLine[]>> = {
+  url: [
+    {
+      install: "Docker Compose",
+      text: "SUPABASE_PUBLIC_URL in your .env file, for example http://your-server:8000.",
+    },
+    {
+      install: "Coolify",
+      text: "SERVICE_URL_SUPABASEKONG in the Supabase service's Environment Variables.",
+    },
+  ],
+  anonKey: [
+    { text: "On older versions of Supabase, use the anon key." },
+    { install: "Docker Compose", text: "ANON_KEY in your .env file." },
+    {
+      install: "Coolify",
+      text: "SERVICE_SUPABASEANON_KEY in the Supabase service's Environment Variables.",
+    },
+  ],
+  serviceKey: [
+    { text: "On older versions of Supabase, use the service_role key." },
+    { install: "Docker Compose", text: "SERVICE_ROLE_KEY in your .env file." },
+    {
+      install: "Coolify",
+      text: "SERVICE_SUPABASESERVICE_KEY in the Supabase service's Environment Variables.",
+    },
+  ],
+  studioUrl: [
+    {
+      text: "Lets you open your instance's dashboard from Dyad. Usually the same as the API URL.",
+    },
+    {
+      install: "Docker Compose",
+      text: "sign in with DASHBOARD_USERNAME and DASHBOARD_PASSWORD from your .env file.",
+    },
+    {
+      install: "Coolify",
+      text: "sign in with SERVICE_USER_ADMIN and SERVICE_PASSWORD_ADMIN from the service's Environment Variables.",
+    },
+  ],
+  sshHost: [
+    {
+      text: "The server Supabase runs on. Leave it empty to use the API URL's host.",
+    },
+  ],
+  sshUsername: [
+    {
+      text: "A user that can run docker without sudo: root, or a user in the docker group (usermod -aG docker <user>).",
+    },
+  ],
+  sshPrivateKey: [
+    {
+      text: "A private key without a passphrase, whose public key is in the user's ~/.ssh/authorized_keys on the server.",
+    },
+    {
+      install: "Coolify",
+      text: "the server's key is under Keys & Tokens, then Private Keys.",
+    },
+  ],
 };
 
-function WhereToFind({ label, text }: { label: string; text: string }) {
+function FieldHelp({ label, lines }: { label: string; lines: HelpLine[] }) {
   return (
     <Tooltip>
       <TooltipTrigger
@@ -168,14 +215,18 @@ function WhereToFind({ label, text }: { label: string; text: string }) {
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground"
-            aria-label={`Where to find ${label}`}
+            aria-label={`About ${label}`}
           />
         }
       >
         <Info className="h-3.5 w-3.5" />
       </TooltipTrigger>
-      <TooltipContent className="max-w-sm whitespace-pre-line">
-        {text}
+      <TooltipContent className="max-w-sm space-y-1">
+        {lines.map((line) => (
+          <p key={`${line.install}:${line.text}`}>
+            {line.install && <strong>{line.install}:</strong>} {line.text}
+          </p>
+        ))}
       </TooltipContent>
     </Tooltip>
   );
@@ -190,11 +241,11 @@ function FieldLabel({
   label: string;
   field: keyof typeof EMPTY_FORM;
 }) {
-  const text = WHERE_TO_FIND[field];
+  const lines = FIELD_HELP[field];
   return (
     <div className="flex items-center gap-1.5">
       <Label htmlFor={htmlFor}>{label}</Label>
-      {text && <WhereToFind label={label} text={text} />}
+      {lines && <FieldHelp label={label} lines={lines} />}
     </div>
   );
 }
@@ -401,7 +452,6 @@ export function SupabaseSelfHostedLinkSection({
       placeholder?: string;
       secret?: boolean;
       optional?: boolean;
-      hint?: string;
     },
   ) => (
     <div className="space-y-1">
@@ -410,9 +460,6 @@ export function SupabaseSelfHostedLinkSection({
         label={label}
         field={key}
       />
-      {options.hint && (
-        <p className="text-xs text-muted-foreground">{options.hint}</p>
-      )}
       <Input
         id={`supabase-self-hosted-${key}`}
         type={options.secret ? "password" : "text"}
@@ -481,18 +528,9 @@ export function SupabaseSelfHostedLinkSection({
           {field("url", "API URL", {
             placeholder: "https://supabase.example.com",
           })}
-          {field("anonKey", "Publishable key", {
-            secret: true,
-            hint: "On older versions of Supabase, use the anon key instead.",
-          })}
-          {field("serviceKey", "Secret key", {
-            secret: true,
-            hint: "On older versions of Supabase, use the service_role key instead.",
-          })}
-          {field("studioUrl", "Studio URL (optional)", {
-            optional: true,
-            hint: "Lets you open your instance's dashboard from Dyad.",
-          })}
+          {field("anonKey", "Publishable key", { secret: true })}
+          {field("serviceKey", "Secret key", { secret: true })}
+          {field("studioUrl", "Studio URL (optional)", { optional: true })}
           <div className="space-y-3 rounded-md border p-3">
             <div className="flex items-center gap-2">
               <Switch

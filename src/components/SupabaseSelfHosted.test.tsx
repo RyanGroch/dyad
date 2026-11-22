@@ -193,13 +193,22 @@ describe("SupabaseSelfHostedLinkSection help and import", () => {
     fireEvent.click(screen.getByTestId("supabase-self-hosted-add-button"));
 
     await user.hover(
-      screen.getByRole("button", { name: "Where to find Publishable key" }),
+      screen.getByRole("button", { name: "About Publishable key" }),
     );
 
-    expect(await screen.findByText(/ANON_KEY in your \.env file/)).toBeTruthy();
+    const compose = await screen.findByText(/ANON_KEY in your \.env file/);
+    const coolify = screen.getByText(
+      /SERVICE_SUPABASEANON_KEY in the Supabase service/,
+    );
+    // Each install's name is bold, ahead of its own line.
+    expect(compose.querySelector("strong")?.textContent).toBe(
+      "Docker Compose:",
+    );
+    expect(coolify.querySelector("strong")?.textContent).toBe("Coolify:");
+    // This used to sit under the label as well; now it is only here.
     expect(
-      screen.getByText(/SERVICE_SUPABASEANON_KEY in the Supabase service/),
-    ).toBeTruthy();
+      screen.getAllByText(/On older versions of Supabase, use the anon key/),
+    ).toHaveLength(1);
   });
 
   it("offers no Coolify import when Coolify isn't connected", () => {
