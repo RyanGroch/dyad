@@ -525,7 +525,7 @@ export function getSupabaseSelfHostedSystemPrompt({
 }) {
   const deploys = functionsDeployed
     ? `- Edge functions are deployed when you write them. After an update, the function's previous version can keep answering for up to a minute after its last request, or a few minutes under steady traffic, so a test right after an update may still show the old behavior.`
-    : `- Edge functions are NOT deployed to this instance because it was added without SSH access. Their code is saved but does not run. Prefer database features such as RLS policies and Postgres functions, and tell the user when a feature needs an edge function.`;
+    : `- Edge functions are NOT deployed to this instance because it was added without SSH access. Their code is saved but does not run. Prefer database features such as RLS policies and Postgres functions.`;
   const pending =
     functionsDeployed && pendingUpdates.length > 0
       ? `\n- These functions were just updated and may still answer with their previous code: ${pendingUpdates
@@ -535,7 +535,7 @@ export function getSupabaseSelfHostedSystemPrompt({
           )
           .join(
             ", ",
-          )}. Until then, a result from calling one may not reflect the latest code. Don't change working code because of such a result; tell the user to try again after that time.`
+          )}. Until then, a result from calling one may not reflect the latest code. Don't change working code because of such a result.`
       : "";
   return `
 # Self-hosted Supabase

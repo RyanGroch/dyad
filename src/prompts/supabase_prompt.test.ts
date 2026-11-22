@@ -86,6 +86,19 @@ describe("self-hosted Supabase prompt", () => {
     );
   });
 
+  it("leaves telling the user about setup state to Dyad's UI", () => {
+    for (const functionsDeployed of [true, false]) {
+      const prompt = getSupabaseSelfHostedSystemPrompt({
+        url,
+        functionsDeployed,
+        pendingUpdates: [{ functionName: "send-email", minutesLeft: 3 }],
+      });
+      // Only the secrets rule asks the agent to tell the user something,
+      // as the Cloud instructions do for secrets.
+      expect(prompt.match(/tell the user/gi)).toEqual(["Tell the user"]);
+    }
+  });
+
   it("says nothing about updates when none are pending or none are deployed", () => {
     const pendingUpdates = [{ functionName: "send-email", minutesLeft: 3 }];
     for (const prompt of [

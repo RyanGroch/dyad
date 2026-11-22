@@ -317,6 +317,11 @@ describe("SupabaseSelfHostedConnectedCard", () => {
     expect(
       screen.getByText(/This instance can deploy edge functions/),
     ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Email isn't set up by default on self-hosted Supabase. To use email sign-up, configure SMTP on your instance.",
+      ),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Studio/ }));
     expect(mocks.openExternalUrl).toHaveBeenCalledWith(
       "https://studio.example.com",

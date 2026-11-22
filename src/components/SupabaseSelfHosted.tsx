@@ -50,6 +50,9 @@ import {
 
 // Experimental UI: English only, like the other experiment surfaces.
 
+const EMAIL_NOTE =
+  "Email isn't set up by default on self-hosted Supabase. To use email sign-up, configure SMTP on your instance.";
+
 function functionsNote(ssh: NonNullable<App["supabaseSelfHosted"]>["ssh"]) {
   return ssh
     ? "This instance can deploy edge functions. Updates to them can take a few minutes to take effect, longer than on Supabase Cloud."
@@ -130,6 +133,10 @@ export function SupabaseSelfHostedConnectedCard({
         <Alert>
           <Info className="h-4 w-4" />
           <AlertDescription>{functionsNote(instance.ssh)}</AlertDescription>
+        </Alert>
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertDescription>{EMAIL_NOTE}</AlertDescription>
         </Alert>
         <Button
           variant="destructive"
@@ -584,10 +591,7 @@ export function SupabaseSelfHostedLinkSection({
               </>
             )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            Email isn&apos;t set up by default on self-hosted Supabase. To use
-            email sign-up, configure SMTP on your instance.
-          </p>
+          <p className="text-xs text-muted-foreground">{EMAIL_NOTE}</p>
           {formError && (
             <Alert
               variant="destructive"
